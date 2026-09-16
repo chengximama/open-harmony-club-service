@@ -110,18 +110,19 @@ export class HttpClient {
         headerObj['Authorization'] = `Bearer ${token}`;
       }
 
-      // 请求体
-      let extraDataStr: string = '';
-      if (options?.body) {
-        extraDataStr = JSON.stringify(options.body);
-      }
-
-      const resp = await httpRequest.request(url, {
+      // 请求体：仅在有 body 时携带 extraData。
+      // ⚠️ GET/DELETE 等方法下 extraData 会被拼到 URL 上，传空字符串会触发 4010001 "Parameter error"，
+      // 所以无 body 的请求必须完全省略该字段。
+      const reqOptions: http.HttpRequestOptions = {
         method: methodStr as http.RequestMethod,
         header: headerObj as Object,
-        extraData: extraDataStr,
         expectDataType: http.HttpDataType.OBJECT,
-      } as http.HttpRequestOptions);
+      };
+      if (options?.body !== undefined) {
+        reqOptions.extraData = JSON.stringify(options.body);
+      }
+
+      const resp = await httpRequest.request(url, reqOptions);
 
       const statusCode = resp.responseCode;
 
