@@ -544,3 +544,4 @@ struct ProfilePage {
     replaceTo('pages/LoginPage');
   }
 }
+export { ProfilePage };
