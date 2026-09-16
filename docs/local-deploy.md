@@ -141,6 +141,47 @@ curl.exe -s -X POST http://127.0.0.1:8080/admin/shutdown
 
 ---
 
+### 2.6 注册第一个新账号（两步：**凭口令注册 → 会长分配**）
+
+**① 注册口令在哪** —— `init-admin` 的输出里（如 `当前注册口令：DYMRXD`）。忘了就问服务端要（会长令牌）：
+
+```powershell
+curl.exe -s http://127.0.0.1:8080/api/v1/register-config -H "Authorization: Bearer <会长令牌>"
+# {"ok":true,"data":{"code":"DJ6EA4","updated_at":"...","updated_by":{...}}}
+```
+
+换口令也是会长权限：`PUT /api/v1/register-config/code`（自定义）· `POST /api/v1/register-config/rotate`（随机换）。
+
+**② 注册**（字段规则：`register_code` 必填 · `phone` 必须是合法手机号 · `password` **至少 8 位** · `name` 必填）：
+
+```powershell
+# 注意：中文姓名要用 **UTF-8 无 BOM** 的文件体，别用 Set-Content（ASCII 会变 ???，UTF8 会带 BOM）
+[IO.File]::WriteAllText("$PWD\b.json", '{"register_code":"DJ6EA4","phone":"13900000002","name":"新同学","password":"newmember123"}', [Text.UTF8Encoding]::new($false))
+curl.exe -s -X POST http://127.0.0.1:8080/api/v1/auth/register -H "Content-Type: application/json" --data-binary "@b.json"
+# {"ok":true,"data":{"token":"...","member":{"id":2,"role":null,"dept":null,"status":"pending",...}}}
+```
+
+> 注册即登录，但账号是 **`pending`**、权限全 `false` —— 客户端会跳到「等待管理员分配」页。
+> 这一步**不是 bug**：角色只能由会长授予（v1-scope 的权限设计）。
+
+**③ 会长分配部门 + 角色** —— 分配后账号才 `active`、才有权限：
+
+```powershell
+curl.exe -s http://127.0.0.1:8080/api/v1/members/pending -H "Authorization: Bearer <会长令牌>"
+curl.exe -s -X POST http://127.0.0.1:8080/api/v1/members/2/assign -H "Authorization: Bearer <会长令牌>" `
+  -H "Content-Type: application/json" --data-binary "@b2.json"      # {"dept_id":2,"role":"member"}
+# {"ok":true,"data":{"id":2,"role":"member","dept":{"id":2,"name":"课题部"},"status":"active",...}}
+```
+
+App 里对应「**待分配审批**」页（会长/副会长可见），两步都在界面上点得到。
+
+**招募链接（可选，招新时更好用）**：会长 `POST /api/v1/dept-invite-links {"dept_id":3}` 拿到 token →
+把 `http://<服务端地址>/join/<token>` 发到群里 → 新同学打开看到部门名，注册时带上 `dept_id` →
+待分配列表里会带 **`dept_hint`**（会长一眼看出他想进哪个部门）。
+> **链接不免除注册口令** —— 链接是便利，口令才是准入。
+
+> ⚠️ **注册口令试错是按客户端 IP 节流的**（15 分钟内错 10 次 → 锁 5 分钟起、逐次翻倍，
+> 见 `API-NOTES.md` N-6）。它是**内存态**：被自己锁住时，**重启服务即可清零**。
 ## 3. HTTPS（手机端正式使用要走这条）
 
 自签证书**必须带 SAN**（现代客户端完全忽略 CN，只看 `subjectAltName`）：
