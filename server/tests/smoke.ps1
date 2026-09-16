@@ -1262,6 +1262,30 @@ try {
     $r = Call-Api "DELETE" "/api/v1/tasks/$d5Task" $null $presToken2
     Check "D5 探针清理 -> 200" ($r.status -eq 200) "status=$($r.status)"
 
+    # --- D-6：密码口径 = 8–32 字节 + 只用数字 / 英文 / 符号（2026-09-16 定稿） ---
+    # 放在 [25] 之前：[25] 会把本机 IP 的注册节流锁住。
+    $pwPhone = "13900000031"
+    $r = Call-Api "POST" "/api/v1/auth/register" @{ register_code = $regCode; phone = $pwPhone; name = "密码探针"; password = "abc1234" }
+    Check "D6 7 位密码 -> 400（下界）" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
+    Check "D6 字段级提示落在 password 上" ($null -ne $r.json.error.fields.password) "fields=$($r.json.error.fields | ConvertTo-Json -Compress)"
+    $r = Call-Api "POST" "/api/v1/auth/register" @{ register_code = $regCode; phone = $pwPhone; name = "密码探针"; password = ("a" * 33) }
+    Check "D6 33 位密码 -> 400（上界；改动前没有上限）" ($r.status -eq 400) "status=$($r.status) code=$(ErrCode $r)"
+    # 中文密码：6 个字 = 18 字节，**长度是合法的**，必须靠字符集拒绝（否则这条测不出字符集）
+    $r = Call-Api "POST" "/api/v1/auth/register" @{ register_code = $regCode; phone = $pwPhone; name = "密码探针"; password = "密码密码密码" }
+    Check "D6 中文密码 -> 400（长度合法，靠字符集拒绝）" ($r.status -eq 400) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/auth/register" @{ register_code = $regCode; phone = $pwPhone; name = "密码探针"; password = "abc 1234" }
+    Check "D6 含空格密码 -> 400（不可见字符）" ($r.status -eq 400) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "POST" "/api/v1/auth/register" @{ register_code = $regCode; phone = $pwPhone; name = "密码探针"; password = "Abc123._/\-!" }
+    Check "D6 数字+英文+符号 且 12 位 -> 201（正例）" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r)"
+    # 改密码走同一口径；这两次都会被 400 挡在验证之前，不会真的改掉会长密码（后续段落还依赖它）
+    $r = Call-Api "PUT" "/api/v1/auth/password" @{ old_password = "newpassword1"; new_password = ("a" * 33) } $presToken2
+    Check "D6 改密 33 位 -> 400" ($r.status -eq 400) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PUT" "/api/v1/auth/password" @{ old_password = "newpassword1"; new_password = "密码密码密码" } $presToken2
+    Check "D6 改密中文 -> 400" ($r.status -eq 400) "status=$($r.status) code=$(ErrCode $r)"
+    # 反证：会长密码没被这两次被拒的请求改掉
+    $r = Call-Api "POST" "/api/v1/auth/login" @{ phone = "13800000000"; password = "newpassword1" }
+    Check "D6 被拒的改密没有改掉密码（N-15 同源纪律）" ($r.status -eq 200) "status=$($r.status)"
+
     # ---------- 25. 注册口令节流（按 IP + 递增退避，N-6） ----------
     # 放在最后一段：它会把本机 IP 锁住，之后再打注册都会 429。
     # 手机号用没被占用的号段；错口令在"手机号查重"之前就被拒，不会留下脏数据。

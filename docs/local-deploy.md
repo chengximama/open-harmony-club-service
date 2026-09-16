@@ -84,7 +84,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 
 ```powershell
 cd build        # ← ⚠️ 必须进到 exe 所在目录：data\ 与 certs\ 都按**相对路径**读
-.\club-server.exe init-admin 13800000000 你的密码123 data
+.\club-server.exe init-admin 13800000000 ClubPass2026 data
 ```
 
 真实输出：
@@ -129,7 +129,7 @@ curl.exe -s http://127.0.0.1:8080/health
 # {"ok":true,"data":{"status":"ok","version":"0.1.0","time":"2026-09-16T13:20:08+08:00"}}
 
 # 再登录一次，确认接口链路通（拿令牌）
-'{"phone":"13800000000","password":"你的密码123"}' | Set-Content body.json -Encoding ASCII
+'{"phone":"13800000000","password":"ClubPass2026"}' | Set-Content body.json -Encoding ASCII
 curl.exe -s -X POST http://127.0.0.1:8080/api/v1/auth/login -H "Content-Type: application/json" --data-binary "@body.json"
 # {"ok":true,"data":{"token":"1c207a3c…","expires_at":"2026-10-16T13:20:08+08:00","member":{…}}}
 Remove-Item body.json
@@ -167,7 +167,7 @@ curl.exe -s http://127.0.0.1:8080/api/v1/register-config -H "Authorization: Bear
 
 换口令也是会长权限：`PUT /api/v1/register-config/code`（自定义）· `POST /api/v1/register-config/rotate`（随机换）。
 
-**② 注册**（字段规则：`register_code` 必填 · `phone` 必须是合法手机号 · `password` **至少 8 位** · `name` 必填）：
+**② 注册**（字段规则：`register_code` 必填 · `phone` 必须是合法手机号 · `password` **8-32 位、只用数字/英文/符号** · `name` 必填）：
 
 ```powershell
 # 注意：中文姓名要用 **UTF-8 无 BOM** 的文件体，别用 Set-Content（ASCII 会变 ???，UTF8 会带 BOM）

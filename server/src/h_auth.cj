@@ -40,6 +40,74 @@ public let REG_FAIL_LOCK_MAX: Int64 = 3600
 public let MAX_PBKDF2_INFLIGHT: Int64 = 8
 
 /*
+ * 密码长度口径（D-6，2026-09-16 定稿）：**8–32 字节**。
+ *
+ * 三个口径曾各不相同：
+ *   · UI 设计规格 P12 写「长度按字节计：6-32 位，中文一字 3 字节」
+ *   · api-design §2.3 注 5 写「≥ 8 字节」
+ *   · 实现是 `size >= 8`，**且没有上限** —— 超长密码随便进，与注册口令（6–32）不对称
+ * 定稿取两者的并集下界与设计稿的上界：**下限 8（沿用既有口令强度口径）、上限 32（采纳设计稿）**。
+ *
+ * ⚠ 按**字节**计（Cangjie 的 `String.size` 就是字节数）。
+ * 三个调用点（注册 / 本人改密 / init-admin）一律走 `passwordError`，
+ * 避免多处各写一遍而漂移（L-10 的教训：同一上限写死在多处，改的时候必漏）。
+ *
+ * 2026-09-16 追加**字符集**约束（见下）：只允许数字、英文与符号。
+ * 加了这条之后，"中文一字 3 字节"只影响**长度**怎么算；中文密码本身会被字符集挡掉。
+ */
+public let PASSWORD_MIN_BYTES: Int64 = 8
+public let PASSWORD_MAX_BYTES: Int64 = 32
+
+/*
+ * 允许的密码字符：**数字、英文、符号**（2026-09-16 追加）。
+ *
+ * 判定 = 每个字节都是**可见 ASCII**（0x21–0x7E）。于是：
+ *   · 中文（UTF-8 多字节）、全角字符一律被拒 —— 顺带避免输入法全角/半角造成
+ *     "看起来一模一样、登录却失败"这类最难排查的问题
+ *   · 空格（0x20）、TAB、换行也被排除：它们在表单里不可见，打错了用户看不出来
+ *
+ * 允许的符号就是这一区间里的可见 ASCII，例如 `._/\-!@#$%^&*()[]{}<>?~` 等。
+ */
+public func isAllowedPasswordChar(b: UInt8): Bool {
+    /* 33 = '!'，126 = '~'；只比字面量，不走 stdx（strx.cj 开头那条纪律） */
+    return b >= 33 && b <= 126
+}
+
+/* 字符集校验：返回空串表示合法，否则返回字段级提示。 */
+public func passwordCharsetError(pw: String): String {
+    for (b in pw.toArray()) {
+        if (!isAllowedPasswordChar(b)) {
+            return "密码只能使用数字、英文和符号（._/\\ 等），不能有空格、中文或全角字符"
+        }
+    }
+    return ""
+}
+
+/*
+ * 密码校验的**唯一入口**：长度（8–32 字节）+ 字符集（数字/英文/符号）。
+ * 返回空串表示合法，否则返回给用户看的字段级提示。
+ * 重置密码签发的临时密码是 8 位 ASCII（ids.cj 的 `randCode(8)`），落在区间内。
+ */
+public func passwordError(pw: String): String {
+    let lenErr = passwordLenError(pw)
+    if (lenErr.size > 0) {
+        return lenErr
+    }
+    return passwordCharsetError(pw)
+}
+
+/* 长度校验（被 passwordError 调用；单独公开是为了单测能分别钉住上下界）。 */
+public func passwordLenError(pw: String): String {
+    if (pw.size < PASSWORD_MIN_BYTES) {
+        return "密码至少 ${PASSWORD_MIN_BYTES} 位（按字节计）"
+    }
+    if (pw.size > PASSWORD_MAX_BYTES) {
+        return "密码最多 ${PASSWORD_MAX_BYTES} 位（按字节计）"
+    }
+    return ""
+}
+
+/*
  * 登录失败表清理（P1 M-3）。
  * 原先只增不减：每个被试过的手机号都留一条记录，锁定过期也不回收。
  * 这里把"窗口已过且锁定已解除"的记录删掉；平时（表很小）直接返回，不做无谓遍历。
@@ -224,7 +292,9 @@ public func handleRegister(ctx: Context, s: Store): Unit {
         v.check("phone", isPhone(phone), "手机号格式不正确")
     }
     if (pw.size > 0) {
-        v.check("password", pw.size >= 8, "密码至少 8 位")
+        /* D-6：8–32 字节 + 只用数字/英文/符号（原先只校验下限，超长与非 ASCII 一律放行） */
+        let pwErr = passwordError(pw)
+        v.check("password", pwErr.size == 0, pwErr)
     }
     v.done()
 
@@ -508,7 +578,9 @@ public func handleChangePassword(ctx: Context, s: Store): Unit {
     let oldPw = v.need("old_password", reqStrOr(body, "old_password", ""), "请输入原密码")
     let newPw = v.need("new_password", reqStrOr(body, "new_password", ""), "请输入新密码")
     if (newPw.size > 0) {
-        v.check("new_password", newPw.size >= 8, "密码至少 8 位")
+        /* D-6：与注册同一口径（8–32 字节 + 数字/英文/符号），走同一个纯函数 */
+        let pwErr = passwordError(newPw)
+        v.check("new_password", pwErr.size == 0, pwErr)
     }
     v.done()
 

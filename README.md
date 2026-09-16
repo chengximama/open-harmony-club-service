@@ -29,7 +29,7 @@
 | **轻舟升级与 CangDB 适配** | 升级轻舟到 **`3ea387e`**（上游 `141a735` 修好 DEF-1，本地补丁撤销）；新版 `store.cj` / `rbac.cj` 依赖的 **CangDB 上游仓只有 README、没有代码** → 用 `server/src/fw_rbac_store.cj`（文件存储的数据层）+ `fw_rbac.cj`（`requirePermission` 中间件）替代，`build.ps1` 排除框架原版 | ✅ 完成并验证（单测 322 / 冒烟 347 / TLS 22） |
 | **服务端容量基准与四项性能改造** | 按"接近千人"的容量问题做了可复现基准（`server/tests/bench.ps1`，真实 HTTP + 旧版本 worktree 对比），并落地四项改造：① 列表排序插入排序→**堆排序** ② **PBKDF2 移出全局锁**（三阶段加锁）③ 过期**令牌回收** ④ 整库落盘移出锁（请求链末端刷盘）。实测只有 ② 有量级收益（**4 并发登录 1574 → 867 ms**），①④ 在千人档落在噪声内、价值是最坏情况下界 —— 见 `docs/capacity-baseline.md` | ✅ 完成并验证（单测 349 / 冒烟 347 / TLS 22） |
 | **服务端第四轮复验修复** | 按 `docs/code-review.md` **第四轮**的 6 条新发现修：**N-14**（本机判定用子串匹配 `::1` → 远程 IPv6 可远程关停服务，改成按地址相等比白名单）· **N-15**（4 个 handler 被 4xx 拒绝却留下半改状态并落盘，改成两阶段赋值）· **N-16**（登录时序侧信道可枚举手机号，改成两条路径等价 PBKDF2）· **N-17**（审计 IO 移出锁）· **N-18**（任务可挂任意部门课题，补部门一致性）· **N-19**（招募 token 32 位 → 32 字节） | ✅ 完成并验证（单测 387 / 冒烟 360 / TLS 22） |
-| **按 UI 设计规格对齐服务端** | 拿《鸿蒙俱乐部-全场景UI设计规格》13 页逐条对服务端，8 条按设计稿落地（含队友复验补的 2 条）：**D-1** 权限摘要补 5 个管理布尔（由 `can()` 推导）· **D-2** 名录 `?q=` 搜索姓名或部门 · **D-3** 任务/课题**读**范围放开到全社团（写不变）· **D-4** 阻塞任务的**求助对象** `needs_help` + 部长首页带出本部门阻塞项 · **D-5** 任务**逾期天数** `overdue_days` · **D-7** 成员详情补 `done_tasks` / `overdue_tasks`。其余 8 条按决定保留原版本。逐条证据见 `docs/ui-spec-conformance-review.md` | ✅ 完成并验证（单测 456 / 冒烟 412 / TLS 22 / 契约 30） |
+| **按 UI 设计规格对齐服务端** | 拿《鸿蒙俱乐部-全场景UI设计规格》13 页逐条对服务端，8 条按设计稿落地（含队友复验补的 2 条）：**D-1** 权限摘要补 5 个管理布尔（由 `can()` 推导）· **D-2** 名录 `?q=` 搜索姓名或部门 · **D-3** 任务/课题**读**范围放开到全社团（写不变）· **D-4** 阻塞任务的**求助对象** `needs_help` + 部长首页带出本部门阻塞项 · **D-5** 任务**逾期天数** `overdue_days` · **D-7** 成员详情补 `done_tasks` / `overdue_tasks`。另**定稿密码口径**（D-6：8–32 字节 + 只允许数字/英文/符号，有意偏离设计稿的 6 位下限）；其余按决定保留原版本。逐条证据见 `docs/ui-spec-conformance-review.md` | ✅ 完成并验证（单测 466 / 冒烟 421 / TLS 22 / 契约 30） |
 | **客户端（ArkTS）** | 技术栈定为 **ArkTS**（2026-09-14）；已接入组内上传的成员模块 **3 页**（成员名录 / 待分配审批 / 管理），`hvigorw assembleHap` 实测 **BUILD SUCCESSFUL**（未签名）。**页面仍是假数据，未接任何接口** | 🟡 可构建；待签名 + 待接接口 |
 
 **接口进度 40 / 40**（认证 5 · 组织与成员 20 · 任务 8 · 课题 6 = 39 个业务接口，另加运维 `/health` 1 个）。
@@ -41,8 +41,8 @@
 
 ```powershell
 cd server
-.\build\club-server.exe test                                              # 单测 456 项
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 412 项
+.\build\club-server.exe test                                              # 单测 466 项
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 421 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1 # TLS 22 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-check.ps1  # 前后端契约 30 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1     # 容量基准（按需，见 docs/capacity-baseline.md）
@@ -99,7 +99,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 
 # 2. 到 exe 所在目录操作（与部署形态一致：一切按相对路径）
 cd build
-.\club-server.exe init-admin 13800000000 你的密码123 data   # 预置首任会长 + 4 个组织
+.\club-server.exe init-admin 13800000000 ClubPass2026 data   # 预置首任会长 + 4 个组织
 .\club-server.exe serve 8080 data                           # HTTP 起服务
 # 或者 HTTPS（先用 openssl 生成带 SAN 的证书，见 docs\server-guide.md）
 .\club-server.exe serve-tls 8443 data ..\certs\cert.pem ..\certs\key.pem

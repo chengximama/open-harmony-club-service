@@ -24,7 +24,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 cd build
 
 # 3. 初始化首任会长（同时预置 4 个组织与一个随机注册口令）
-.\club-server.exe init-admin 13800000000 你的密码123 data
+.\club-server.exe init-admin 13800000000 ClubPass2026 data
 
 # 4. 起服务
 .\club-server.exe serve 8080 data
@@ -55,7 +55,7 @@ $openssl = "D:\Program Files\Git\usr\bin\openssl.exe"
 
 # 2. 起 HTTPS
 cd build
-.\club-server.exe init-admin 13800000000 你的密码123 data
+.\club-server.exe init-admin 13800000000 ClubPass2026 data
 .\club-server.exe serve-tls 8443 data ..\certs\cert.pem ..\certs\key.pem
 
 # 3. 完整验证（协议版本、SAN、真证书校验、HTTPS 接口、明文反证）

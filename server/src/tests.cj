@@ -148,6 +148,26 @@ func testIds(t: TR): Unit {
     t.ok("token 唯一", newToken() != newToken())
     t.eqi("注册口令长度", newRegisterCode().size, 6)
     t.eqi("临时密码长度", newTempPassword().size, 8)
+    /*
+     * D-6（2026-09-16 定稿）：密码 = **8–32 字节** 且 **只用数字 / 英文 / 符号**。
+     * 这三组断言是口径的回归闸门：
+     *   · 去掉上限 → "33 位"那条变红
+     *   · 去掉字符集 → "中文"与"含空格"两条变红
+     *   · 改回 6 位下限 → "7 位"那条变红
+     */
+    t.eqs("密码 8 位 ASCII 合法（下界）", passwordError("abc12345"), "")
+    /* 32 位 = randHex(16)（十六进制串长度是字节数的 2 倍），33 位再多一个字符 */
+    t.eqs("密码 32 位 ASCII 合法（上界）", passwordError(randHex(16)), "")
+    t.ok("密码 7 位 → 拒（下界）", passwordError("abc1234").size > 0)
+    t.ok("密码 33 位 → 拒（上界，原先没有上限）", passwordError("a" + randHex(16)).size > 0)
+    t.ok("密码含中文 → 拒（字符集；12 字节本来在长度区间内）", passwordError("密码密码密码").size > 0)
+    t.ok("密码含空格 → 拒（不可见字符）", passwordError("abc 1234").size > 0)
+    t.ok("密码含全角字符 → 拒（字符集）", passwordError("ａｂｃ12345").size > 0)
+    t.eqs("密码含符号 ._/\\-! 合法", passwordError("Abc123._/\\-!"), "")
+    /* 「密码1」= 3 个中文字节 + 1 位数字 = 7 字节 → 应该报**长度**错，不是字符集错 */
+    t.ok("长度先判：7 字节中文报长度错", containsAscii(passwordError("密码1"), "至少"))
+    /* 重置密码签发的临时密码必须落在自己的口径内，否则管理员一重置就登不上 */
+    t.eqs("临时密码符合密码口径（D-6）", passwordError(newTempPassword()), "")
     let alpha = CODE_ALPHABET
     var i: Int64 = 0
     var allIn = true

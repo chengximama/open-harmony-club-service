@@ -37,6 +37,8 @@ func usage(): Unit {
     println("")
     println("数据目录默认 data/（相对当前工作目录）。冒烟测试用独立目录，避免碰正式数据。")
     println("证书必须是**带 SAN** 的自签证书（现代客户端只看 subjectAltName，完全忽略 CN）。")
+    println("密码：8-32 位，只能用数字 / 英文 / 符号（如 ._/\\-!@#）。")
+    println("⚠ 所有命令行参数只支持 ASCII —— 中文参数会让仓颉的 argv 解析直接抛异常（见 docs/API-NOTES.md 坑 11）。")
 }
 
 /* 加载数据；失败就退出——绝不带着空库继续跑。 */
@@ -82,8 +84,10 @@ func cmdInitAdmin(phone: String, pw: String, dir: String): Int64 {
         println("手机号格式不正确（11 位，以 1 开头）")
         return 1
     }
-    if (pw.size < 8) {
-        println("初始密码至少 8 位")
+    /* 与注册 / 改密同一口径（D-6：8–32 字节 + 只用数字/英文/符号），别让初始化命令成为第三条规则 */
+    let pwErr = passwordError(pw)
+    if (pwErr.size > 0) {
+        println(pwErr)
         return 1
     }
     let loaded = loadOrExit(dir)
