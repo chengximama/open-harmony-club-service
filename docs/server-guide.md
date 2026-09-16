@@ -13,6 +13,8 @@
 
 ## 快速开始
 
+> **第一次在本机跑起来**：照 **`local-deploy.md`**（一页上手，含体检与坑表）走更快；本节是细节版。
+
 ```powershell
 # 1. 编译（并复制 4 个依赖 DLL 到 build\）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
