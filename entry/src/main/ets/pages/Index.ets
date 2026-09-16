@@ -2,6 +2,7 @@ import MemberListPage from './MemberListPage';
 import MemberDetailPage from './MemberDetailPage';
 import PendingApprovalPage from './PendingApprovalPage';
 import ManagePage from './ManagePage';
+import MyTasksPage from './MyTasksPage';
 
 @Entry
 @Component
@@ -35,6 +36,11 @@ struct Index {
     } else {
       Navigation() {
         Tabs({ barPosition: BarPosition.End }) {
+          TabContent() {
+            MyTasksPage()
+          }
+          .tabBar('我的任务')
+
           TabContent() {
             MemberListPage({ onMemberClick: (id: number) => {
               this.selectedMemberId = id;
