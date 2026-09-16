@@ -66,19 +66,27 @@ if (-not $SkipCert) {
 # ---------- 3. 启动脚本（cwd 必须是 exe 所在目录，所以脚本自己 cd 过去） ----------
 $httpCmd = @'
 @echo off
+rem 切到 UTF-8 代码页：服务端的日志/报错是中文，cmd 默认 936 会显示成乱码。
+chcp 65001 >nul
 rem 明文 HTTP。仅用于本机调试；正式使用请用 start-https.cmd。
 cd /d "%~dp0"
 club-server.exe serve 8080 data
 '@
-Set-Content -Path (Join-Path $dist "start-http.cmd") -Value $httpCmd -Encoding ASCII
+# 按 ANSI 写：cmd.exe 默认按 ANSI（中文 Windows 是 GBK）读 .cmd，
+# 用 -Encoding ASCII 会把上面的中文注释整行变成 "?"。
+[IO.File]::WriteAllText((Join-Path $dist "start-http.cmd"), $httpCmd, [Text.Encoding]::Default)
 
 $httpsCmd = @'
 @echo off
+rem 切到 UTF-8 代码页（同 start-http.cmd）。
+chcp 65001 >nul
 rem HTTPS（框架原生 TLS，不用 Nginx）。端口/数据目录/证书路径都可改。
 cd /d "%~dp0"
 club-server.exe serve-tls 8443 data certs\cert.pem certs\key.pem
 '@
-Set-Content -Path (Join-Path $dist "start-https.cmd") -Value $httpsCmd -Encoding ASCII
+# 按 ANSI 写：cmd.exe 默认按 ANSI（中文 Windows 是 GBK）读 .cmd，
+# 用 -Encoding ASCII 会把上面的中文注释整行变成 "?"。
+[IO.File]::WriteAllText((Join-Path $dist "start-https.cmd"), $httpsCmd, [Text.Encoding]::Default)
 
 # ---------- 4. 说明 ----------
 $readme = @'

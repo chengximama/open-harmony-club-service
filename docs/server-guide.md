@@ -18,6 +18,7 @@
 ```powershell
 # 1. 编译（并复制 4 个依赖 DLL 到 build\）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+# 等价包装（免记 -ExecutionPolicy Bypass，可双击）：.\build.cmd
 
 # 2. 到 exe 所在目录操作（与部署形态一致：一切按相对路径）
 cd build
@@ -101,7 +102,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-package.ps1
 
 ```
 server/
-  build.ps1               构建脚本（cjc + stdx + 轻舟同包编译；构建前先校验内置框架的内容清单）
+  build.ps1               构建脚本（cjc + stdx + 轻舟同包编译；构建前先校验内置框架的内容清单；工具链自动探测）
+  build.cmd               build.ps1 的包装（免 -ExecutionPolicy Bypass）
   third_party/qingzhou/   内置的轻舟框架源码（29 个 .cj + LICENSE；OpenSSL 两个 DLL 不提交，构建时自动找；出处见其 PROVENANCE.md）
   src/
     main.cj               入口：serve / init-admin / test + 全部路由注册

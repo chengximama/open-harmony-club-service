@@ -1730,3 +1730,137 @@ Select-String -Path server\*.ps1,server\third_party\qingzhou\*.ps1 -Pattern 'Get
 N-21 是**我第四轮的修复自己引入的**：N-16 的时序等化本身没错，但我只核了「两条路径时间是否相等」，
 没核「这条路径现在有多贵、谁能触发它」。**修一处，要顺手看它有没有在别处开一个口子** ——
 这一条记在这里，而不只是记在结论里。
+
+---
+
+# 修复方增补（2026-09-16 · 队友「从 GitHub clone 后无法编译」的排查：N-25 … N-28）
+
+> **触发**：组内成员从 GitHub 全新 clone 之后**编译不通过**，并反馈「是不是根本不用编译？给我一个编译好的
+> exe 就行」。此前每一轮复核都隐含「评审机 == 本机」，所以"换一台机器"这一类问题**从未被复现过**。
+> 本轮把**队友机器的视角**当成新的复现环境，逐条定位可复现的成因。
+
+| 项 | 值 |
+| --- | --- |
+| 复现环境 | 全新 `git clone`（本地仓与 `origin/main` 同 SHA）+ 清空 `CANGJIE_HOME` + 剔除 PATH 里的 cjenv shim |
+| 结论 | 新发现 **4 条**（1 高 / 1 中 / 2 低）。**主因是 `build.ps1` 把工具链写死在评审机上** |
+| 改动 | `server/build.ps1`、`server/build-package.ps1`、新增 `server/build.cmd`；`README.md` / `HANDOFF.md` / `server-guide.md` / `local-deploy.md` / `API-NOTES.md` |
+| 交付 | `server\dist\club-server-2026-09-16.zip`（6.8 MB，免编译） |
+
+## 8.1 四条新发现
+
+### N-25 `[高]` `build.ps1` 把 cjc / stdx 的路径写死成评审机上的位置
+
+**位置**：`server/build.ps1`（原实现直接给 `$CangjieHome` / `$Stdx` 赋本机绝对路径，
+失败时只抛 `找不到编译器：<路径>`）
+
+**问题**：**别人 clone 下来必然编不过**——他的 SDK 不在 `D:\Cangjie`。更糟的是报错只给路径、
+不给解法，所以队友的第一反应是"是不是我缺东西"，而不是"脚本写死了"。
+
+**复现（本机模拟）**：
+
+```powershell
+.\build.ps1 -CangjieHome C:\Cangjie    # -> 找不到编译器：C:\Cangjie\bin\cjc.exe
+.\build.ps1 -Stdx C:\stdx\nope         # -> 找不到 stdx 的静态库
+```
+
+**修法**：新增 `Resolve-CangjieHome` / `Resolve-Stdx`，候选顺序
+**显式传参 → 常见安装位置 → `CANGJIE_HOME` / `CANGJIE_STDX` → `PATH`**，并**按版本优先 1.1.x**；
+两者都解析失败时，报错里直接给出两条可执行的路（装 SDK 的下载地址 / 改用免编译部署包），
+而不是只报一个路径。另加 `server\build.cmd` 包装脚本，免去"新机器禁止跑 .ps1"这一步。
+
+**验证**：全新 clone + 干净环境 → `[build] 工具链：cjc=D:\Cangjie` / `1.1.3` → **编译通过**；
+把候选列表整体改成不存在的目录（等价于"这台机器没装 SDK"）→ 报错文案可执行。
+
+### N-26 `[中]` `cjenv` 改写全局 `CANGJIE_HOME`，构建被拖到 1.0.5 上（症状伪装成编译器 bug）
+
+**位置**：同上的候选顺序 —— **这一条是修 N-25 时自己撞出来的**。
+
+**问题**：本机 `$env:CANGJIE_HOME` 被 `cjenv` 设成
+`C:\Users\ASUS\.cjenv\sdks\1.0.5\cangjie`。只要"环境变量"这一档排在常见安装位置之前，
+就会拿 **1.0.5 的 cjc** 去配 **1.1.3.1 的 stdx**，编译中途报
+`LLVM ERROR: Broken module found … @llvm.cj.get.vtable.func`、`opt.exe` 崩溃 —— 看起来像编译器 bug。
+**实测证明"只调位置顺序不够"**：把常见目录提到环境变量之前那次改动之后，仍然挑到了 1.0.5
+（因为环境变量本身就指向旧 SDK）。这条与 `API-NOTES.md` 第 19 条同一根因，但**解法只能是判版本，不能只排顺序**。
+
+**修法**：把所有"真实存在"的候选收集起来，**逐个跑 `cjc --version`，优先返回 1.1.x**；
+若一个 1.1.x 都没有，仍然返回第一个，但先打 `WARNING` 写清串台症状与处置。
+显式传参被跳过、或传了无效路径时也打 `WARNING` 说明**实际用了哪一个**（不能静默换掉用户指定的 SDK）。
+
+**验证**：`-CangjieHome <cjenv 的 1.0.5>` → 警告"实际使用 D:\Cangjie" → 编译通过；
+`-CangjieHome C:\Cangjie`（不存在）→ 警告"已忽略" → 编译通过。
+
+### N-27 `[低]` 覆盖"正在运行"的 exe 只报 `Permission denied`，把构建问题伪装成权限问题
+
+**位置**：`build.ps1` 链接阶段（新增编译前自查）
+
+**问题**：本轮**真踩到了**——我自己测试时留下的 `club-server.exe` 占着 `build\club-server.exe`，
+于是 `ld.lld: error: failed to write the output file: Permission denied`。这条报错极易被误判成
+SDK 权限 / 杀软拦截，而真正原因是"Windows 不允许写入正在执行的 exe"。
+
+**修法**：编译前用 `[IO.File]::Open($exe, 'Open', 'Write', 'None')` 探一次占用，
+占用就直接抛出"编译输出被占用 + 原因 + 处置命令"，不再让 `ld.lld` 去报那句歧义话。
+
+**验证**：`club-server.exe serve 18099` 占着 → 报可执行提示；停掉 → 编译通过。
+
+### N-28 `[低]` 部署包 `.cmd` 的中文注释被 `-Encoding ASCII` 吃成 `?`，且控制台代码页让日志乱码
+
+**位置**：`server/build-package.ps1`（`Set-Content ... -Encoding ASCII`）
+
+**问题**：两件事叠在一起，会被误以为"程序输出坏了"：
+① `-Encoding ASCII` 把 `start-http.cmd` 里的中文注释整行变成 `?`（包内实际字节是 `3F 3F`）；
+② `cmd.exe` 默认按 ANSI（中文 Windows = GBK / 936）读 `.cmd`，而服务端往控制台写的是 **UTF-8** 字节，
+于是一双击启动脚本，中文日志与报错全是乱码。
+
+**修法**：`.cmd` 改用 `[IO.File]::WriteAllText(..., [Text.Encoding]::Default)`（ANSI）写，
+并在 `@echo off` 之后加 `chcp 65001 >nul`。
+
+**验证**：重建后按 GBK 解码逐行核对（注释完整、无 `?`）；`cmd /c start-http.cmd` → `/health` **200**。
+
+## 8.2 验证矩阵（队友视角）
+
+| 场景 | 期望 | 实测 |
+| --- | --- | --- |
+| 全新 clone + 清空 `CANGJIE_HOME` / 去掉 cjenv PATH | 自动挑到 1.1.3 | ✅ 编译通过 |
+| 显式指定 1.0.5（cjenv 那套） | 警告 + 跳过 | ✅ 用 1.1.3 编过 |
+| 显式指定不存在的 SDK / stdx | 警告 + 回退 | ✅ 编过 |
+| 完全没装 SDK | 可执行的报错 | ✅ 给出「装 SDK / 用部署包」两条路 |
+| 输出 exe 被占用 | 提示而非 `Permission denied` | ✅ |
+| 部署包解压 → `cmd /c start-http.cmd` | 起得来 | ✅ `/health` 200 |
+| 部署包 `init-admin` | 落盘 | ✅ `data\db.json` 683 字节 |
+| 四套测试（重建后） | 不回退 | ✅ 单测 **398** / 冒烟 **362** / TLS **22** / 契约 **30**，全 0 失败 |
+
+## 8.3 交付物：免编译部署包（这才是队友真正需要的）
+
+```powershell
+cd server
+.\build-package.ps1                                  # -> dist\club-server\（exe + 4 DLL + 证书 + 启动脚本）
+Compress-Archive -Path .\dist\club-server\* -DestinationPath .\dist\club-server-<日期>.zip
+```
+
+**必须用压缩包发过去**：`server/build` 与 `server/dist` 都在 `.gitignore` 里
+（`git check-ignore -v` 可自证），**队友 clone 是拿不到 exe 的**。
+同时要纠正一个说法：仓颉运行时确实是静态链接的，但制品是 **exe + 4 个 DLL**
+（其中两个 OpenSSL 是运行时 `dlopen` 的，不在导入表里——缺了**编译期毫无提示**，运行时密码哈希/TLS 才 500）。
+
+## 8.4 本轮未覆盖
+
+| 项 | 说明 |
+| --- | --- |
+| 队友机器上的**报错原文** | 未取得。上述四类覆盖了本机能复现的全部成因；若他报的错不在这四类之内，需要他给第一行错误 |
+| 从 GitHub **直连**克隆验证 | **已补做，见 8.5**。先前的失败是**我把仓库地址猜错了**（`pyf-sys/cangjie_web` → `Repository not found`），**不是私有仓** —— 这条订正留着，免得以后再用错地址下"克隆不了"的结论 |
+| 他机器上 git 不是 Git for Windows | 若 `mingw64\bin` 不存在，OpenSSL 两个 DLL 会找不到。解析已用 `Get-Command git` 反推路径，报错里也写了 `-OpenSslDir` 的解法，但**未在那种机器上实测** |
+
+## 8.5 补做：从 GitHub 真克隆（2026-09-16 · 已推送的 `b696bae`）
+
+§8.4 里那条"无法直连验证"作废 —— 地址错了而已。用**真实地址**重做，全部通过：
+
+| 步骤 | 结果 |
+| --- | --- |
+| `git clone --depth 1 https://github.com/XueDric/open-harmony-club-service.git`（走本机代理） | ✅ HEAD = `b696bae`，与本地一致 |
+| 克隆内容里是否已带修复 | ✅ 含 `server/build.cmd` 与自动探测的 `build.ps1`、`build-package.ps1` |
+| 干净环境编译（清空 `CANGJIE_HOME`、PATH 去掉 cjenv shim，**不复制任何文件**，全用克隆自带） | ✅ `cjc=D:\Cangjie` / **1.1.3** → 编译通过，4 个 DLL 自动就位 |
+| 内置框架内容清单（**克隆下来的字节**，验 `.gitattributes` 的 `-text` 是否真生效） | ✅ **39 项 / 0 异常** |
+| 用克隆自带的 `build.cmd`（队友双击那条路）再编一次 | ✅ 编译通过 |
+
+> 结论：**队友只要 `git clone` + 跑 `build.cmd` 就能编**（前提是机器上装了 cjc 1.1.3 + stdx 1.1.3.1）；
+> 没装 SDK 的机器则直接收 `club-server-<日期>.zip`，**一行命令都不用敲**。
