@@ -7,7 +7,7 @@ package qingzhou
  * 【本地适配 · 暂时性】轻舟 RbacStore 的数据层替换 —— 2026-09-14
  *
  * 背景
- *   轻舟升级到 3ea387e 后，框架的 src/store.cj 用 CangDB 存 RBAC 数据
+ *   轻舟升级到 3ea387e 后（e072980 仍然如此），框架的 src/store.cj 用 CangDB 存 RBAC 数据
  *   （users / roles / permissions / role_permissions），而 CangDB 的上游仓库
  *   （gitcode.com/BIT-FSSLab/CangDB）**只有 README、没有任何代码**，
  *   于是 `import cangdb.*` 编译不过，整个构建被卡住。
@@ -26,12 +26,19 @@ package qingzhou
  *   3. 把轻舟的 src/store.cj 放回默认构建
  *
  * ⚠ 与 DEF-1 补丁同一个教训：这是**跟着上游文件走的适配**，上游再改 store.cj 时
- *    本文件会静默过期。升级轻舟后请重跑 server 的三套测试。
+ *    本文件会静默过期。升级轻舟后请重跑全部测试（单测 / 冒烟 / TLS / 契约 / 后台端到端，
+ *    最后一套 = `build.ps1 -Target admin` + `tests/admin-check.ps1`）。
  *
  * 与轻舟原版的差异（只有一处语义变化，必须知道）
  *   · 原版 role_permissions 是一张 JOIN 表；本实现内部用 HashMap<roleId, Array<permId>>
  *     表达同一事实（对外 API 不暴露该表，行为一致）
  *   · close() 在原版是关库；本实现是"落盘 + 无操作"（文件存储没有连接可关）
+ *
+ * 自包含（2026-09-16）
+ *   本文件**只依赖框架与 std**：JSON 读写用框架自带的 `jsonGetInt64` / `jsonGetStr` /
+ *   `JsonInt` / `JsonString`，不引用 `server/src` 里的 jsonw.cj —— 这样它可以直接当作
+ *   "上游 store.cj 的替身"用于**任何**基于轻舟的构建（例如 `examples/admin.cj` 那个
+ *   后台管理示例），而不必连带编入我们服务端的其它文件。
  *
  * 另外两条读码时最容易误会的地方（2026-09-16 补记）
  *   · **种子口令哈希不是我们那套**：`seed()` 里的 admin/user 用的是轻舟 `security.cj` 的
@@ -338,21 +345,21 @@ public class RbacStore {
         rolePerms = HashMap<Int64, ArrayList<Int64>>()
 
         for (o in objArr(r, "users")) {
-            let id = reqIntOr(o, "id", 0)
-            users[id] = UserRow(id, reqStrOr(o, "username", ""), reqStrOr(o, "password_hash", ""),
-                reqIntOr(o, "role_id", 0))
+            let id = (jsonGetInt64(o, "id") ?? 0)
+            users[id] = UserRow(id, (jsonGetStr(o, "username") ?? ""), (jsonGetStr(o, "password_hash") ?? ""),
+                (jsonGetInt64(o, "role_id") ?? 0))
         }
         for (o in objArr(r, "roles")) {
-            let id = reqIntOr(o, "id", 0)
-            roles[id] = RoleRow(id, reqStrOr(o, "name", ""))
+            let id = (jsonGetInt64(o, "id") ?? 0)
+            roles[id] = RoleRow(id, (jsonGetStr(o, "name") ?? ""))
         }
         for (o in objArr(r, "permissions")) {
-            let id = reqIntOr(o, "id", 0)
-            perms[id] = PermRow(id, reqStrOr(o, "code", ""), reqStrOr(o, "name", ""))
+            let id = (jsonGetInt64(o, "id") ?? 0)
+            perms[id] = PermRow(id, (jsonGetStr(o, "code") ?? ""), (jsonGetStr(o, "name") ?? ""))
         }
         for (o in objArr(r, "role_permissions")) {
-            let rid = reqIntOr(o, "role_id", 0)
-            let pid = reqIntOr(o, "permission_id", 0)
+            let rid = (jsonGetInt64(o, "role_id") ?? 0)
+            let pid = (jsonGetInt64(o, "permission_id") ?? 0)
             var list: ArrayList<Int64>
             match (rolePerms.get(rid)) {
                 case Some(x) => list = x
@@ -369,27 +376,27 @@ public class RbacStore {
         let ua = JsonArray()
         for ((_k, u) in users) {
             let o = JsonObject()
-            jPutInt(o, "id", u.id)
-            jPutStr(o, "username", u.username)
-            jPutStr(o, "password_hash", u.passwordHash)
-            jPutInt(o, "role_id", u.roleId)
+            o.put("id", JsonInt(u.id))
+            o.put("username", JsonString(u.username))
+            o.put("password_hash", JsonString(u.passwordHash))
+            o.put("role_id", JsonInt(u.roleId))
             ua.add(o)
         }
         root.put("users", ua)
         let ra = JsonArray()
         for ((_k, r) in roles) {
             let o = JsonObject()
-            jPutInt(o, "id", r.id)
-            jPutStr(o, "name", r.name)
+            o.put("id", JsonInt(r.id))
+            o.put("name", JsonString(r.name))
             ra.add(o)
         }
         root.put("roles", ra)
         let pa = JsonArray()
         for ((_k, p) in perms) {
             let o = JsonObject()
-            jPutInt(o, "id", p.id)
-            jPutStr(o, "code", p.code)
-            jPutStr(o, "name", p.name)
+            o.put("id", JsonInt(p.id))
+            o.put("code", JsonString(p.code))
+            o.put("name", JsonString(p.name))
             pa.add(o)
         }
         root.put("permissions", pa)
@@ -397,8 +404,8 @@ public class RbacStore {
         for ((rid, pids) in rolePerms) {
             for (pid in pids) {
                 let o = JsonObject()
-                jPutInt(o, "role_id", rid)
-                jPutInt(o, "permission_id", pid)
+                o.put("role_id", JsonInt(rid))
+                o.put("permission_id", JsonInt(pid))
                 rpa.add(o)
             }
         }

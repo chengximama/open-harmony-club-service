@@ -91,9 +91,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-package.ps1
 | **M8 第三轮复验** | `docs/code-review.md` 第三轮：复验第二轮 9 条 + **4 条新发现**（N-10…N-13） | ✅ **已完成**——第二轮 9 条全部确认修复；**N-10**（`assign` / `assign-batch` 未纳入同权保护，副会长可降级同权者、甚至用 `assign` 推翻会长的移出决定）已修，批量改为逐条判定；N-11 / N-12 / N-13 均已按建议处理。当轮基线 **300 / 347 / 22 全绿** |
 | **M9 轻舟升级** | 升级到 `3ea387e`（上游 `141a735` 修好 DEF-1，本地补丁撤销）+ 适配 CangDB 缺失的 RBAC 层（`fw_rbac_store.cj` 文件存储数据层 + `fw_rbac.cj` 的 `requirePermission`） | ✅ **已完成并验证**：撤补丁后 TLS 重跑 **22 / 0 全绿**；当轮基线 **322 / 347 / 22 全绿** |
 | **M10 容量与性能** | 可复现容量基准（`server/tests/bench.ps1`，真实 HTTP + 与旧提交编译的 exe 对比）· 四项改造：列表排序插入→**堆排序** · **PBKDF2 移出全局锁** · 过期**令牌回收** · 整库落盘移出锁 | ✅ **已完成并验证**：4 并发登录 **1574 → 867 ms**（串行因子 0.99 → 0.56）是唯一有量级收益的一项；排序与落盘在千人档落在噪声带内，价值是**最坏情况下界**与**库变大后的锁占用**。**当轮基线 349 / 347 / 22 全绿**（2026-09-15，见 `capacity-baseline.md`） |
-| **M11 第四轮复验修复** | `docs/code-review.md` 第四轮 6 条：**N-14** 本机判定改按地址相等（原为子串匹配 `::1`，可被远程 IPv6 关停服务）· **N-15** 四个 handler 改两阶段赋值（被 4xx 拒绝不再留半改状态）· **N-16** 登录两条路径等价 PBKDF2（堵住时序枚举手机号）· **N-17** 审计 IO 移出锁 · **N-18** 任务与课题必须同部门 · **N-19** 招募 token 32 字节 | ✅ **已完成并验证**：新增单测闸门 `testLoopbackPeer` / `testLoginCreds` / `testAuditDeferred` 与冒烟 §22.5。**当前基线 387 / 360 / 22 全绿**（2026-09-15） |
+| **M11 第四轮复验修复** | `docs/code-review.md` 第四轮 6 条：**N-14** 本机判定改按地址相等（原为子串匹配 `::1`，可被远程 IPv6 关停服务）· **N-15** 四个 handler 改两阶段赋值（被 4xx 拒绝不再留半改状态）· **N-16** 登录两条路径等价 PBKDF2（堵住时序枚举手机号）· **N-17** 审计 IO 移出锁 · **N-18** 任务与课题必须同部门 · **N-19** 招募 token 32 字节 | ✅ **已完成并验证**：新增单测闸门 `testLoopbackPeer` / `testLoginCreds` / `testAuditDeferred` 与冒烟 §22.5。**当轮基线 387 / 360 / 22 全绿**（2026-09-15） |
+| **M12 按 UI 设计规格对齐** | 《鸿蒙俱乐部-全场景UI设计规格》13 页逐条对照（报告 `docs/ui-spec-conformance-review.md`），按决定落地 8 条：**D-1** 权限摘要 5 个管理布尔 · **D-2** 名录 `?q=` 搜索 · **D-3** 任务/课题**读**范围放开到全社团（**写**不变）· **D-4** 阻塞任务求助对象 `needs_help` · **D-5** `overdue_days` · **D-7** 成员详情补 `done_tasks`/`overdue_tasks` · **D-15** 首页阻塞原因 · **D-16** 招募链接预填闭环（接口 39→40）。**D-6** 密码口径定稿 **8–32 字节 + 只允许数字/英文/符号** | ✅ **已完成并验证**：**当前基线 471 / 421 / 22 / 契约 30 全绿**（2026-09-16） |
+| **M13 轻舟升级 + 自带后台** | 内置框架升到 **`e072980`**（= 上游 HEAD；`src/` 29 → **36** 个文件，新增 `jwt` / `ratelimit` / `securityheaders` / `websocket` / `httpclient` / `hybrid` / `circuit`）；新增 **`build.ps1 -Target admin`** → `build\admin\admin.exe`（上游 `examples\admin.cj` + 预构建 `admin-web\dist`，**部署机不需要 Node/npm**），数据层复用 `fw_rbac_store.cj` **落到本地 JSON 文件**；新增 `tests/admin-check.ps1` 端到端把关 | ✅ **已完成并验证**：**五套全绿 471 / 421 / 22 / 契约 30 / 后台 29**（2026-09-16）。附带查清上游"业务码在 body 的 `code`、成功响应也可能带 HTTP 404"这一特性（`API-NOTES` 坑 34，**不改内置框架**） |
 
-**接口进度：39 / 39**（认证 5 + 组织与成员 19 + 任务 8 + 课题 6 = 38 个业务接口，另加运维 `/health`）。
+**接口进度：40 / 40**（认证 5 + 组织与成员 20 + 任务 8 + 课题 6 = 39 个业务接口，另加运维 `/health`）。
 另有一个不在接口清单里的公开页面 `GET /join/{token}`（招募链接落地页，无需登录）。
 
 ---
@@ -102,9 +104,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-package.ps1
 
 ```
 server/
-  build.ps1               构建脚本（cjc + stdx + 轻舟同包编译；构建前先校验内置框架的内容清单；工具链自动探测）
+  build.ps1               构建脚本（cjc + stdx + 轻舟同包编译；构建前先校验内置框架的内容清单；工具链自动探测；`-Target admin` 另出轻舟后台）
   build.cmd               build.ps1 的包装（免 -ExecutionPolicy Bypass）
-  third_party/qingzhou/   内置的轻舟框架源码（29 个 .cj + LICENSE；OpenSSL 两个 DLL 不提交，构建时自动找；出处见其 PROVENANCE.md）
+  third_party/qingzhou/   内置的轻舟框架源码（36 个 .cj + examples/admin.cj + admin-web/ 含预构建 dist + LICENSE；OpenSSL 两个 DLL 不提交，构建时自动找；出处见其 PROVENANCE.md）
   src/
     main.cj               入口：serve / init-admin / test + 全部路由注册
     store.cj              6 张表的数据模型 + 内存 Store + 原子落盘 + 查询/排序/课题树辅助
@@ -131,6 +133,8 @@ server/
     tests.cj              单测（club-server.exe test）
   tests/smoke.ps1         冒烟测试（打真实 HTTP）
   tests/tls-check.ps1     TLS 验证（curl + openssl，避开 PS 5.1 自签证书的怪癖）
+  tests/client-contract-check.ps1  前后端契约回归（客户端声明的每条路径/方法，服务端都认得）
+  tests/admin-check.ps1   轻舟自带后台的端到端（JSON 数据层：登录/RBAC/增删/落盘/优雅关闭）
   tests/bench.ps1         容量基准（真实 HTTP；可对旧提交编译的 exe 做前后对比）
 ```
 
@@ -141,21 +145,28 @@ server/
 ## 测试
 
 ```powershell
-# 单测：时间/历法、口令哈希、权限矩阵（含档位规则、N-7「不可作用于同权/更高权者」、N-10 assign 同权）、注册节流（N-6 按 IP + 退避）、落盘往返与坏记录拒绝（含 N-5）、视图/分页、任务分组、课题树与聚合、堆排序边界、令牌回收、两段式落盘契约、轻舟 RBAC 适配层、本机判定（N-14）、登录口令材料（N-16）、审计缓冲（N-17）（398 项）
+# 单测：时间/历法、口令哈希、权限矩阵（含档位规则、N-7「不可作用于同权/更高权者」、N-10 assign 同权）、注册节流（N-6 按 IP + 退避）、落盘往返与坏记录拒绝（含 N-5）、视图/分页、任务分组、课题树与聚合、堆排序边界、令牌回收、两段式落盘契约、轻舟 RBAC 适配层、本机判定（N-14）、登录口令材料（N-16）、审计缓冲（N-17）（471 项）
 .\build\club-server.exe test
 
-# 冒烟测试：真实 HTTP、状态码、错误码、权限边界（含 H-1 同部门接管、N-7 同权重置/降级/禁用、N-10 assign 同权）、幂等、环形校验、删除上提、审计日志、落地页转义与 CSP、注册节流（N-6）、重启持久性、被拒请求不留半改状态与跨部门挂课题（N-15 / N-18）（362 项）
+# 冒烟测试：真实 HTTP、状态码、错误码、权限边界（含 H-1 同部门接管、N-7 同权重置/降级/禁用、N-10 assign 同权）、幂等、环形校验、删除上提、审计日志、落地页转义与 CSP、注册节流（N-6）、重启持久性、被拒请求不留半改状态与跨部门挂课题（N-15 / N-18）、UI 规格对齐（D-1…D-7）（421 项）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1
 
 # TLS：证书 SAN、TLS 1.2/1.3 通过、1.0/1.1 被拒、真证书校验下走一遍登录（22 项）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1
 
-# 容量基准（按需，不属于三套关卡）：单发耗时 + 4 并发墙钟；
+# 前后端契约：客户端声明的每条路径与方法（30 项）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-check.ps1
+
+# 轻舟后台端到端（29 项；先 build.ps1 -Target admin）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\admin-check.ps1
+
+# 容量基准（按需，不属于关卡）：单发耗时 + 4 并发墙钟；
 # 用 -Exe 指向旧提交编译出的 exe，即可做同脚本、同数据形状的前后对比（见文件头注释）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1
 ```
 
-两者互补：单测覆盖纯逻辑（脱离 HTTP），冒烟测试覆盖接口层行为。
+单测覆盖纯逻辑（脱离 HTTP），冒烟测试覆盖接口层行为，契约套件盯"客户端与服务端的口径不漂移"，
+后台套件盯轻舟那份产物（含 JSON 数据层）。
 冒烟测试用独立数据目录 `build\smoke-data`，**不会碰正式数据**；容量基准用 `build\bench-data`，同样独立。
 
 > 容量数据、四项性能改造各自的真实收益（以及**没测出收益**的那两项）见 **`capacity-baseline.md`**。

@@ -3,6 +3,32 @@
 本文件记录 QingZhou（轻舟）各版本的功能变化。格式参考 Keep a Changelog，
 版本号遵循语义化版本（SemVer）。
 
+## [0.5.0] — 2026-09-15
+
+完整后台管理系统案例 + 生产化：标准 JWT、RBAC、数据库持久化、前端工程化、部署工具。
+
+### 新增
+- **标准 JWT**（`jwt.cj`）：RFC 7519 HS256 + base64url + `iat`/`exp` 过期，
+  替换旧的自定 `userId.sig` hex 签名格式，与外部 JWT 生态兼容
+- **统一响应格式**（`api.cj`）：`respondOk`/`respondErr` → `{code, message, data}`
+- **token 鉴权中间件**（`auth.cj`）：`authRequired` + `issueToken`/`verifyToken`
+- **RBAC 中间件**（`rbac.cj`）：`requirePermission(store, method, path, code)`
+- **SPA fallback**（`static.cj`）：`StaticOptions.spaFallback`/`apiPrefix`
+- **多 Router 透传**（`router.cj`）：`Router.passOnNotFound`
+- **后台管理系统示例**（`examples/admin.cj`）：登录 / 用户 / 角色 / 权限 CRUD，
+  基于 CangDB 嵌入式数据库（`store.cj` 的 `RbacStore`）
+- **Vue 3 前端**（`admin-web/`）：登录 / 仪表盘 / 用户管理，SPA + Bearer token
+- **部署脚本**（`deploy-admin.sh`）+ `admin.env`：启停 / 健康检查 / 鉴权优雅关闭
+- **OpenAPI 规范**（`docs/openapi.yaml`）：完整接口描述
+
+### 变更
+- token 从「无过期的 hex 签名」升级为「标准 JWT（默认 2 小时有效，校验过期 / 篡改 / 密钥）」
+- `authRequired` 同时保护 `/api` 与 `/admin` 运维路径
+
+### 已知边界
+- `store.cj` / `rbac.cj` 依赖外部 CangDB（`libcangdb.a`），不在默认编译范围内，
+  需单独链接（见 `build.cmd.txt` 或 admin 编译命令）
+
 ## [0.4.0] — 2026-09-10
 
 库分发：从「源码分发」升级为「库分发」，对齐 Koa 的开发体验。

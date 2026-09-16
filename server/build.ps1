@@ -15,8 +15,15 @@
 #
 # 用法：
 #   .\build.ps1                      校验内置框架 + 编译 + 复制依赖 DLL 到 build\
+#   .\build.ps1 -Target admin        改编译**轻舟后台管理界面**（admin.exe，见下）
 #   .\build.ps1 -NoDll               只编译（本机已装好 DLL 时更快）
 #   .\build.ps1 -SkipFrameworkCheck  跳过内置框架的内容校验（**仅**在有意改动内置框架时用）
+#
+# -Target admin（2026-09-16 新增）编译的是轻舟自带的**后台管理界面**：
+#   源码 = 框架 src（这次保留上游 rbac.cj）＋ third_party\qingzhou\examples\admin.cj
+#        ＋ server\src\fw_rbac_store.cj（**唯一**替换点：把 CangDB 数据层换成 JSON 文件存储）
+#   产物 = build\admin\admin.exe ＋ admin-web\（前端，上游已预构建）＋ admin.env
+#   它是个**独立小程序**，与本项目的 club-server 各编各的（不共享入口、不共享令牌体系）。
 #
 # 换一台机器：cjc 与 stdx 的位置**不再写死**，脚本自动探测（显式传参 > 环境变量 > 常见位置 > PATH）：
 #   .\build.ps1 -CangjieHome <SDK目录> -Stdx <...\windows_x86_64_cjnative\static\stdx>
@@ -28,6 +35,8 @@ param(
     [string]$Stdx        = "",
     [string]$Vendor      = "",
     [string]$OpenSslDir  = "",
+    [ValidateSet('server', 'admin')]
+    [string]$Target      = "server",
     [switch]$NoDll,
     [switch]$SkipFrameworkCheck
 )
@@ -217,16 +226,34 @@ $libs = (Get-ChildItem "$Stdx\libstdx*.a" | ForEach-Object { "-l:$($_.Name)" })
 # 所以这里要排除框架原版，否则 RbacStore 会重名冲突。拿到可用的 CangDB 后删掉那两个适配文件、
 # 把 'store.cj' / 'rbac.cj' 从这个列表里去掉即可回到上游实现。
 # 注意：内置目录里**保留**这两张上游文件（便于对照），被排除的只是"不参与编译"。
-$fw = Get-ChildItem "$VendorSrc\*.cj" |
-      Where-Object { $_.Name -notin @('main.cj', 'unit_tests.cj', 'manual_runner.cj', 'store.cj', 'rbac.cj') } |
-      ForEach-Object { $_.FullName }
-
-$app = Get-ChildItem "$src\*.cj" | ForEach-Object { $_.FullName }
-if ($app.Count -eq 0) { throw "没有找到服务端源码：$src" }
-
-$exe = Join-Path $out "club-server.exe"
-Write-Host "[build] 框架：轻舟 $upShort（内置 third_party\qingzhou，$($fw.Count) 个文件参与编译）"
-Write-Host "[build] 服务端 $($app.Count) 个文件 -> $exe"
+# 两份构建的差别只有"哪些源文件 + 产物落到哪"：
+#   server（默认）：框架排除 store.cj/rbac.cj，用我们的两份适配（fw_rbac_store + fw_rbac，
+#                  后者是"我们错误格式"的 requirePermission），入口是我们的 main.cj
+#   admin（新增） ：框架排除 store.cj（CangDB）但**保留** rbac.cj（后台示例用的是框架自带的
+#                  响应格式），入口是上游的 examples\admin.cj，只借我们的 fw_rbac_store.cj 当数据层
+if ($Target -eq "admin") {
+    $fw = Get-ChildItem "$VendorSrc\*.cj" |
+          Where-Object { $_.Name -notin @('main.cj', 'unit_tests.cj', 'manual_runner.cj', 'store.cj') } |
+          ForEach-Object { $_.FullName }
+    $adminMain = Join-Path $Vendor "examples\admin.cj"
+    if (-not (Test-Path $adminMain)) { throw "找不到轻舟后台示例：$adminMain（内置快照里应有 examples\admin.cj）" }
+    $app = @((Join-Path $src "fw_rbac_store.cj"), $adminMain)
+    $outDir = Join-Path $out "admin"
+    $exe = Join-Path $outDir "admin.exe"
+    if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
+    Write-Host "[build] 框架：轻舟 $upShort（内置 third_party\qingzhou，$($fw.Count) 个文件参与编译）"
+    Write-Host "[build] 后台：examples\admin.cj + 我们的 fw_rbac_store.cj（JSON 数据层替代 CangDB） -> $exe"
+} else {
+    $fw = Get-ChildItem "$VendorSrc\*.cj" |
+          Where-Object { $_.Name -notin @('main.cj', 'unit_tests.cj', 'manual_runner.cj', 'store.cj', 'rbac.cj') } |
+          ForEach-Object { $_.FullName }
+    $app = Get-ChildItem "$src\*.cj" | ForEach-Object { $_.FullName }
+    if ($app.Count -eq 0) { throw "没有找到服务端源码：$src" }
+    $outDir = $out
+    $exe = Join-Path $out "club-server.exe"
+    Write-Host "[build] 框架：轻舟 $upShort（内置 third_party\qingzhou，$($fw.Count) 个文件参与编译）"
+    Write-Host "[build] 服务端 $($app.Count) 个文件 -> $exe"
+}
 
 # 目标 exe 被上一个进程占着时，ld.lld 只丢一句 "failed to write the output file: Permission denied"，
 # 看上去像 SDK/权限问题，实际是服务端没停干净。先自查一遍，给能直接照做的提示。
@@ -235,16 +262,65 @@ if (Test-Path $exe) {
         $fs = [IO.File]::Open($exe, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None)
         $fs.Close()
     } catch {
+        $procName = if ($Target -eq "admin") { "admin" } else { "club-server" }
         throw ("编译输出被占用：$exe" + [Environment]::NewLine +
-               "  原因：还有 club-server.exe 在运行，Windows 不允许覆盖正在执行的 exe。" + [Environment]::NewLine +
-               "  处置：Get-Process club-server -ErrorAction SilentlyContinue | Stop-Process -Force" + [Environment]::NewLine +
-               "        然后重新执行 .\build.ps1")
+               "  原因：还有 $procName.exe 在运行，Windows 不允许覆盖正在执行的 exe。" + [Environment]::NewLine +
+               "  处置：Get-Process $procName -ErrorAction SilentlyContinue | Stop-Process -Force" + [Environment]::NewLine +
+               "        然后重新执行 .\build.ps1" + $(if ($Target -eq "admin") { " -Target admin" } else { "" }))
     }
 }
 
 & $Cjc @fw @app --import-path $Stdx -L $Stdx @libs -lcrypt32 -Woff unused -o $exe
 if ($LASTEXITCODE -ne 0) { throw "编译失败 (exit $LASTEXITCODE)" }
 Write-Host "[build] 编译通过"
+
+# ── admin 额外要带的东西：前端产物 + 配置模板 ───────────────────────────
+# 上游 examples\admin.cj 是按 cwd 找资源和配置的（serveWithOpts("./admin-web/dist") /
+# loadConfigFile("./admin.env")），所以产物目录必须是**自包含**的：exe + admin-web + admin.env。
+# 这与本项目"cwd 必须是 exe 所在目录"的既有约定一致（README 六条坑之一）。
+if ($Target -eq "admin") {
+    $webSrc = Join-Path $Vendor "admin-web"
+    $webDst = Join-Path $outDir "admin-web"
+    if (-not (Test-Path (Join-Path $webSrc "dist\index.html"))) {
+        throw "内置的 admin-web\dist 不存在或不完整：$webSrc\dist（上游快照里应有预构建产物）"
+    }
+    if (Test-Path $webDst) { Remove-Item $webDst -Recurse -Force }
+    Copy-Item $webSrc $webDst -Recurse
+    Write-Host "[build] 前端已就位：admin-web\dist（上游预构建，无需 npm）"
+
+    # admin.env 若已存在就**不动**（用户可能改过端口/密钥）；否则从内置模板生成一份"本地 JSON 存储"版
+    $envFile = Join-Path $outDir "admin.env"
+    if (-not (Test-Path $envFile)) {
+        $port = "3000"
+        $db = "admin-data/rbac.json"
+        $ttl = "7200"
+        $secret = -join ((1..64) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+        $lines = @(
+            "# 轻舟后台管理界面 · 本地配置（由 server\build.ps1 -Target admin 首次生成，可自行修改）",
+            "#",
+            "# 与上游 admin.env 的唯一区别：**数据层指向 JSON 文件**，不走 CangDB。",
+            "# 数据层实现 = server\src\fw_rbac_store.cj（内存 Store + 写时原子落盘，先写 .tmp 再 rename）。",
+            "",
+            "port=$port",
+            "",
+            "# 数据文件（相对 exe 所在目录；首次启动自动建库 + 灌种子账号 admin/admin123、user/user123）",
+            "db=$db",
+            "",
+            "# JWT 签名密钥：本文件生成时已随机 64 位十六进制。**生产环境请换成自己的强随机值**",
+            "secret=$secret",
+            "",
+            "# token 有效期（秒）",
+            "ttl=$ttl",
+            "",
+            "admin_user=admin",
+            "admin_pass=admin123"
+        )
+        [System.IO.File]::WriteAllLines($envFile, $lines, [System.Text.UTF8Encoding]::new($false))
+        Write-Host "[build] 已生成 build\admin\admin.env（JSON 数据层；secret 已随机）"
+    } else {
+        Write-Host "[build] 保留已有的 build\admin\admin.env（未覆盖）"
+    }
+}
 
 # ── OpenSSL 3 的两个 DLL 从哪来 ─────────────────────────────────────────
 # 它们是**运行时 dlopen** 用的（不在 exe 导入表里），6.5 MB 二进制，**不随仓库提交**。
@@ -325,7 +401,7 @@ if (-not $NoDll) {
     foreach ($x in $dlls) {
         $p = Join-Path $x.d $x.n
         if (-not (Test-Path $p)) { throw "缺少依赖 DLL：$p" }
-        Copy-Item $p $out -Force
+        Copy-Item $p $outDir -Force
     }
-    Write-Host "[build] 已复制 4 个依赖 DLL 到 build\"
+    Write-Host "[build] 已复制 4 个依赖 DLL 到 $outDir\"
 }

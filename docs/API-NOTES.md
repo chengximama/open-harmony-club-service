@@ -1,6 +1,6 @@
 # 服务端 API 事实清单（探针实测）
 
-> 环境：cjc **1.1.3** (cjnative, x86_64-w64-mingw32) + stdx **1.1.3.1** + 轻舟 **`3ea387e`**（DEF-1 已由上游 `141a735` 修复，本地补丁已撤；上游 `src/store.cj` / `src/rbac.cj` 依赖 CangDB，本项目改用 `fw_rbac_store.cj` / `fw_rbac.cj` 适配并在 `build.ps1` 中排除原版）
+> 环境：cjc **1.1.3** (cjnative, x86_64-w64-mingw32) + stdx **1.1.3.1** + 轻舟 **`e072980`**（= 上游 HEAD；DEF-1 已由上游 `141a735` 修复，本地补丁已撤；上游 `src/store.cj` / `src/rbac.cj` 依赖 CangDB，本项目改用 `fw_rbac_store.cj` / `fw_rbac.cj` 适配并在 `build.ps1` 中排除原版。本次升级同时带进了轻舟自带的**后台管理界面**：`build.ps1 -Target admin`，见 `third_party/qingzhou/PROVENANCE.md`）
 > 方法：`.probe/` 下写了 8 轮最小探针逐个编译验证，**只采用实测通过的签名**。
 > 这份清单是为了让后续开发不用重复试错——写代码前先查这里。
 
@@ -145,8 +145,10 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 | --- | --- | --- |
 | 11 | 无 BOM 的 UTF-8 `.ps1` 按 **ANSI** 解析 | 中文注释会导致 `Missing closing '}'` 之类的**假语法错**。脚本必须存为 **UTF-8 with BOM** |
 | 12 | 执行策略默认禁止跑脚本 | `powershell -NoProfile -ExecutionPolicy Bypass -File xxx.ps1` |
-| 13 | 非 2xx 响应读不到 body | `Invoke-WebRequest` 已把流读走，`GetResponseStream()` 拿到空串。用 `$_.ErrorDetails.Message` |
+| 13 | 非 2xx 响应读不到 body | `Invoke-WebRequest` 已把流读走，`GetResponseStream()` 拿到空串。用 `$_.ErrorDetails.Message`。**2026-09-16 复现并补充**：写后台端到端脚本时又踩了一次（`$_.Exception.Response.GetResponseStream()` 读出来恒为空串，把"业务码 0"误判成"没响应"）。要**同时**拿 HTTP 状态码和 body 时，直接绕开 `Invoke-WebRequest`：`[System.Net.WebRequest]::Create($url)`（记得 `$req.Proxy = $null`，本机有 `127.0.0.1:7897` 代理），成功/失败都走同一条读流路径 —— 见 `server/tests/admin-check.ps1` 的 `Hit` |
 | 33 | **单测的 cwd 必须是 `server/`**（2026-09-16 踩到） | `tests.cj` 里的数据目录写的是 `build/test-data*`，所以要在 `server/` 下执行 `.\build\club-server.exe test`（README 的口径）。若在 `server/build/` 里执行，数据会被写到嵌套的 `build/build/test-data*`，**并且在残留坏数据后第二次运行直接崩在 `testStore`**。这个坑已顺手修掉（`testStore` 现在会先清派生子目录，连跑三次稳定通过），但**cwd 仍必须是 `server/`** |
+| 34 | **轻舟的成功响应也可能带 HTTP 404**（2026-09-16，**上游本身的行为，不是我们的 bug**） | 上游统一响应壳把业务码放在 **body 的 `code` 字段**（`0`=成功），HTTP 状态不承载业务语义；而 `passOnNotFound = true` 的路由在 miss 时**先把 `ctx.status` 置成 404**（`router.cj` 的 `lookup()` 会写 ctx），后续真正匹配上的处理器用 `respondOk/respondErr` 时**只写 body、不重设 status**，于是 404 被带到最终响应上：`GET /api/me` 带合法 token → HTTP 404 但 body 是 `{"code":0,...}`。只有**显式设过 status** 的路由才正常（`/health` 就是 200，静态资源也是 200）。实测：`admin-web` 前端是 `fetch(...).json()` 后只看 `code`，所以**界面完全正常**——这也是"上游这套后台确定可用"的原因。**判定归属**：把内置框架的 `src/api.cj` / `src/router.cj` / `src/auth.cj` 与上游 `e072980` 逐字节比对 → SHA-256 全同，所以是上游设计使然，我们没有改框架去"修"它。**写测试/写对接时必须断言 body.code，不要断言 HTTP 状态码**（`server/tests/admin-check.ps1` 就是这么写的）。要改成"状态码也正确"有两条路：在我们的 `server/src/` 里另写入口并让每个处理器显式 `ctx.status(...)`（框架保持原样），或改内置框架（要额外动清单、违反"框架不被本地修改"的约定）——目前**都不做**，只记录 |
+| 35 | **仓颉 `println` 在 stdout 被重定向到文件时是块缓冲的**（2026-09-16 诊断长驻服务时踩到） | 给 `admin.exe` 里临时加的调试 `println`，用 `Start-Process -RedirectStandardOutput 文件` 之后**一直看不到输出**，容易误判成"这段代码没执行"。同一进程**优雅退出**后日志里那句话才出现（缓冲在进程结束时 flush），而 `Stop-Process -Force` 强杀的进程输出直接丢。**处置**：诊断长驻服务时别依赖 `println` + 文件重定向，改用 ①把诊断信息塞进 HTTP 响应体、②写 stderr、③走优雅关闭路径让缓冲区落盘。本轮最终靠"把事实写进探针服务的响应 JSON"一次定位到根因 |
 | 14 | `Start-Process -PassThru` 拿不到 `ExitCode` | 用"进程自行退出 + 日志收尾行"作为优雅关闭的证据 |
 | 15 | `$args` 是自动变量 | 函数里不要用 `$args` 做局部变量名 |
 | 16 | **`-Body` 传字符串会按 ANSI 发送** | 中文请求体到达服务端就是乱码（表现为"改名字成功了但名字没变"）。必须 `[System.Text.Encoding]::UTF8.GetBytes($json)` + `Content-Type: application/json; charset=utf-8` |

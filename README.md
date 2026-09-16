@@ -26,7 +26,8 @@
 | **服务端代码评审修复（第一轮）** | 按 `docs/code-review.md` 修完 3 个 P0 权限漏洞 + 8 个 P1 + 13 个 P2，并补上会真正失败的回归测试 | ✅ 完成并验证 |
 | **服务端代码评审（第二轮）** | `docs/code-review.md` 的 9 条新发现：文档类 N-2 / N-3 / N-4 · **N-1**（落地页 HTML 转义）+ **N-9**（CSP）· **N-7**（不可作用于同权/更高权的人，已从"重置密码"推广到改角色 / 禁用 / 改名）· **N-5**（`idem` 补校验）· **N-6**（注册节流改**按客户端 IP + 递增退避**，因此无需新增接口）—— **全部处理完毕**（N-8 按约定不改），每条都补了会因回退而变红的断言 | ✅ 完成并验证 |
 | **服务端代码评审（第三轮）** | `docs/code-review.md` 第三轮复验：第二轮 9 条**全部确认修复**；新发现 4 条（**N-10** `assign`/`assign-batch` 漏在同权保护之外 · N-11 文档限定词 · N-12 裸 IPv6 退化 · N-13 分布式尝试）—— **已全部处理**。N-10 的两个面（降级同权者、用 `assign` 推翻会长对同权者的移出决定）都已堵住 | ✅ 完成并验证 |
-| **轻舟升级与 CangDB 适配** | 升级轻舟到 **`3ea387e`**（上游 `141a735` 修好 DEF-1，本地补丁撤销）；新版 `store.cj` / `rbac.cj` 依赖的 **CangDB 上游仓只有 README、没有代码** → 用 `server/src/fw_rbac_store.cj`（文件存储的数据层）+ `fw_rbac.cj`（`requirePermission` 中间件）替代，`build.ps1` 排除框架原版 | ✅ 完成并验证（单测 322 / 冒烟 347 / TLS 22） |
+| **轻舟升级与 CangDB 适配** | 升级轻舟到 **`e072980`**（= 上游 HEAD；上游 `141a735` 修好 DEF-1，本地补丁撤销）；新版 `store.cj` / `rbac.cj` 依赖的 **CangDB 上游仓只有 README、没有代码** → 用 `server/src/fw_rbac_store.cj`（文件存储的数据层）+ `fw_rbac.cj`（`requirePermission` 中间件）替代，`build.ps1` 排除框架原版 | ✅ 完成并验证（单测 471 / 冒烟 421 / TLS 22 / 契约 30） |
+| **轻舟后台管理界面（新增）** | 随 `e072980` 快照带进上游的**后台管理界面**（`examples/admin.cj` + 预构建的 `admin-web/dist`），并新增 `build.ps1 -Target admin` → `build\admin\admin.exe`（自包含：exe + 前端 + `admin.env`）。它的数据层同样**路由到本地 JSON 文件**（复用 `fw_rbac_store.cj`，沧海 CangDB 未公开）：内存 `Store` + 写时原子落盘。端到端验证 `server/tests/admin-check.ps1` | ✅ 完成并验证（后台端到端 **29 / 0**） |
 | **服务端容量基准与四项性能改造** | 按"接近千人"的容量问题做了可复现基准（`server/tests/bench.ps1`，真实 HTTP + 旧版本 worktree 对比），并落地四项改造：① 列表排序插入排序→**堆排序** ② **PBKDF2 移出全局锁**（三阶段加锁）③ 过期**令牌回收** ④ 整库落盘移出锁（请求链末端刷盘）。实测只有 ② 有量级收益（**4 并发登录 1574 → 867 ms**），①④ 在千人档落在噪声内、价值是最坏情况下界 —— 见 `docs/capacity-baseline.md` | ✅ 完成并验证（单测 349 / 冒烟 347 / TLS 22） |
 | **服务端第四轮复验修复** | 按 `docs/code-review.md` **第四轮**的 6 条新发现修：**N-14**（本机判定用子串匹配 `::1` → 远程 IPv6 可远程关停服务，改成按地址相等比白名单）· **N-15**（4 个 handler 被 4xx 拒绝却留下半改状态并落盘，改成两阶段赋值）· **N-16**（登录时序侧信道可枚举手机号，改成两条路径等价 PBKDF2）· **N-17**（审计 IO 移出锁）· **N-18**（任务可挂任意部门课题，补部门一致性）· **N-19**（招募 token 32 位 → 32 字节） | ✅ 完成并验证（单测 387 / 冒烟 360 / TLS 22） |
 | **按 UI 设计规格对齐服务端** | 拿《鸿蒙俱乐部-全场景UI设计规格》13 页逐条对服务端，8 条按设计稿落地（含队友复验补的 2 条）：**D-1** 权限摘要补 5 个管理布尔（由 `can()` 推导）· **D-2** 名录 `?q=` 搜索姓名或部门 · **D-3** 任务/课题**读**范围放开到全社团（写不变）· **D-4** 阻塞任务的**求助对象** `needs_help` + 部长首页带出本部门阻塞项 · **D-5** 任务**逾期天数** `overdue_days` · **D-7** 成员详情补 `done_tasks` / `overdue_tasks`。另**定稿密码口径**（D-6：8–32 字节 + 只允许数字/英文/符号，有意偏离设计稿的 6 位下限）；其余按决定保留原版本。逐条证据见 `docs/ui-spec-conformance-review.md` | ✅ 完成并验证（单测 471 / 冒烟 421 / TLS 22 / 契约 30） |
@@ -48,6 +49,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-chec
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1     # 容量基准（按需，见 docs/capacity-baseline.md）
 ```
 
+**后台管理界面另有一套端到端**（改了 `build.ps1 -Target admin` / `fw_rbac_store.cj` / 轻舟快照后要跑）：
+
+```powershell
+cd server
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target admin
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\admin-check.ps1   # 后台端到端 29 项
+```
+
 ---
 
 ## 目录结构
@@ -60,10 +69,11 @@ server/                      服务端（仓颉）
   build.ps1                  编译（cjc + stdx + 轻舟同包编译；工具链自动探测）
   build-package.ps1          生成部署包 dist\club-server\（exe + 4 DLL + 证书 + 说明）
   src/                       23 个源文件，按职责分层（见下）
-  tests/                     冒烟测试、TLS 验证与容量基准脚本
-  build/                     构建输出（每次编译重建，不入库）
+  tests/                     冒烟、TLS、前后端契约、容量基准、后台端到端脚本
+  build/                     构建输出（每次编译重建，不入库）；build\admin\ 是轻舟后台那份
   dist/                      部署包（含私钥，不入库）
   certs/                     自签证书与私钥（不入库）
+  third_party/qingzhou/      内置的轻舟框架快照（出处与维护见其中的 PROVENANCE.md）
 entry/  AppScope/  hvigor/   鸿蒙客户端工程（ArkTS；DevEco 要求这些在根目录）
   entry/src/main/ets/pages/           页面：Index / MemberList / MemberDetail / PendingApproval / Manage
   entry/src/main/ets/entryability/    EntryAbility.ets（UIAbility，loadContent('pages/Index')）
@@ -108,6 +118,32 @@ cd build
 > **`cwd` 必须是 exe 所在目录**——数据目录与证书都按相对路径读。
 > 部署包里的 `start-https.cmd` 已经做了 `cd /d "%~dp0"`。
 
+### 顺手起一个轻舟自带的后台管理界面（可选）
+
+轻舟快照里带了一套**现成的后台管理界面**（Vue 前端 + `examples/admin.cj`），前端产物已随仓库提交，
+**部署机不需要 Node/npm**：
+
+```powershell
+cd server
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target admin   # -> build\admin\admin.exe
+cd build\admin
+.\admin.exe                                                                     # 浏览器打开 http://127.0.0.1:3000/
+```
+
+- 种子账号 `admin / admin123`（角色 1）、`user / user123`（角色 2）；端口/密钥/令牌时长在
+  `build\admin\admin.env`（首次构建生成，随机 64 位 `secret`，之后不覆盖）。
+  ⚠ 这两条是**轻舟 RBAC 那套口令**（存在 `rbac.json`），与 `club-server` 的会长/成员账号
+  （PBKDF2，存在 `data\db.json`）**不是一套**，两边不能互用。
+- **数据层是本地 JSON 文件**（`build\admin\admin-data\rbac.json`）：沧海 CangDB 尚未公开，
+  所以后台也复用我们的 `server/src/fw_rbac_store.cj` —— 内存 `Store` + 写时原子落盘
+  （先写 `.tmp` 再 `rename`），**响应 200/`code:0` ⇒ 已落盘**。
+- 验证：`tests\admin-check.ps1`（**29 / 0**）覆盖静态托管、JWT 登录、鉴权/RBAC、
+  用户增删写路径、JSON 落盘、优雅关闭。
+- **一个上游特性**：上游把业务码放在 **body 的 `code`**（0=成功），HTTP 状态不承载业务语义；
+  且 `passOnNotFound` 路由 miss 时会先把 `ctx.status` 置成 404，后续处理器不再重设 ——
+  所以**成功响应也可能带 404**（前端只看 `code`，界面正常）。这是上游 `e072980` 本身的行为，
+  我们**没有改框架**去修它；细节与归属证据见 `docs/API-NOTES.md`「坑 34」。
+
 ---
 
 ## 文档索引（全部在 `docs/`）
@@ -117,7 +153,7 @@ cd build
 | **`docs/HANDOFF.md`** | **交接说明**：项目现状、已冻结设计、验证过的技术事实、未决事项 | **接手项目先看这个** |
 | `docs/server-guide.md` | 服务端指南：构建/运行/测试、进度、两条实现纪律 | 动服务端代码前看 |
 | **`docs/local-deploy.md`** | **本机部署一页上手**：前置体检 · 五步跑起来（编译/初始化/起服务/验证/停止）· HTTPS · 部署包 · 让客户端连上 · 数据与备份 · 坑表 | **第一次在本机跑服务端看这个** |
-| **`docs/API-NOTES.md`** | 编译期 API 事实清单 + **30 条踩坑记录** | 加新函数前先查（避让框架同名符号） |
+| **`docs/API-NOTES.md`** | 编译期 API 事实清单 + **35 条踩坑记录**（含"轻舟成功响应也可能带 HTTP 404"「坑 34」） | 加新函数前先查（避让框架同名符号） |
 | `docs/api-design.md` | **接口设计的唯一权威**：40 个接口逐条定义 | 写服务端时全程对照 |
 | **`docs/code-review.md`** | **代码评审报告（三轮）**：第一轮 24 条（3 P0 + 8 P1 + 13 P2）、第二轮 9 条、第三轮 4 条 —— **全部修复并独立复验**，附回退实测证据 | 想了解"哪些坑已经踩过" |
 | `docs/v1-scope.md` | 范围基准：11 页面、6 张表、19 条业务规则、权限矩阵 | 想知道"这个要不要做" |
@@ -138,7 +174,7 @@ cd build
 | --- | --- |
 | 编译器 | **1.1.3** (cjnative, x86_64-w64-mingw32)。本机装在 `D:\Cangjie\bin\cjc.exe`，但 `build.ps1` **自动探测**（显式传参 > 常见位置 > `CANGJIE_HOME` > `PATH`，且**按版本优先 1.1.x**），换机器不用改脚本 |
 | stdx | **1.1.3.1**。注意 `stdx` 与编译器是**两个包**，要分别安装；本机在 `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` |
-| 轻舟框架 | **已内置在本仓库**：`server/third_party/qingzhou`（上游 commit 记在其中的 `UPSTREAM_COMMIT`，内容由 `MANIFEST.sha256` 逐字节校验、`build.ps1` 每次构建都验）。2026-09-15 迁移 —— 原先指仓库外 `E:\cangjie\qingzhou`，换台机器就编不了、或静默编到别的版本（`docs/code-review.md` N-20）。DEF-1 已由上游 `141a735` 修复，我们的本地补丁已撤 |
+| 轻舟框架 | **已内置在本仓库**：`server/third_party/qingzhou`（上游 commit **`e072980`** = 上游 HEAD，记在其中的 `UPSTREAM_COMMIT`；内容由 `MANIFEST.sha256` 逐字节校验、`build.ps1` 每次构建都验）。2026-09-15 迁移 —— 原先指仓库外 `E:\cangjie\qingzhou`，换台机器就编不了、或静默编到别的版本（`docs/code-review.md` N-20）。快照里同时带 `examples/admin.cj` + 预构建的 `admin-web/`（轻舟后台）。DEF-1 已由上游 `141a735` 修复，我们的本地补丁已撤 |
 | OpenSSL 3 | **不随仓库提交**（6.5 MB 二进制）：`build.ps1` 按 **`third_party/qingzhou/deps/openssl` → `-OpenSslDir` → Git for Windows 的 `mingw64\bin`** 顺序找，并打印实际来源；详见 `server/third_party/qingzhou/deps/openssl/README.md` |
 | 仓颉运行时 | `D:\Cangjie\runtime\lib\windows_x86_64_cjnative` |
 | openssl CLI | `D:\Program Files\Git\usr\bin\openssl.exe`（生成证书、TLS 验证用） |
@@ -149,11 +185,11 @@ cd build
 1. **4 个 DLL 必须与 exe 同目录**：`libcangjie-runtime.dll`、`libboundscheck.dll`、`libcrypto-3-x64.dll`、`libssl-3-x64.dll`。缺 OpenSSL 两个时**编译期无警告**，运行时才报错。
 2. **`cwd` 必须是 exe 所在目录**，否则配置与证书读不到，会出现"假失败 + 假通过"。
 3. **同包编译会撞名字**：我们与轻舟同一个 `package qingzhou`，框架已占用 `pad2`、`verifyPassword`、`randomHex`、`bodyStr` 等。加顶层函数前先查 `docs/API-NOTES.md`。
-4. **轻舟新版的 `store.cj` / `rbac.cj` 依赖外部 CangDB**（`gitcode.com/BIT-FSSLab/CangDB` 上游只有 README、没有代码）。我们用适配版代替：`server/src/fw_rbac_store.cj`（数据层换成文件存储）+ `fw_rbac.cj`（响应用我们的错误格式），`build.ps1` 里排除框架原版。**升级轻舟后必须重跑三套测试。**
+4. **轻舟新版的 `store.cj` / `rbac.cj` 依赖外部 CangDB**（`gitcode.com/BIT-FSSLab/CangDB` 上游只有 README、没有代码）。我们用适配版代替：`server/src/fw_rbac_store.cj`（数据层换成文件存储）+ `fw_rbac.cj`（响应用我们的错误格式），`build.ps1` 里排除框架原版；**轻舟自带的后台（`-Target admin`）也复用同一个 `fw_rbac_store.cj` 把数据落到 JSON 文件**。**升级轻舟后必须重跑全部测试（单测/冒烟/TLS/契约/后台端到端）。**
 5. **证书必须带 SAN**：现代客户端完全忽略 CN，只看 `subjectAltName`。按真实公网 IP 重签后再部署。
 6. **私钥绝不入库**：`server/certs` 与 `server/dist` 都已在 `.gitignore`；用 `git check-ignore -v <路径>` 自检。
 
-> 完整的 30 条踩坑记录（含 PowerShell 5.1 的七个坑、cjenv 切换 SDK 打断构建等）见 **`docs/API-NOTES.md` 第 3 节**。
+> 完整的 35 条踩坑记录（含 PowerShell 5.1 的七个坑、cjenv 切换 SDK 打断构建等）见 **`docs/API-NOTES.md` 第 3 节**。
 
 ---
 
@@ -162,12 +198,13 @@ cd build
 | # | 事项 | 卡住什么 |
 | --- | --- | --- |
 | 1 | **服务器步骤 0 未跑**：架构是否 x64、公网 IP、可用端口、防火墙 + 云安全组 | 卡 M5 的公网部署验证 |
-| 2 | **CangDB 上游无代码**（老师给的仓库只有 README）：轻舟新版的 RBAC 数据层用不了 | 已用文件存储的适配版顶上（`fw_rbac_store.cj`）；拿到可用 CangDB 后替换回上游实现 |
+| 2 | **CangDB 上游无代码**（老师给的仓库只有 README）：轻舟新版的 RBAC 数据层用不了 | 已用文件存储的适配版顶上（`fw_rbac_store.cj`）：**我们的服务端**和**轻舟自带的后台**都走它 —— 后者的数据落在 `build\admin\admin-data\rbac.json`；拿到可用 CangDB 后替换回上游实现 |
 | 3 | 给轻舟的需求文档已更正（去掉 Linux 前提） | 需补发一份更正 |
 | 4 | 忘记密码：v1 由会长重置，不做自助找回 | 已定 |
 | 5 | 服务器可用期限、备份交接人（至少两人） | 需向老师确认 |
 | 6 | 鸿蒙侧载分发（AGC 内部测试轨道、签名证书） | 流程耗时可能超过开发本身，**建议尽早启动** |
 | 7 | **客户端三项待办**：① **签名未配**（产出 `entry-default-unsigned.hap`，装不上设备）② 只做了 **3 / 11** 页，缺**首页「我的任务」** ③ 页面全是假数据、**未接任何接口**。另：如需换 `bundleName`（现为 `com.club.manager`）趁现在改 | 见 `docs/client-build.md` §3 |
+| 8 | **轻舟后台的成功响应也可能带 HTTP 404**（上游统一响应壳 + `passOnNotFound`，见 `API-NOTES` 坑 34） | 前端只看 body 的 `code`，界面不受影响；若以后要让 curl/网关也能按状态码判定，需要在我们的入口里显式 `ctx.status(...)`（**不改内置框架**） |
 
 ---
 

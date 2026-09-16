@@ -56,7 +56,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 [build] 工具链：cjc=D:\Cangjie
 [build]          stdx=E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx
 [build]          cjc 版本：Cangjie Compiler: 1.1.3 (cjnative)
-[build] 框架：轻舟 3ea387e（内置 third_party\qingzhou，24 个文件参与编译）
+[build] 框架：轻舟 e072980（内置 third_party\qingzhou，31 个文件参与编译）
 [build] 服务端 23 个文件 -> ...\server\build\club-server.exe
 [build] 编译通过
 [build] OpenSSL DLL 来源：D:\Program Files\Git\mingw64\bin
@@ -197,6 +197,32 @@ App 里对应「**待分配审批**」页（会长/副会长可见），两步�
 
 > ⚠️ **注册口令试错是按客户端 IP 节流的**（15 分钟内错 10 次 → 锁 5 分钟起、逐次翻倍，
 > 见 `API-NOTES.md` N-6）。它是**内存态**：被自己锁住时，**重启服务即可清零**。
+
+---
+
+### 2.7 可选：顺手起一个轻舟自带的后台管理界面
+
+轻舟快照里带了一套**现成的后台**（Vue 前端 + `examples\admin.cj`），前端产物已随仓库提交，
+**不需要 Node/npm**；它的数据层也被路由到**本地 JSON 文件**（沧海 CangDB 尚未公开）：
+
+```powershell
+cd E:\harmonyOS\cangjie_web\server
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target admin   # -> build\admin\admin.exe
+cd build\admin
+.\admin.exe                                                                     # http://127.0.0.1:3000/
+# 另开一个窗口跑端到端验证（29 项）：
+powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\admin-check.ps1
+```
+
+- 种子账号 `admin / admin123`（角色 1）、`user / user123`（角色 2）；
+  端口 / 密钥 / 令牌时长在 `admin.env`（首次构建生成随机 `secret`，之后不覆盖）。
+- 数据落在 `build\admin\admin-data\rbac.json`（原子写：先 `.tmp` 再 rename，无残留）。
+- **`cwd` 必须是 `build\admin`**（上游按相对路径读 `admin.env` 与 `admin-web\dist`）。
+- ⚠️ 上游把业务码放在 **body 的 `code`**（0=成功），HTTP 状态不承载业务语义；
+  `passOnNotFound` 路由 miss 时会污染 `ctx.status` → **成功响应也可能带 404**。
+  前端只看 `code`，界面一切正常；用 curl 看时请读 body。详见 `API-NOTES.md`「坑 34」。
+- 这套后台与我们的 `club-server` **互不影响**（不同端口、不同数据文件、不同 exe）。
+
 ## 3. HTTPS（手机端正式使用要走这条）
 
 自签证书**必须带 SAN**（现代客户端完全忽略 CN，只看 `subjectAltName`）：

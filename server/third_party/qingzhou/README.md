@@ -19,6 +19,12 @@
 - **中间件套件** — bodyParser / requestId / logger / timeout / CORS / cookies 全选项
 - **安全** — 密码哈希（加盐迭代）+ 签名 cookie（HMAC-SHA256）+ 服务端 session
 - **HTTPS/TLS** — `serveTls` / `listenTls` 一行启用 TLSv1.3，证书链 + 私钥 PEM 直传
+- **认证 / 授权** — 标准 JWT（HS256 + exp 过期）+ RBAC（用户→角色→权限）+ token 鉴权中间件
+- **前后端分离** — SPA fallback + 统一响应格式 `{code, message, data}` + CORS
+- **生产加固** — 请求限流（固定窗口 + 429）+ 安全响应头（nosniff/DENY/CSP）+ 熔断器
+- **WebSocket** — `wsHandler` / `upgradeWebSocket` 双向长连接（HTTP Upgrade）
+- **混合认证** — JWT + session 双凭证（`resolveIdentity` / `requireSession`）
+- **出站 HTTP** — `httpGetText` / `httpGetJson` / `httpPostJson` 薄封装（基于 stdx Client）
 - **进阶** — gzip 压缩 / multipart 上传 / 配置加载 / 优雅关闭 / 性能基准
 
 ## 快速上手（5 分钟）
@@ -112,21 +118,35 @@ qingzhou/
 │   ├── multipart.cj     # multipart/form-data 解析
 │   ├── config.cj        # 配置容器 + key=value 加载
 │   ├── jsonx.cj         # JSON 序列化 + 安全访问器
+│   ├── jwt.cj           # 标准 JWT（HS256 + base64url + exp 过期）
+│   ├── api.cj           # 统一响应壳 respondOk/respondErr
+│   ├── auth.cj          # token 鉴权中间件（authRequired）
+│   ├── ratelimit.cj     # 请求限流中间件（固定窗口 429）
+│   ├── securityheaders.cj # 安全响应头中间件（nosniff/DENY/CSP）
+│   ├── circuit.cj       # 熔断器（closed/open/half-open 状态机）
+│   ├── websocket.cj     # WebSocket 支持（upgradeWebSocket/wsHandler）
+│   ├── hybrid.cj        # session + JWT 混合认证
+│   ├── httpclient.cj    # 出站 HTTP 调用薄封装（httpGetText/Json/PostJson）
 │   ├── security.cj      # 密码哈希 + 签名 cookie
 │   ├── session.cj       # 服务端 session
+│   ├── store.cj         # RbacStore 数据访问层（依赖外部 CangDB）
+│   ├── rbac.cj          # requirePermission RBAC 中间件（依赖 CangDB）
 │   ├── util.cj          # 内置解析器
 │   ├── middleware.cj    # jsonErrorHandler + respond 助手
 │   ├── unit_tests.cj    # std.unittest 场景
 │   └── manual_runner.cj # 手动断言 runner（cjc 直编入口）
-├── examples/            # 6 个独立示例（hello/REST API/静态站/中间件/博客/HTTPS）
+├── examples/            # 7 个独立示例（hello/REST API/静态站/中间件/博客/HTTPS/后台管理）
+├── admin-web/           # 后台管理系统前端（Vue 3 + Vite，构建产物 dist/ 已托管）
 ├── public/              # 静态资源 demo（PNG/SVG/CSS/JS/250KB bin）
 ├── public_blog/         # 博客示例前端静态资源
-├── docs/                # 7 份文档（见下表）
+├── docs/                # 8 份文档（见下表，含 OpenAPI 规范）
 ├── build.sh             # 跨平台构建脚本（build/test/serve/examples/clean）
 ├── build.cmd.txt        # Windows 下已验证的 cjc 编译命令 + curl 验证手册
-├── deploy.sh            # 部署脚本（启停 / 健康检查 / 优雅关闭）
+├── deploy.sh            # 博客部署脚本（启停 / 健康检查 / 优雅关闭）
+├── deploy-admin.sh      # 后台管理部署脚本（鉴权关闭 / 健康检查）
 ├── benchmark.cj         # 性能压测（微基准 + 端到端吞吐）
 ├── blog.env             # 博客示例环境配置
+├── admin.env            # 后台管理示例配置（端口 / 密钥 / token 有效期）
 ├── cjpm.toml            # 备用（Windows cjpm 不稳定，见文件内说明）
 ├── CHANGELOG.md         # 版本变更记录
 ├── LICENSE              # MIT 许可证
@@ -143,11 +163,12 @@ qingzhou/
 | [PACKAGING.md](docs/PACKAGING.md) | 包拆分与发布方案 |
 | [BENCHMARK.md](docs/BENCHMARK.md) | 性能基准（微基准 + 端到端吞吐） |
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | 部署指南（启停 / 健康检查 / 优雅关闭） |
+| [openapi.yaml](docs/openapi.yaml) | 后台管理系统 API 的 OpenAPI 3.0 规范 |
 | [CODE_STYLE.md](docs/CODE_STYLE.md) | 编码规范与仓颉注释避坑 |
 
 ## 示例
 
-[examples/](examples/README.md) 六个独立可跑示例：
+[examples/](examples/README.md) 九个独立可跑示例：
 
 - `hello.cj` — 最小应用
 - `rest_api.cj` — 内存 todo CRUD（bodyParser / requestId / 分页）
@@ -155,13 +176,16 @@ qingzhou/
 - `middlewares.cj` — 中间件组合（reflect CORS / JSON 日志 / 超时）
 - `blog.cj` — 完整博客（用户系统 + 文章 CRUD + 鉴权 + 静态前端）
 - `https.cj` — HTTPS 服务（`serveTls` / TLSv1.3 / 自签证书）
+- `ws.cj` — WebSocket echo 服务（`wsHandler` / 双向长连接）
+- `http_client.cj` — 出站 HTTP 调用 + 熔断器降级
+- `admin.cj` — 前后端分离后台管理系统（JWT + RBAC + CangDB 持久化 + Vue 前端）
 
 ## 测试
 
 ```text
 $ build\qingzhou.exe test
 ...
-All 109 unit-test scenarios PASSED
+All 118 unit-test scenarios PASSED
 ```
 
 `src/unit_tests.cj`（`std.unittest` 的 `@Test`/`@Expect`）与 `src/manual_runner.cj`（手动断言）

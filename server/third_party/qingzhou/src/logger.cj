@@ -13,10 +13,11 @@ import std.time.*
  * Replaces the  trace-only logger with a stdout-oriented access log.
  * Format:
  *
- *   <id-or-dash> METHOD path -> status (Xms)
+ *   <id-or-dash> <ip-or-dash> METHOD path -> status (Xms)
  *
  * Where the id is ctx._id (set by requestId()) if present, or "-" if
- * the logger runs without a prior requestId() middleware.
+ * the logger runs without a prior requestId() middleware; the ip is the
+ * client IP (Context.remoteIp()), or "-" when unavailable.
  *
  * Plug a custom formatter/writer via LoggerOptions to ship structured
  * logs (e.g. JSON line per request, or a File output sink).
@@ -31,7 +32,8 @@ public class LoggerOptions {
 
 public func defaultLoggerFormatter(ctx: Context, elapsedMs: Int64): String {
     let id = if (ctx._id.size > 0) { ctx._id } else { "-" }
-    return "${id} ${ctx.method()} ${ctx.path()} -> ${ctx._peekStatus()} (${elapsedMs}ms)"
+    let ip = if (ctx.remoteIp().size > 0) { ctx.remoteIp() } else { "-" }
+    return "${id} ${ip} ${ctx.method()} ${ctx.path()} -> ${ctx._peekStatus()} (${elapsedMs}ms)"
 }
 
 public func defaultLoggerWriter(line: String): Unit {
