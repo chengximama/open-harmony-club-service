@@ -83,6 +83,7 @@ $src  = Get-ChildItem "E:\harmonyOS\cangjie_web\server\src\*.cj" | ForEach-Objec
 | `api-design.md` | **完整接口设计** Part 1–6，39 个接口逐条定义 | **写服务端时全程对照** |
 | `frontend-brief.md` | **前端对接精简版**：页面清单、通用约定、错误码、**5 件必知事项** | **客户端同事先看这个** |
 | **`client-build.md`** | **客户端构建与现状**：ArkTS 构建命令、两个环境坑、迁移记录、剩余 TODO | **动客户端前先看这个** |
+| **`client-integration-review{,-2,-3}.md`** | **客户端接入适配检查（三轮，待办清单）**：PR #2 的接口与信封 · PR #3/#4 的导航与孤立页 · PR #5/#6/#7 的构建阻塞与 Tab 占位 | **客户端同学改代码前必看** |
 | **`client-integration-review.md`** | **客户端接入适配检查（待办清单）**：队友 PR #2 能编译但调不通服务端 —— 3 条拦路问题（INTERNET 权限 / baseUrl 相对路径 / 响应信封少剥一层）+ 10 处接口路径·方法对不上，带实测状态码 | **客户端同学接接口前必看**；改完可删/归档 |
 | `deploy-windows-verify.md` | 部署与验证、目标配置基线 | 部署时看 |
 | **`code-review.md`** | **代码评审报告（三轮）**：24 + 9 + 4 条，全部已修，附回退实测证据 | 想知道"哪些坑已经踩过、为什么这样写" |
@@ -90,6 +91,7 @@ $src  = Get-ChildItem "E:\harmonyOS\cangjie_web\server\src\*.cj" | ForEach-Objec
 | `README.md` | 仓库唯一入口：进度、目录结构、六条最容易踩的坑 | 第一次打开这个仓库时 |
 | *（对外材料已移出仓库）* | 轻舟 TLS 实测与缺陷清单、仓颉运行时缺陷报告 —— 见上层 `cangjie-upstream\` | 追溯上游问题时看 |
 | **`server-guide.md`** | **服务端**：构建/初始化/运行/测试、进度表、两条实现纪律 | **写服务端时先看** |
+| **`local-deploy.md`** | **本机部署一页上手**（2026-09-16 全流程实测）：体检 → 五步 → HTTPS → 部署包 → 连客户端 → 备份 → 坑表 | **第一次上手时先看这个** |
 | **`API-NOTES.md`** | **服务端**：编译期 API 事实清单 + **30 条**踩坑记录 | 加新函数前先查（避让框架同名符号） |
 
 ---

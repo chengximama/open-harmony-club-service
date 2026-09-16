@@ -4,8 +4,12 @@
  */
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const TOKEN_KEY = 'auth_token';
+const PREFERENCES_NAME = 'app_preferences';
+const LOG_DOMAIN = 0x0000;
+const LOG_TAG = 'TokenStore';
 
 export class TokenStore {
   private static instance: TokenStore;
@@ -30,11 +34,18 @@ export class TokenStore {
     if (this.preferences_) {
       return;
     }
-    const dataDir = context.preferencesDir;
-    this.preferences_ = await preferences.getPreferences(context, 'app_preferences');
-    // 启动时读取缓存
-    const val = await this.preferences_.get(TOKEN_KEY, '');
-    this.cachedToken = val as string || null;
+
+    try {
+      const options: preferences.Options = { name: PREFERENCES_NAME };
+      this.preferences_ = await preferences.getPreferences(context, options);
+      const val = await this.preferences_.get(TOKEN_KEY, '');
+      const token = typeof val === 'string' ? val : '';
+      this.cachedToken = token.length > 0 ? token : null;
+    } catch (err) {
+      this.preferences_ = null;
+      this.cachedToken = null;
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'init failed: %{public}s', JSON.stringify(err));
+    }
   }
 
   /**
@@ -44,13 +55,20 @@ export class TokenStore {
     if (this.cachedToken) {
       return this.cachedToken;
     }
-    // 未缓存时从持久化读取
+
     if (!this.preferences_) {
       return null;
     }
-    const val = await this.preferences_.get(TOKEN_KEY, '');
-    this.cachedToken = val as string || null;
-    return this.cachedToken;
+
+    try {
+      const val = await this.preferences_.get(TOKEN_KEY, '');
+      const token = typeof val === 'string' ? val : '';
+      this.cachedToken = token.length > 0 ? token : null;
+      return this.cachedToken;
+    } catch (err) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'getToken failed: %{public}s', JSON.stringify(err));
+      return null;
+    }
   }
 
   /**
@@ -58,11 +76,17 @@ export class TokenStore {
    */
   async setToken(token: string): Promise<void> {
     this.cachedToken = token;
+
     if (!this.preferences_) {
       return;
     }
-    await this.preferences_.put(TOKEN_KEY, token);
-    await this.preferences_.flush();
+
+    try {
+      await this.preferences_.put(TOKEN_KEY, token);
+      await this.preferences_.flush();
+    } catch (err) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'setToken failed: %{public}s', JSON.stringify(err));
+    }
   }
 
   /**
@@ -70,11 +94,17 @@ export class TokenStore {
    */
   async clearToken(): Promise<void> {
     this.cachedToken = null;
+
     if (!this.preferences_) {
       return;
     }
-    await this.preferences_.delete(TOKEN_KEY);
-    await this.preferences_.flush();
+
+    try {
+      await this.preferences_.delete(TOKEN_KEY);
+      await this.preferences_.flush();
+    } catch (err) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'clearToken failed: %{public}s', JSON.stringify(err));
+    }
   }
 
   /**

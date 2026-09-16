@@ -1,8 +1,9 @@
 import MemberListPage from './MemberListPage';
 import MemberDetailPage from './MemberDetailPage';
-import PendingApprovalPage from './PendingApprovalPage';
-import ManagePage from './ManagePage';
+import { ProfilePage } from './ProfilePage';
 import MyTasksPage from './MyTasksPage';
+import TaskListPage from './TaskListPage';
+import PlanTreePage from './PlanTreePage';
 
 @Entry
 @Component
@@ -35,30 +36,38 @@ struct Index {
       .height('100%')
     } else {
       Navigation() {
-        Tabs({ barPosition: BarPosition.End }) {
+        Tabs({ barPosition: BarPosition.End, index: this.currentIndex }) {
           TabContent() {
-            MyTasksPage()
+            MyTasksPage({ onOpenPlans: () => { this.currentIndex = 2 } })
           }
-          .tabBar('我的任务')
+          .tabBar(this.tabBarBuilder('我的\n任务', 0))
 
           TabContent() {
-            MemberListPage({ onMemberClick: (id: number) => {
-              this.selectedMemberId = id;
-              this.showDetail = true;
-            }})
+            TaskListPage()
           }
-          .tabBar('成员名录')
+          .tabBar(this.tabBarBuilder('任务', 1))
 
           TabContent() {
-            PendingApprovalPage()
+            PlanTreePage()
           }
-          .tabBar('待分配')
+          .tabBar(this.tabBarBuilder('课题', 2))
 
           TabContent() {
-            ManagePage()
+            MemberListPage({
+              onMemberClick: (id: number) => {
+                this.selectedMemberId = id;
+                this.showDetail = true;
+              }
+            })
           }
-          .tabBar('管理')
+          .tabBar(this.tabBarBuilder('名录', 3))
+
+          TabContent() {
+            ProfilePage()
+          }
+          .tabBar(this.tabBarBuilder('我的', 4))
         }
+        .barMode(BarMode.Fixed)
         .onChange((index: number) => {
           this.currentIndex = index;
         })
@@ -66,5 +75,22 @@ struct Index {
       .title('社团管家')
       .titleMode(NavigationTitleMode.Mini)
     }
+  }
+
+  @Builder
+  tabBarBuilder(title: string, index: number) {
+    Column() {
+      Text(title)
+        .fontSize(12)
+        .lineHeight(16)
+        .fontWeight(this.currentIndex === index ? FontWeight.Medium : FontWeight.Normal)
+        .fontColor(this.currentIndex === index ? '#0A59F7' : '#666666')
+        .maxLines(2)
+        .textAlign(TextAlign.Center)
+    }
+    .width('100%')
+    .height(48)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
   }
 }

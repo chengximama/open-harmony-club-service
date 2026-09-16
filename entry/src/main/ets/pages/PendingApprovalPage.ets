@@ -154,7 +154,7 @@ struct AssignDialog {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(DEPTS.map((d: Dept) => ({ value: d.name })))
+        Select(DEPTS.map((d: Dept): SelectOption => ({ value: d.name })))
           .selected(this.selectedDeptIndex)
           .value(DEPTS[this.selectedDeptIndex].name)
           .onSelect((index: number) => { this.selectedDeptIndex = index; })
@@ -167,7 +167,7 @@ struct AssignDialog {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(ROLE_OPTIONS.map((r: RoleOption) => ({ value: r.label })))
+        Select(ROLE_OPTIONS.map((r: RoleOption): SelectOption => ({ value: r.label })))
           .selected(this.selectedRoleIndex)
           .value(ROLE_OPTIONS[this.selectedRoleIndex].label)
           .onSelect((index: number) => { this.selectedRoleIndex = index; })

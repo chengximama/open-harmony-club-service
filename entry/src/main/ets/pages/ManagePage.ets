@@ -675,7 +675,7 @@ struct CreateLinkDialog {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(DEPTS.map((d: Dept) => ({ value: d.name })))
+        Select(DEPTS.map((d: Dept): SelectOption => ({ value: d.name })))
           .selected(this.selectedDeptIndex)
           .value(DEPTS[this.selectedDeptIndex]?.name || DEPTS[0].name)
           .onSelect((index: number) => { this.selectedDeptIndex = index; })
@@ -854,7 +854,7 @@ struct DangerZoneSection {
           .margin({ bottom: Space.xs })
 
         Select(MEMBERS.filter((m: MemberOption): boolean => m.id !== MOCK_CURRENT_USER.id)
-          .map((m: MemberOption) => ({ value: `${m.name}（${m.deptName}）` })))
+          .map((m: MemberOption): SelectOption => ({ value: `${m.name}（${m.deptName}）` })))
           .selected(this.selectedTransferIndex)
           .value(MEMBERS.filter((m: MemberOption): boolean => m.id !== MOCK_CURRENT_USER.id)[this.selectedTransferIndex]?.name || '请选择')
           .onSelect((index: number) => { this.selectedTransferIndex = index; })
@@ -967,7 +967,7 @@ struct DangerZoneSection {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(MEMBERS.map((m: MemberOption) => ({ value: `${m.name}（${m.deptName}）` })))
+        Select(MEMBERS.map((m: MemberOption): SelectOption => ({ value: `${m.name}（${m.deptName}）` })))
           .selected(0)
           .value(MEMBERS[0]?.name || '请选择')
           .width('100%')

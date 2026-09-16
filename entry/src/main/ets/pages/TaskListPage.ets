@@ -16,9 +16,8 @@ interface StatusFilter {
   value: string;
 }
 
-@Entry
 @Component
-struct TaskListPage {
+export default struct TaskListPage {
   @State tasks: TaskBrief[] = []
   @State total: number = 0
   @State loading: boolean = true

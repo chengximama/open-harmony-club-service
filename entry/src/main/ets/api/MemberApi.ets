@@ -15,13 +15,15 @@ export interface PendingMemberView extends MemberBrief {
 }
 
 /** GET /api/v1/members/{id} 响应 */
+export interface MemberStats {
+  owned_tasks: number;
+  open_tasks: number;
+  owned_plans: number;
+}
+
 export interface MemberDetailResponse {
   member: MemberBrief;
-  stats: {
-    owned_tasks: number;
-    open_tasks: number;
-    owned_plans: number;
-  };
+  stats: MemberStats;
 }
 
 /** 注册口令配置 */
@@ -87,6 +89,12 @@ export interface SetRegisterCodeRequest {
   code: string;
 }
 
+/** GET /api/v1/members 查询参数 — 全部可选 */
+export interface MemberListParams {
+  dept_id?: number;
+  status?: 'active' | 'pending' | 'disabled';
+}
+
 // ─── API 类 ───
 
 export class MemberApi {
@@ -97,15 +105,14 @@ export class MemberApi {
   }
 
   /** GET /api/v1/members — 成员名录（可按部门/状态筛选） */
-  async list(params?: {
-    dept_id?: number;
-    status?: 'active' | 'pending' | 'disabled';
-  }): Promise<ApiResponse<MemberListResponse>> {
-    const query = new URLSearchParams();
-    if (params?.dept_id) query.set('dept_id', String(params.dept_id));
-    if (params?.status) query.set('status', params.status);
-    const qs = query.toString();
-    return this.client.get<MemberListResponse>(`/members${qs ? '?' + qs : ''}`);
+  async list(params?: MemberListParams): Promise<ApiResponse<MemberListResponse>> {
+    const parts: string[] = [];
+    if (params !== undefined) {
+      if (params.dept_id !== undefined) parts.push(`dept_id=${params.dept_id}`);
+      if (params.status !== undefined) parts.push(`status=${params.status}`);
+    }
+    const qs = parts.join('&');
+    return this.client.get<MemberListResponse>(`/members${qs.length > 0 ? '?' + qs : ''}`);
   }
 
   /** GET /api/v1/members/pending — 待分配成员列表 */
@@ -135,7 +142,7 @@ export class MemberApi {
 
   /** POST /api/v1/members/{id}/transfer-presidency — 会长移交 */
   async transferPresidency(id: number, data?: TransferPresidencyRequest): Promise<ApiResponse<TransferPresidencyResponse>> {
-    return this.client.post<TransferPresidencyResponse>(`/members/${id}/transfer-presidency`, data ?? {});
+    return this.client.post<TransferPresidencyResponse>(`/members/${id}/transfer-presidency`, data);
   }
 
   /** GET /api/v1/register-config — 获取注册口令 */
