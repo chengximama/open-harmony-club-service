@@ -41,6 +41,15 @@ foreach ($n in @("libcangjie-runtime.dll", "libboundscheck.dll", "libcrypto-3-x6
     Copy-Item $src $dist -Force
 }
 
+# N-23：把**实际打包进去**的运行时库版本与哈希写进部署包 —— 部署方因此能回答
+# "这份包用的是哪个 OpenSSL"，而不是只能相信"当时是从哪儿拷的"。
+$dllInfo = @("# 本部署包使用的运行时库（构建时记录，便于追溯）", "")
+foreach ($n in @("libcangjie-runtime.dll", "libboundscheck.dll", "libcrypto-3-x64.dll", "libssl-3-x64.dll")) {
+    $p = Join-Path $buildDir $n
+    $dllInfo += ("{0,-26} version={1,-16} sha256={2}" -f $n, (Get-Item $p).VersionInfo.FileVersion, (Get-FileHash $p -Algorithm SHA256).Hash.ToLower())
+}
+Set-Content -Path (Join-Path $dist "dll-versions.txt") -Value $dllInfo -Encoding UTF8
+
 # ---------- 2. 证书 ----------
 if (-not $SkipCert) {
     if ([string]::IsNullOrEmpty($CertDir)) { $CertDir = Join-Path $root "certs" }
@@ -79,7 +88,7 @@ $readme = @'
 一、这是什么
   社团内部管理工具的服务端。仓颉 1.1.3 + 轻舟框架，数据存成 JSON 文件，不用数据库。
 
-二、部署文件（共 8 个）
+二、部署文件（制品 5 个：exe + 4 个 DLL；连证书 2、启动脚本 2 共 9 个文件，另有本说明与 dll-versions.txt）
   club-server.exe              服务端本体
   libcangjie-runtime.dll       仓颉运行时（缺了会启动即失败）
   libboundscheck.dll           仓颉运行时的传递依赖

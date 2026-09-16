@@ -153,6 +153,25 @@ public class Store {
     public var reg_fail: HashMap<String, RegFail> = HashMap<String, RegFail>()
 
     /*
+     * N-21：登录失败的**按 IP** 计数（与注册的 reg_fail 分开两张表）。
+     * 为什么必须按 IP：登录原有的限流只按**手机号** —— 攻击者换一个号码就是一个新桶，
+     * "5 次锁定"形同虚设；而 N-16 之后**每个**未注册号码都要烧一次 10 万轮 PBKDF2，
+     * 于是"换号码"从"绕过限流"升级成"稳定烧 CPU"。
+     * 为什么与 reg_fail 分开：两者是不同攻击面，且常共用同一个 NAT 出口 ——
+     * 注册被人试 10 次不该把整个出口的登录一起锁掉。逻辑复用同一套递增退避。
+     */
+    public var login_fail_ip: HashMap<String, RegFail> = HashMap<String, RegFail>()
+
+    /*
+     * N-21：登录 PBKDF2 的**并发闸门**。N-16 之后未认证请求也要跑一次等价 PBKDF2
+     * （实测 ~525 ms CPU），24 核下 ~46 并发即可打满整机 —— 而登录是不需要认证的。
+     * 按 IP 节流挡不住分布式，所以再加一道与来源无关的上限：同时计算的 PBKDF2 有上限，
+     * 超出直接拒绝（429），**不排队**（排队只会把"整机无响应"换成"请求堆积 + 更长的无响应"）。
+     */
+    public var pbkdf2_lock: Mutex = Mutex()
+    public var pbkdf2_inflight: Int64 = 0
+
+    /*
      * N-17：待写审计行（**只存在内存里，不落盘**）。
      * audit() 是在锁内被调用的，那时不能做文件 IO —— 与动作 4 确立的
      * "锁内只准备数据、IO 放锁外"同一口径。真正的 append 由请求链末端的

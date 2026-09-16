@@ -1061,6 +1061,40 @@ try {
     $r = Call-Api "DELETE" "/api/v1/depts/$n15Dept" $null $presToken
     Check "N15 探针部门删除 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
 
+    # ---------- 22.7 登录按 IP 节流（N-21） ----------
+    # 必须从**非回环**地址打：回环被有意豁免（见 h_auth.cj 的注释），
+    # 而这是本机唯一能造出"远程来源"的办法（没有第二台机器）。
+    Write-Host ""
+    Write-Host "[22.7] 登录按 IP 节流（N-21，从 LAN 地址打）"
+    $lanIp = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+              Where-Object { $_.IPAddress -ne '127.0.0.1' -and $_.PrefixOrigin -ne 'WellKnown' } |
+              Select-Object -First 1).IPAddress
+    if (-not $lanIp) {
+        Check "取到用于复现的非回环 IPv4" $false "取不到 LAN 地址，无法复现按 IP 节流"
+    } else {
+        $lanBase = "http://${lanIp}:$Port"
+        $codes = @()
+        for ($i = 1; $i -le 12; $i++) {
+            $b = @{ phone = ("1392000{0:D4}" -f $i); password = "definitely-wrong" } | ConvertTo-Json -Compress
+            try {
+                $rr = Invoke-WebRequest -Method POST -Uri "$lanBase/api/v1/auth/login" -UseBasicParsing `
+                      -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($b)) -TimeoutSec 25
+                $codes += [int]$rr.StatusCode
+            } catch {
+                $resp = $_.Exception.Response
+                $codes += $(if ($null -ne $resp) { [int]$resp.StatusCode } else { -1 })
+            }
+        }
+        $n429 = ($codes | Where-Object { $_ -eq 429 }).Count
+        Check "12 个不同未注册号码 -> 出现 429（按 IP 节流生效，N-21）" ($n429 -gt 0) "codes=$($codes -join ',')"
+        # 该 IP 锁定后，即便是**正确**口令也被拒；回环不受影响（下面 [24] 会从回环登录成功）
+        $b2 = @{ phone = "13800000000"; password = "newpassword1" } | ConvertTo-Json -Compress
+        $st = 0
+        try { $r2 = Invoke-WebRequest -Method POST -Uri "$lanBase/api/v1/auth/login" -UseBasicParsing -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($b2)) -TimeoutSec 25; $st = [int]$r2.StatusCode }
+        catch { $resp = $_.Exception.Response; $st = $(if ($null -ne $resp) { [int]$resp.StatusCode } else { -1 }) }
+        Check "该 IP 锁定后正确口令也 429（N-21）" ($st -eq 429) "status=$st"
+    }
+
     Write-Host ""
     Write-Host "[23] /admin/shutdown 仅本机可访问"
     $r = Call-Api "POST" "/admin/shutdown"

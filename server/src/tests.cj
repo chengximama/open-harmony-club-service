@@ -1583,6 +1583,60 @@ func testAuditDeferred(t: TR): Unit {
     }
 }
 
+/*
+ * N-21：登录的**按 IP** 节流 + PBKDF2 并发闸门。
+ *
+ * 与别的条不同，这里断言的是"闸门本身"（计数、锁定、并发上限）；
+ * 端到端的"12 个不同未注册号码 → 出现 429"放在冒烟里，且**必须从非回环地址打**
+ * —— 回环被有意排除在这道节流之外（理由见 h_auth.cj 的注释）。
+ */
+func testLoginIpThrottle(t: TR): Unit {
+    println("- 登录按 IP 节流 + PBKDF2 并发闸门（N-21）")
+    let s = Store("build/test-data-n21")
+    let now = nowEpoch()
+
+    /* 1) 按 IP 累计到上限就锁；另一个 IP 完全不受影响 */
+    var i: Int64 = 0
+    while (i < REG_FAIL_LIMIT - 1) {
+        loginIpFailBump(s, "10.0.0.1")
+        i += 1
+    }
+    t.ok("错 9 次还没锁", !loginIpLocked(s, "10.0.0.1", now))
+    loginIpFailBump(s, "10.0.0.1")
+    t.ok("第 10 次触发锁定", loginIpLocked(s, "10.0.0.1", now))
+    t.ok("另一个 IP 不受影响", !loginIpLocked(s, "10.0.0.2", now))
+
+    /* 2) 与注册是**两张表**：登录被锁不影响同一 IP 的注册（NAT 后是同一个出口） */
+    t.ok("登录被锁不影响该 IP 的注册", !regLocked(s, "10.0.0.1", now))
+
+    /* 3) 同一套递增退避：到点自动解除 */
+    t.ok("锁定期内判定为锁", loginIpLocked(s, "10.0.0.1", now + 60))
+    t.ok("锁到期自动解除", !loginIpLocked(s, "10.0.0.1", now + REG_FAIL_LOCK_BASE + 2))
+
+    /* 4) PBKDF2 并发闸门：到上限就拒（不排队），释放后可再进 */
+    var got: Int64 = 0
+    var k: Int64 = 0
+    while (k < MAX_PBKDF2_INFLIGHT) {
+        if (pbkdf2Enter(s)) {
+            got += 1
+        }
+        k += 1
+    }
+    t.eqi("上限内全部放行", got, MAX_PBKDF2_INFLIGHT)
+    t.ok("超过上限被拒（不排队）", !pbkdf2Enter(s))
+    t.eqi("在跑计数 = 上限", s.pbkdf2_inflight, MAX_PBKDF2_INFLIGHT)
+    pbkdf2Leave(s)
+    t.ok("释放一个后可以再进", pbkdf2Enter(s))
+
+    /* 5) 多释放也不会把计数弄成负数（异常路径的安全网） */
+    var m: Int64 = 0
+    while (m < MAX_PBKDF2_INFLIGHT + 3) {
+        pbkdf2Leave(s)
+        m += 1
+    }
+    t.eqi("多释放不会变负", s.pbkdf2_inflight, 0)
+}
+
 /* ===================== 入口 ===================== */
 
 public func runTests(): Int64 {
@@ -1599,6 +1653,7 @@ public func runTests(): Int64 {
     testLoopbackPeer(t)
     testLoginCreds(t)
     testAuditDeferred(t)
+    testLoginIpThrottle(t)
     testPerms(t)
     testRegThrottle(t)
     testRbacAdaptation(t)

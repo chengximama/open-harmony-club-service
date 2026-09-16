@@ -160,6 +160,32 @@ if (-not $NoDll) {
     # 前两个来自仓颉 SDK（装了编译器就有）；后两个按 Resolve-OpenSslDir 的顺序解析。
     $ossl = Resolve-OpenSslDir $Vendor $OpenSslDir
     Write-Host "[build] OpenSSL DLL 来源：$ossl"
+    # N-23：与 EXPECTED.sha256 比对（**告警不拒绝**）。这两个 DLL 决定部署包的密码哈希与 TLS
+    # 实现，却来自"谁放了一份 / Git 升级到哪个版本"这种不受控位置 —— 换机器就可能静默换掉。
+    $expFile = Join-Path $Vendor "deps\openssl\EXPECTED.sha256"
+    if (Test-Path $expFile) {
+        $exp = @{}
+        foreach ($ln in (Get-Content $expFile -Encoding UTF8)) {
+            if ($ln -match '^\s*#|^\s*$') { continue }
+            $m = [regex]::Match($ln, '^([0-9a-f]{64})\s+(.+)$')
+            if ($m.Success) { $exp[$m.Groups[2].Value.Trim()] = $m.Groups[1].Value }
+        }
+        foreach ($n in @("libcrypto-3-x64.dll", "libssl-3-x64.dll")) {
+            $p = Join-Path $ossl $n
+            $got = (Get-FileHash $p -Algorithm SHA256).Hash.ToLower()
+            $ver = (Get-Item $p).VersionInfo.FileVersion
+            if ($exp.ContainsKey($n) -and $exp[$n] -ne $got) {
+                Write-Host "[build] ⚠ OpenSSL 与 EXPECTED.sha256 不一致：$n" -ForegroundColor Yellow
+                Write-Host "[build]    期望 $($exp[$n])" -ForegroundColor Yellow
+                Write-Host "[build]    实际 $got（版本 $ver，来自 $ossl）" -ForegroundColor Yellow
+                Write-Host "[build]    这会把不同的密码学实现打进部署包；有意更换请改 deps\openssl\EXPECTED.sha256" -ForegroundColor Yellow
+            } else {
+                Write-Host "[build]   $n  $ver  $($got.Substring(0, 16))…  与 EXPECTED 一致"
+            }
+        }
+    } else {
+        Write-Host "[build] 提示：deps\openssl\EXPECTED.sha256 不存在 —— 跳过运行时库比对（N-23）"
+    }
     $dlls = @(
         @{ n = "libcangjie-runtime.dll"; d = $RuntimeDir },
         @{ n = "libboundscheck.dll";     d = $RuntimeDir },

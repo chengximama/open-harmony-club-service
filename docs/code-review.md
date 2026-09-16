@@ -1440,3 +1440,293 @@ N-16 的真实判据定为 §6.2 的时间表（跑一次就能看出来），�
 **本轮没做**：本机是全权限环境，`tls-check.ps1` 直接 **22 / 0**，
 那条探针只在受限沙箱下才有用武之地。留着作为待办 —— 下次再遇到假阴性时按评审 §五 的三步照做即可
 （结论已写进该节，不必重新推导）。
+
+---
+
+# 第五轮复验（2026-09-16 · 工作区 `ac6dfc9`）
+
+> **触发方式与前四轮不同**：本轮不是"按计划复验"，而是**被一个提问带出来的** ——
+> 「这一轮客户端有那么多问题，服务端有没有新增的 bug？」于是把 `f47088f..ac6dfc9`
+> 之间的服务端改动（11 个源文件 + 3 个构建/测试脚本）整体过了一遍。
+>
+> 结论是**确实有，而且其中一个正是第四轮那条修复自己引入的**（N-21）。
+> 这延续了本报告的一个主题：**修一处，要顺手看它有没有在别处开一个口子。**
+
+| 项 | 值 |
+| --- | --- |
+| 复验对象 | `ac6dfc9`（含第四轮修复 `05971b5`、内置框架 `52bf0f7` / `1c7fdea` / `ac6dfc9`、客户端 PR #3 / #4） |
+| 复验方式 | 重跑四套 → 逐条读服务端 diff → **量服务端进程 CPU 时间** → **在副本里实测构建脚本陷阱** |
+| 结论 | 第四轮 6 条 + N-20 **全部确认修复**（见 §二）；本轮新发现 **4 条**（1 中 / 1 低-中 / 2 提示），其中 **N-21 是第四轮修复引入的新问题** |
+| 复核方改动 | 未改动任何产品文件；N-22 的实验在 `server/build/` 下的**副本**里做，内置框架与清单**未被触碰**（复验后 `git status` 干净、MANIFEST 仍为 38 条） |
+
+## 一、基线（自行重跑）
+
+| 套件 | 声明 | **我的实测** |
+| --- | --- | --- |
+| 单测 `club-server.exe test` | 387 / 0 | **PASS 387 / FAIL 0** |
+| HTTP 冒烟 `tests/smoke.ps1` | 360 / 0 | **PASS 360 / FAIL 0** |
+| 契约回归 `tests/client-contract-check.ps1` | 30 / 0 | **PASS 30 / FAIL 0** |
+| TLS `tests/tls-check.ps1` | 22 / 0 | 本会话 **3 / 3** —— 与**附录 B 逐字同因**的沙箱假阴性（`openssl` 起不来、Schannel 挡住 .NET 客户端），**不是回归** |
+
+## 二、第四轮 6 条 + N-20：逐条独立复验（不是看 diff）
+
+| 条 | 我的独立实测 | 结论 |
+| --- | --- | --- |
+| **N-14** | `tests.cj` 的 `testLoopbackPeer` 含 **7 正 + 8 反**，反例里正是评审表那 5 条对抗串；代码改为 `ipOfPeerText` + **白名单相等**比对，`localhost` 不再放行 | ✅ |
+| **N-15** | 重跑我原来的复现：`PATCH /members/1 {name,role:president}` → 400，`GET` 姓名**未变**；部门同理；触发落盘后 `db.json` 里**没有**被拒的值 | ✅ |
+| **N-16** | 自己量时间（避开 5 次锁定的干扰）：已注册 417 ms vs 未注册 427 ms = **0.98×**（修复前 13×）—— **但见 N-21** | ✅ 有代价 |
+| **N-17** | `reset-password` 后 `audit.log` 确实生成且含该条；缓冲未混进 `db.json` | ✅ |
+| **N-18** | 创建路径 403、修改路径 403；反证同部门 201 / 仅改名 200（**无误拦**） | ✅ |
+| **N-19** | 招募 token 实测 **32 字符** | ✅ |
+| **N-20** | ① `src/*.cj` **29 个与上游逐字节相同**（29 同 / 0 异）；② `MANIFEST.sha256` **38 条全部匹配**（唯一未覆盖的是清单自身，合理）；③ 删 exe 用内置目录重编译 **编译通过**，不再读 `E:\cangjie\qingzhou`；④ `git check-attr` 确认 `-text` 生效（`text: unset`）；⑤ Git for Windows 的 OpenSSL DLL 与轻舟 `deps` 的**逐字节相同**，且已被 `.gitignore:45` 挡住 | ✅ |
+
+## 三、本轮新发现
+
+> 这 4 条**都还没修**，故一律 `[ ]`。修完请改 `[x]`，并在各条「状态」处补结论与**回退实测**。
+
+- [x] N-21 `[中]` **登录没有按 IP 的节流，而 N-16 的修复把未认证请求的 CPU 成本放大了约 134 倍** → 单机 46 并发即可打满 24 核（**第四轮修复引入的新问题**）
+- [x] N-22 `[低-中]` `update-manifest.ps1` 枚举**工作区**而非**索引**，会把 `.gitignore` 的 DLL 写进清单，导致别人构建被拒（**已实测复现**）
+- [x] N-23 `[提示]` N-20 的残余：**源码锁了，运行时库没锁** —— 打进部署包的 OpenSSL DLL 仍来自未锁版本的位置
+- [x] N-24 `[次要]` 部署包 `README.txt` 写「共 8 个」却列了 9 条，与 `HANDOFF.md` 的「5 个文件」又是第三个数
+
+### N-21 登录无按 IP 节流 + N-16 的修复放大了未认证请求的 CPU 成本
+
+**状态**：**已修（2026-09-16）** —— 按「不要回退 N-16」做的：① 登录补**按 IP** 节流，复用 N-6 的递增退避，但用**独立一张表** `login_fail_ip`（不与注册共用，免得同一 NAT 下互相牵连）；② 再加**并发闸门** `MAX_PBKDF2_INFLIGHT = 8`，同时在算的 PBKDF2 超上限直接 429、**不排队**；③ N-16 原样保留。**回环有意豁免 ①**（防的是远程耗尽 CPU），所以**验证必须从非回环地址打** —— 见文末 §7.2。
+**位置**：`h_auth.cj:299-302`（无条件 `loginCreds` + `verifyPw`）· `h_auth.cj:274-292` 的限流只按 `phone` 取桶（`s.login_fail.get(phone)` 在 L277）· 对照：`h_auth.cj:99-115` 的 `regFailBump` 才是**按 IP** 的
+
+**这是第四轮 N-16 修复引入的。** N-16 本身修得对（我复验过：0.98×，侧信道确实堵住了），
+但堵法是"**让便宜的那条路也变贵**"——而那条便宜路径正是**未认证攻击者**会走的那条：
+
+| | 修复前 | 修复后 |
+| --- | --- | --- |
+| 未注册手机号的登录请求 | `if (found)` 短路，**不跑 PBKDF2** | **无条件**跑一次 10 万轮 PBKDF2 |
+| 单次服务端 CPU | ≈ 普通请求（实测约 4 ms） | **≈ 525 ms** |
+
+**实测（同一 IP，12 个互不相同、均未注册的手机号）**
+
+```
+# 1  HTTP 401  444 ms     # 7  HTTP 401  404 ms
+# 2  HTTP 401  406 ms     # 8  HTTP 401  391 ms
+# 3  HTTP 401  441 ms     # 9  HTTP 401  424 ms
+# 4  HTTP 401  444 ms     #10  HTTP 401  450 ms
+# 5  HTTP 401  437 ms     #11  HTTP 401  470 ms
+# 6  HTTP 401  387 ms     #12  HTTP 401  482 ms
+被节流的请求数: 0 / 12          ← 没有任何按 IP 的限制
+```
+
+**服务端进程 CPU 时间**（读 `Process.TotalProcessorTime`，与墙钟分开，避免把等待算进去）：
+
+```
+A) 12 次【未注册手机号】登录：墙钟 5169 ms，服务端 CPU 6296 ms  →  每次约 525 ms CPU
+B) 12 次【/health】：        墙钟  198 ms，服务端 CPU   47 ms  →  每次约   4 ms CPU
+单次未认证登录的 CPU 成本 ≈ /health 的 134 倍
+```
+
+**为什么没有兜底**：登录的失败限流是 `s.login_fail.get(phone)` —— **按手机号**。
+攻击者换一个号码就是一个新桶，5 次锁定形同虚设。按 IP 的那套（`reg_fail` + 递增退避）**只做在注册上**。
+
+**饱和门槛**
+
+```
+本机 24 核：修复后 24 ÷ 0.525 s ≈ 46 个并发请求即可占满全部 CPU
+            修复前 24 ÷ 0.004 s ≈ 6000 个并发
+```
+
+46 个并发对任何一台机器都是零成本，而这个端点是**未认证**的、也是暴露面最大的。
+
+**与 N-13 的区别（别混为一谈）**：N-13 记录的是"按 IP 节流**不阻止分布式爆破**"，
+是**猜口令**这条轴；这里是**耗尽 CPU**这条轴，而且登录**连单 IP 的限制都没有**。
+
+**修法（不要回退 N-16）**
+
+1. **给登录补按 IP 节流** —— 直接复用 `regFailBump` / `regLocked` / `regLockSeconds` 那一套
+   （N-6 已经写好递增退避），换一张表或复用 `reg_fail` 即可。
+2. **再给 PBKDF2 加一个并发上限**（信号量 / 有界工作池）。理由：按 IP 节流挡不住分布式，
+   而登录的 CPU 是**可控且有限**的（每次恰好 10 万轮），用一个小信号量就能把最坏情况钉死，
+   代价只是排队——比整机无响应好得多。
+3. **不要**把 N-16 改回去。时序等化是对的，缺的是配套限流。
+
+**验证方式**：修完重跑本节的时间表 + 「12 个不同未注册号码 → 应出现 429」，并补一条会因回退而变红的断言。
+
+### N-22 `update-manifest.ps1` 枚举工作区，会把被忽略的 DLL 写进清单
+
+**状态**：**已修（2026-09-16）** —— `update-manifest.ps1` 改成**从索引生成**（`git ls-files` + `rev-parse --show-prefix`），并额外列出「工作区里未被跟踪、因此不在清单里」的文件。复核：重建后 **39 条、0 个 DLL**；把 DLL 拷进内置目录再重建，清单**不再**被污染。
+**位置**：`server/third_party/qingzhou/update-manifest.ps1:16`（`Get-ChildItem $vendor -Recurse -File`）
+
+**实测（在 `server/build/` 下的副本里做，仓库未被触碰）**
+
+```
+1) 按 deps\openssl\README.md 的推荐做法，把两个 DLL 拷进内置目录
+   （那份 README 明确写着"本目录的 *.dll 已写进 .gitignore，放进来不会弄脏仓库" —— 对 git 而言确实如此）
+2) 跑 update-manifest.ps1 重新生成清单
+   → 清单条数: 40（原 38）
+   → 新增：
+     feb5b300e0b3a021...  deps/openssl/libssl-3-x64.dll
+     0330b5f558996f29...  deps/openssl/libcrypto-3-x64.dll
+3) 模拟"新机器 clone"（DLL 本就不进仓库，不存在），用真实 build.ps1 校验这份清单：
+   → exit 1：
+     内置轻舟与 MANIFEST.sha256 不一致：
+       - 缺失 deps/openssl/libssl-3-x64.dll
+       - 缺失 deps/openssl/libcrypto-3-x64.dll
+     内置框架**不应被本地修改**：我们的改动一律放 server\src\fw_rbac*.cj。
+```
+
+**两个问题**
+
+1. **根因是枚举错了对象**：这份清单语义上描述的是「**被提交的集合**」，
+   而脚本枚举的是「**工作区里有什么**」。DLL 恰恰是"在工作区、但不在仓库"的那一类。
+   同一份清单，两个开发者各跑一次会得到 38 与 40 两个版本，来回翻转。
+2. **错误信息会把人带偏**：它说"内置框架不应被本地修改"，而真实原因是
+   **清单要求了故意不提交的文件**。照它提示去跑 `update-manifest.ps1`，只会把清单再变一次。
+
+**修法**：清单必须从**索引**生成，而不是从磁盘：
+
+```powershell
+# update-manifest.ps1 —— 只登记会被提交的文件
+$files = git -C $vendor ls-files | Where-Object { $_ -ne 'MANIFEST.sha256' }
+```
+
+退一步至少也要排除 `deps/openssl/*.dll`。**"逐字节锁定"这件事，前提是锁的对象会被提交。**
+
+### N-23 N-20 的残余：源码锁了，运行时库没锁
+
+**状态**：**已修（2026-09-16）** —— 按建议在 `deps/openssl/EXPECTED.sha256` 留**唯一的期望哈希**，`build.ps1` 解析到 DLL 后逐个比对：一致就打印版本 + 哈希前缀；不一致就**显式黄字告警**（期望 / 实际 / 来源都打出来，不拒绝构建）。另在部署包里生成 `dll-versions.txt`，记录**实际打包进去**的四个 DLL 的版本与 sha256。
+**位置**：`build.ps1:126-155`（`Resolve-OpenSslDir` 的三级查找）· `server/third_party/qingzhou/deps/openssl/README.md`
+
+N-20 把**框架源码**钉死了（`UPSTREAM_COMMIT` + `MANIFEST.sha256`，我验证过 29/29 与 38/38）。
+但**打包进部署包的两个 OpenSSL DLL 仍然来自未锁版本的位置**：
+
+| 来源 | 是否稳定 |
+| --- | --- |
+| `third_party/qingzhou/deps/openssl/`（gitignore） | 取决于**这台机器上有没有人放过** |
+| `-OpenSslDir <目录>` | 取决于命令行 |
+| Git for Windows 的 `mingw64\bin` | **随 Git 升级而变** |
+
+`deps/openssl/README.md` 写着"本机实测 **3.5.7**，与原先从轻舟 `deps` 拷的版本一致"——
+我核实过**确实逐字节相同**（`0330B5F5…` / `FEB5B300…`）。但那是**一次性人工核对**，没有任何机制守住它。
+
+**为什么要紧**：这两个 DLL 决定部署包的**密码哈希与 TLS 实现**。换一台构建机、或升级一次 Git，
+部署包的密码学实现就可能悄悄换掉——而这正是 N-20 想根治的那类"静默漂移"。
+
+**修法**：像 `UPSTREAM_COMMIT` 那样留一处**期望哈希**，`build.ps1` 解析到 DLL 后比对，
+不一致就**显式打印警告**（不必拒绝构建，但绝不能静默）。位置建议就放在
+`deps/openssl/README.md` 旁边（如 `EXPECTED.sha256`），保持"版本只写一处"的口径。
+
+### N-24 部署包 `README.txt` 的文件数自相矛盾
+
+**状态**：**已修（2026-09-16）** —— 部署包 `README.txt` 改为「制品 5 个（exe + 4 DLL）；连证书 2、启动脚本 2 共 9 个文件，另有本说明与 dll-versions.txt」；`HANDOFF.md` 同步为「制品 5 个 / 整个 dist 目录共 10 个文件」。三处口径统一。
+**位置**：`build-package.ps1:82`（生成 `README.txt` 的那段 here-string）
+
+生成的头写着「二、部署文件（共 **8** 个）」，下面却列了 **9** 条
+（`club-server.exe` + 4 个 DLL + 2 个证书 + 2 个启动脚本），而 `README.txt` 自己还是第 10 个。
+另外 `HANDOFF.md:167` 又写「**5 个文件** / 约 18.8 MB」（口径是"制品"而非"整个目录"）。
+
+**同一个数字三处口径**，与 **N-4** 是同一类问题。建议统一成"制品 5 个 / 含证书与脚本共 N 个"，
+并且**只写一处**。
+
+## 四、关键实测输出
+
+**N-21 的服务端 CPU 度量**（与墙钟分开，这是判断"是否真的烧 CPU"的关键）：
+
+```
+A) 12 次未注册手机号登录：墙钟 5169 ms，服务端 CPU 6296 ms  → 525 ms/次
+B) 12 次 /health：       墙钟  198 ms，服务端 CPU   47 ms  →   4 ms/次
+比值 ≈ 134×；24 核饱和门槛 ≈ 46 并发（修复前 ≈ 6000 并发）
+```
+
+**第四轮 6 条的反证（都做了，确认没有过度收紧）**
+
+```
+N-15  4xx 后 GET 字段未变 + db.json 里也没有被拒的值        ✅
+N-18  同部门挂课题 -> 201   仅改名（不动 owner/plan）-> 200   ✅ 无误拦
+N-16  已注册 417 ms vs 未注册 427 ms（修复前 13×）           ✅ 但见 N-21
+N-19  token 长度 32                                          ✅
+```
+
+## 五、本轮未覆盖
+
+| 项 | 说明 |
+| --- | --- |
+| 客户端运行时行为 | 见 `docs/client-integration-review-2.md`；本机**无设备**，未跑 App |
+| N-21 的"实际服务中断" | 只证明了单次 CPU 成本与饱和**门槛**（算术），**未做持续压测**制造真实中断——沙箱里跑不稳，且会长时间占满本机 |
+| N-22 的修复验证 | 未改产品文件，故"改完是否真的不再登记 DLL"未验 |
+| TLS 正向验证 | 受限沙箱内无法复跑 22/0；服务端侧已在第四轮 §五 用裸 socket 手工握手另证 |
+
+## 附录 I · 第五轮复现命令
+
+```powershell
+cd server
+Remove-Item build\club-server.exe -Force -ErrorAction SilentlyContinue
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1        # 内含清单校验
+.\build\club-server.exe test                                           # PASS 387 / FAIL 0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1  # PASS 360 / FAIL 0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-check.ps1  # PASS 30 / FAIL 0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1              # 沙箱内 3/3
+
+# ---- N-21：未认证登录的 CPU 成本（关键：读进程 CPU，而不是墙钟）----
+cd build
+.\club-server.exe init-admin 13800000000 reviewpw123 n21-data
+.\club-server.exe serve 18112 n21-data
+#   取到 $proc = 该进程；函数 CpuMs($p){ $p.Refresh(); [int]$p.TotalProcessorTime.TotalMilliseconds }
+#   A) 量 12 次未注册号码登录前后的 CPU 差  -> 约 6296 ms（525 ms/次），且 12 次**全部 401、0 次 429**
+#   B) 量 12 次 /health 前后的 CPU 差        -> 约 47 ms（4 ms/次）
+#   → 比值 ≈ 134×；24 核饱和门槛 = ceil(24000 / 525) ≈ 46 并发
+
+# ---- N-22：把 gitignore 的 DLL 写进清单，然后构建被拒 ----
+cd ..\..
+$t = "build\manifest-trap"; Remove-Item -Recurse -Force $t -EA SilentlyContinue
+New-Item -ItemType Directory -Force -Path $t | Out-Null
+Copy-Item "third_party\qingzhou" "$t\qingzhou" -Recurse           # 用副本，绝不动真目录
+Copy-Item "build\libcrypto-3-x64.dll","build\libssl-3-x64.dll" "$t\qingzhou\deps\openssl\" -Force
+powershell -NoProfile -ExecutionPolicy Bypass -File "$t\qingzhou\update-manifest.ps1"
+(Get-Content "$t\qingzhou\MANIFEST.sha256").Count                  # 40（原 38），含两个 DLL
+Remove-Item "$t\qingzhou\deps\openssl\*.dll" -Force                # 模拟"新机器 clone"
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\build.ps1" -Vendor "$t\qingzhou" -NoDll
+#   -> exit 1：缺失 deps/openssl/libssl-3-x64.dll / libcrypto-3-x64.dll
+Remove-Item -Recurse -Force $t
+
+# ---- N-22 的同路径枚举命令（找"枚举工作区"的脚本）----
+Select-String -Path server\*.ps1,server\third_party\qingzhou\*.ps1 -Pattern 'Get-ChildItem.*-Recurse' -Encoding UTF8
+```
+
+---
+
+# 修复方回复（2026-09-16 · 针对第五轮）
+
+## 7.1 四条的处理
+
+| 条 | 定级 | 处置 | 回归闸门（回退即变红） |
+| --- | --- | --- | --- |
+| N-21 | 中 | 登录补**按 IP** 节流（复用 N-6 递增退避，独立表 `login_fail_ip`）+ PBKDF2 **并发闸门**（`MAX_PBKDF2_INFLIGHT = 8`，超出直接 429 不排队）；**N-16 不回退** | 单测 `testLoginIpThrottle`（11 条）+ 冒烟 §22.7（从 LAN 地址打，断言出现 429） |
+| N-22 | 低-中 | `update-manifest.ps1` 改**从索引生成**（`git ls-files`），并列出未被跟踪的文件 | 重建后 **39 条 / 0 个 DLL**；把 DLL 拷进内置目录再重建，清单不再被污染 |
+| N-23 | 提示 | `deps/openssl/EXPECTED.sha256`（唯一期望哈希）+ 构建时逐个比对并**打印**；部署包加 `dll-versions.txt` | 改一个字节 → 构建输出黄字告警（期望 / 实际 / 来源） |
+| N-24 | 次要 | `README.txt` 与 `HANDOFF.md` 统一为「制品 5 个；整个 dist 共 10 个文件」 | 目视核对（无可加断言） |
+
+## 7.2 N-21 的端到端实测（本机 `serve 18120`）
+
+| 场景 | 结果 | 说明 |
+| --- | --- | --- |
+| 回环 × 12 个**不同**未注册号码 | `401×12`，**0 个 429** | 回环有意豁免（见下） |
+| **LAN 地址**（10.75.84.132）× 12 个不同未注册号码 | `401×10` 然后 **`429 429`** | 按 IP 节流在第 11 次生效 —— 正是本报告那张表要的复现 |
+| LAN 已锁 + **正确**口令 | **429** | 锁的是 IP，不是口令 |
+| 同一时刻 回环 + 正确口令 | **200** | 豁免没有把正常本机使用一起挡掉 |
+| **12 个并发**登录（走回环绕过 IP 节流） | **401×8 + 429×4** | 并发闸门上限 8 生效：24 核下最坏只占约 1/3，而不是 46 个并发打满整机 |
+
+**为什么豁免回环**：这道节流防的是**远程**耗尽 CPU；本机调用者权限更高，而本项目的冒烟、契约回归与
+管理脚本全部从本机打 —— 不豁免就会把它们一起挡死（那才是真的回归）。代价是「本机进程仍可烧 CPU」，
+但那不属于这个端点的威胁模型。**因此验证 N-21 必须从非回环地址打**（冒烟 §22.7 已按此实现）。
+
+## 7.3 修复后的基线
+
+| 套件 | 第五轮（评审） | 修复后 |
+| --- | --- | --- |
+| 单测 | 387 / 0 | **398 / 0**（+11：`testLoginIpThrottle`） |
+| 冒烟 | 360 / 0 | **362 / 0**（+2：§22.7） |
+| TLS | 3 / 3（沙箱假阴性） | **22 / 0**（本机全权限下重跑） |
+| 跨仓契约 | 30 / 0 | **30 / 0** |
+
+## 7.4 一句反省
+
+N-21 是**我第四轮的修复自己引入的**：N-16 的时序等化本身没错，但我只核了「两条路径时间是否相等」，
+没核「这条路径现在有多贵、谁能触发它」。**修一处，要顺手看它有没有在别处开一个口子** ——
+这一条记在这里，而不只是记在结论里。

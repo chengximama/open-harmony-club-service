@@ -6,7 +6,7 @@
 - 工作区：`E:\harmonyOS\cangjie_web`
 - 设计阶段：**已完成，接口冻结**（39 / 39）
 - **当前阶段：服务端全部完成并验证**（M1–M11，含三轮独立代码评审修复 + 轻舟升级/CangDB 适配 + 容量基准与四项性能改造 + 第四轮复验的 6 条安全/一致性修复）；**客户端技术栈定为 ArkTS，已接入组内上传的成员模块 3 页并能编译打包（未签名、未接接口）** —— 见 `client-build.md`
-- 三套测试基线：**单测 387 / 冒烟 360 / TLS 22 全绿**（跑法见 `README.md` 顶部；容量基准 `server/tests/bench.ps1` 按需跑，见 `capacity-baseline.md`）
+- 三套测试基线：**单测 398 / 冒烟 362 / TLS 22 全绿**（跑法见 `README.md` 顶部；容量基准 `server/tests/bench.ps1` 按需跑，见 `capacity-baseline.md`）
 
 > §8、§9 是**设计阶段**给出的开工建议与待问问题，现已全部执行完，保留作方法论参考；
 > §11 记录服务端从 M1 到 M11 的实际进展，**数字以那里的最新一条为准**。
@@ -162,9 +162,9 @@ $src  = Get-ChildItem "E:\harmonyOS\cangjie_web\server\src\*.cj" | ForEach-Objec
 | 事实 | 说明 |
 | --- | --- |
 | **TLS 可用** | TLS 1.2/1.3 握手成功；TLS 1.0/1.1 **被服务端拒绝**（alert 70）；HTTPS 请求返回 200 |
-| **三套测试全绿** | 单测 **387** / 冒烟 **360** / TLS **22**（2026-09-15；跑法见 `README.md`） |
+| **三套测试全绿** | 单测 **398** / 冒烟 **362** / TLS **22**（2026-09-15；跑法见 `README.md`） |
 | **容量（近千人规模）** | 1000 成员 + 1000 任务（0.51 MB 库）：列表 30 ms 级、写 30 ms 级、4 并发登录 0.9 s；3000 + 3000（1.54 MB）分别约 45 / 48 ms 与 0.98 s。单机单进程**够用**；重新设计的阈值是 `db.json > 20 MB` 或日均写数千次 —— 全部实测见 `capacity-baseline.md` |
-| **部署文件集** | **5 个文件 / 约 18.8 MB**：`club-server.exe` + `libcangjie-runtime.dll` + `libboundscheck.dll` + `libcrypto-3-x64.dll` + `libssl-3-x64.dll`（证书、启动脚本与说明另计）；由 `server/build-package.ps1` 生成 |
+| **部署文件集** | **制品 5 个 / 约 18.8 MB**：`club-server.exe` + `libcangjie-runtime.dll` + `libboundscheck.dll` + `libcrypto-3-x64.dll` + `libssl-3-x64.dll`（证书 2、启动脚本 2、`README.txt`、`dll-versions.txt` 另计 —— 整个 `dist\club-server\` 共 10 个文件）；由 `server/build-package.ps1` 生成 |
 | **运行时只需 2 个 DLL** | runtime 目录有 51 个，只需 `libcangjie-runtime.dll` 与 `libboundscheck.dll` |
 
 ### ⚠️ 必须知道的坑
