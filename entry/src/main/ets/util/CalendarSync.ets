@@ -165,20 +165,18 @@ export class CalendarSyncService {
       return;
     }
     this.calendarMgr = calendarManager.getCalendarManager(context);
-    const calendars = await this.calendarMgr.getCalendars();
-    for (let i = 0; i < calendars.length; i++) {
-      const c = calendars[i];
-      if (c.account !== undefined && c.account.name === CAL_NAME) {
-        this.calendar = c;
-        return;
-      }
-    }
     const account: calendarManager.CalendarAccount = {
       name: CAL_NAME,
       type: calendarManager.CalendarType.LOCAL,
       displayName: CAL_NAME
     };
-    this.calendar = await this.calendarMgr.createCalendar(account);
+    // CalendarManager 只有 getCalendar（按账户取单个日历），没有 getCalendars 批量接口；
+    // 账户日历不存在时 getCalendar 会 reject，此时退化为 createCalendar。
+    try {
+      this.calendar = await this.calendarMgr.getCalendar(account);
+    } catch (e) {
+      this.calendar = await this.calendarMgr.createCalendar(account);
+    }
   }
 
   private async doCreate(cal: calendarManager.Calendar, taskId: number, title: string, desc: string, dueAt: string): Promise<void> {

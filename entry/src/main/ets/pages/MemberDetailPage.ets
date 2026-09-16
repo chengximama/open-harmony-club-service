@@ -23,7 +23,7 @@ interface MemberDetail {
   roleLabel: string;
   deptId: number;
   deptName: string;
-  status: string;
+  status: 'active' | 'pending' | 'disabled';
   joinedAt: string;
   phone: string;
   tasks: Task[];

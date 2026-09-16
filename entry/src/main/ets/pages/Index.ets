@@ -1,6 +1,9 @@
 import MemberListPage from './MemberListPage';
 import MemberDetailPage from './MemberDetailPage';
 import { ProfilePage } from './ProfilePage';
+import MyTasksPage from './MyTasksPage';
+import TaskListPage from './TaskListPage';
+import PlanTreePage from './PlanTreePage';
 
 @Entry
 @Component
@@ -33,19 +36,19 @@ struct Index {
       .height('100%')
     } else {
       Navigation() {
-        Tabs({ barPosition: BarPosition.End }) {
+        Tabs({ barPosition: BarPosition.End, index: this.currentIndex }) {
           TabContent() {
-            this.placeholderTab('我的任务', '任务分组与进度将在这里展示')
+            MyTasksPage({ onOpenPlans: () => { this.currentIndex = 2 } })
           }
           .tabBar(this.tabBarBuilder('我的\n任务', 0))
 
           TabContent() {
-            this.placeholderTab('任务', '任务列表与新建入口将在这里展示')
+            TaskListPage()
           }
           .tabBar(this.tabBarBuilder('任务', 1))
 
           TabContent() {
-            this.placeholderTab('课题', '课题树与进度将在这里展示')
+            PlanTreePage()
           }
           .tabBar(this.tabBarBuilder('课题', 2))
 
@@ -89,25 +92,5 @@ struct Index {
     .height(48)
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
-  }
-  @Builder
-  placeholderTab(title: string, description: string) {
-    Column({ space: 12 }) {
-      Text(title)
-        .fontSize(24)
-        .fontWeight(FontWeight.Bold)
-        .fontColor('#1A1A2E')
-
-      Text(description)
-        .fontSize(14)
-        .fontColor('#999999')
-        .textAlign(TextAlign.Center)
-    }
-    .width('100%')
-    .height('100%')
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .backgroundColor('#F5F7FA')
-    .padding({ left: 24, right: 24 })
   }
 }
