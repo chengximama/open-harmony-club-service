@@ -1,4 +1,4 @@
-import BuildProfile from '../../../../../entry/build/default/generated/profile/default/BuildProfile';
+import BuildProfile from 'BuildProfile';
 
 /**
  * 调试构建继续使用模拟器宿主机 HTTP 地址。
