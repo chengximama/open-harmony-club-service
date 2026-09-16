@@ -42,7 +42,7 @@
 | 编译器 | `D:\Cangjie\bin\cjc.exe` — **1.1.3** (cjnative) |
 | stdx | `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` — **1.1.3.1** |
 | 轻舟框架 | **已内置在本仓库**：`server\third_party\qingzhou`（上游 commit 在其中的 `UPSTREAM_COMMIT`；内容由 `MANIFEST.sha256` 校验，`build.ps1` 每次构建都会验）—— 2026-09-15 迁移，见 `third_party\qingzhou\PROVENANCE.md` |
-| OpenSSL 3 | **已内置**：`server\third_party\qingzhou\deps\openssl\` 下两个 DLL（构建时自动拷到 `build\`） |
+| OpenSSL 3 | **不随仓库提交**（6.5 MB 二进制）：`build.ps1` 按 **`third_party\qingzhou\deps\openssl` → `-OpenSslDir` → Git for Windows 的 `mingw64\bin`** 顺序找并打印来源（见该目录 `README.md`） |
 | 仓颉运行时 | `D:\Cangjie\runtime\lib\windows_x86_64_cjnative` |
 | **DevEco Studio** | **6.1.1.300** @ `D:\DevEco Studio`：自带 SDK **API 24 / 6.1.1.125**、hvigor **6.24.4**、JBR **21**（构建客户端必须用它的 JBR，原因见 `client-build.md`） |
 

@@ -22,6 +22,7 @@ param(
     [string]$CangjieHome = "D:\Cangjie",
     [string]$Stdx        = "E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx",
     [string]$Vendor      = "",
+    [string]$OpenSslDir  = "",
     [switch]$NoDll,
     [switch]$SkipFrameworkCheck
 )
@@ -115,15 +116,55 @@ Write-Host "[build] 服务端 $($app.Count) 个文件 -> $exe"
 if ($LASTEXITCODE -ne 0) { throw "编译失败 (exit $LASTEXITCODE)" }
 Write-Host "[build] 编译通过"
 
+# ── OpenSSL 3 的两个 DLL 从哪来 ─────────────────────────────────────────
+# 它们是**运行时 dlopen** 用的（不在 exe 导入表里），6.5 MB 二进制，**不随仓库提交**。
+# 解析顺序（每一步都会打印实际用的是哪一份，不会静默）：
+#   1) 内置目录 third_party\qingzhou\deps\openssl（放了就用）
+#   2) -OpenSslDir <目录>（给了就**只用它**，不再回退）
+#   3) Git for Windows 自带的 mingw64\bin（本项目本来就依赖它的 openssl CLI；实测 3.5.7）
+# 都找不到 → 报错退出并写清两种处置。详见 third_party\qingzhou\deps\openssl\README.md。
+function Test-OpenSslDir([string]$d) {
+    if ([string]::IsNullOrEmpty($d)) { return $false }
+    if (-not (Test-Path (Join-Path $d "libcrypto-3-x64.dll"))) { return $false }
+    if (-not (Test-Path (Join-Path $d "libssl-3-x64.dll"))) { return $false }
+    return $true
+}
+
+function Resolve-OpenSslDir([string]$VendorDir, [string]$Explicit) {
+    $inRepo = Join-Path $VendorDir "deps\openssl"
+    if (-not [string]::IsNullOrEmpty($Explicit)) {
+        if (Test-OpenSslDir $Explicit) { return (Resolve-Path $Explicit).Path }
+        throw "-OpenSslDir 里没有 libcrypto-3-x64.dll / libssl-3-x64.dll：$Explicit"
+    }
+    if (Test-OpenSslDir $inRepo) { return (Resolve-Path $inRepo).Path }
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if ($null -ne $git) {
+        $gitRoot = Split-Path (Split-Path $git.Source) -Parent
+        foreach ($cand in @((Join-Path $gitRoot "mingw64\bin"), (Join-Path $gitRoot "usr\bin"))) {
+            if (Test-OpenSslDir $cand) { return (Resolve-Path $cand).Path }
+        }
+    }
+    throw ("找不到 OpenSSL 3 的两个 DLL（libcrypto-3-x64.dll / libssl-3-x64.dll）。`n" +
+           "  已按顺序找过：1) $inRepo   2) -OpenSslDir 参数   3) Git for Windows 的 mingw64\bin`n" +
+           "  两种处置（任选其一）：`n" +
+           "    A) 从 Git for Windows 拷一份到内置目录（推荐，版本已核对 3.5.7）：`n" +
+           "         Copy-Item `"<Git>\mingw64\bin\libcrypto-3-x64.dll`" `"$inRepo`"`n" +
+           "         Copy-Item `"<Git>\mingw64\bin\libssl-3-x64.dll`"    `"$inRepo`"`n" +
+           "    B) 用 -OpenSslDir <目录> 指向任意一份 OpenSSL 3 x64（该目录须同时含这两个 DLL）。`n" +
+           "  说明见 third_party\qingzhou\deps\openssl\README.md。")
+}
+
 if (-not $NoDll) {
     # 部署文件集（..\docs\deploy-windows-verify.md §2）：exe + 4 个 DLL。
     # 缺 libcangjie-runtime.dll 会启动即失败；缺两个 OpenSSL 3 DLL 则 crypto 运行时才报错。
-    # 前两个来自仓颉 SDK；后两个来自**内置的**轻舟 deps（原先指仓库外，N-20 一并收进来）。
+    # 前两个来自仓颉 SDK（装了编译器就有）；后两个按 Resolve-OpenSslDir 的顺序解析。
+    $ossl = Resolve-OpenSslDir $Vendor $OpenSslDir
+    Write-Host "[build] OpenSSL DLL 来源：$ossl"
     $dlls = @(
         @{ n = "libcangjie-runtime.dll"; d = $RuntimeDir },
         @{ n = "libboundscheck.dll";     d = $RuntimeDir },
-        @{ n = "libcrypto-3-x64.dll";    d = Join-Path $Vendor "deps\openssl" },
-        @{ n = "libssl-3-x64.dll";       d = Join-Path $Vendor "deps\openssl" }
+        @{ n = "libcrypto-3-x64.dll";    d = $ossl },
+        @{ n = "libssl-3-x64.dll";       d = $ossl }
     )
     foreach ($x in $dlls) {
         $p = Join-Path $x.d $x.n

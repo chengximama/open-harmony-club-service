@@ -100,7 +100,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-package.ps1
 ```
 server/
   build.ps1               构建脚本（cjc + stdx + 轻舟同包编译；构建前先校验内置框架的内容清单）
-  third_party/qingzhou/   内置的轻舟框架源码（29 个 .cj + LICENSE + deps/openssl 两个 DLL；出处与维护见其 PROVENANCE.md）
+  third_party/qingzhou/   内置的轻舟框架源码（29 个 .cj + LICENSE；OpenSSL 两个 DLL 不提交，构建时自动找；出处见其 PROVENANCE.md）
   src/
     main.cj               入口：serve / init-admin / test + 全部路由注册
     store.cj              6 张表的数据模型 + 内存 Store + 原子落盘 + 查询/排序/课题树辅助

@@ -22,7 +22,7 @@
 | --- | --- |
 | `src/*.cj` | **全 29 个文件，一个不裁**。虽然我们构建时排除 5 个（见下），但保留完整源码才能对照"上游原本长什么样" |
 | `LICENSE` / `README.md` / `CHANGELOG.md` / `cjpm.toml` / `cjpm.lock` | 出处与许可材料；`cjpm.*` 只作记录（我们不使用 cjpm 构建） |
-| `deps/openssl/*.dll` | `libcrypto-3-x64.dll` + `libssl-3-x64.dll`（6.52 MB）。运行时必需，且原先是从轻舟目录里拷的 —— 不一起内置就仍要依赖仓库外的路径 |
+| `deps/openssl/*.dll` | **不提交**（6.5 MB 二进制）。`build.ps1` 按 **本目录 → `-OpenSslDir` → Git for Windows 的 `mingw64\bin`** 顺序找，并**打印实际用的是哪一份**；详见 `deps/openssl/README.md`。本机实测：Git 自带的那两个与原先从轻舟 `deps` 拷的**逐字节相同**（3.5.7） |
 | `MANIFEST.sha256` | 上述每个文件的 SHA-256；`build.ps1` 每次构建都会校验 |
 
 | 没装 | 原因 |
@@ -60,7 +60,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1        # 自动�
 git -C E:\cangjie\qingzhou fetch --all
 git -C E:\cangjie\qingzhou log --oneline -10
 
-# 2) 用同一套文件集覆盖本目录（src 全量 + LICENSE/README/CHANGELOG/cjpm.* + deps/openssl/*.dll）
+# 2) 用同一套文件集覆盖本目录（src 全量 + LICENSE/README/CHANGELOG/cjpm.*）
+#    `deps/openssl` 的两个 DLL **不进仓库**，无需覆盖（构建时会自动找，见 deps/openssl/README.md）
 #    3) 更新 UPSTREAM_COMMIT
 #    4) 重新生成清单
 powershell -NoProfile -ExecutionPolicy Bypass -File .\update-manifest.ps1

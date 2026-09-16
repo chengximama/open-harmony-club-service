@@ -1131,8 +1131,10 @@ let ok = found && verifyPw(pw, salt, hash, iter)
 **状态**：**已修（2026-09-16）** —— 选了修法里的**第 1 档（彻底自包含）**，并额外加了内容校验：
 
 - 轻舟源码**内置**到 `server/third_party/qingzhou/`：`src/` 全 29 个 `.cj`（一个不裁，便于对照上游）
-  + `LICENSE` / `README.md` / `CHANGELOG.md` / `cjpm.toml` / `cjpm.lock` + `deps/openssl/` 两个 DLL
-  （6.74 MB；不装 `.cache/build/target`、`admin-web/docs/examples/public*` 等与编译无关的目录）；
+  + `LICENSE` / `README.md` / `CHANGELOG.md` / `cjpm.toml` / `cjpm.lock` —— **共 0.23 MB，纯源码**
+  （不装 `.cache/build/target`、`admin-web/docs/examples/public*` 等；**也不装 `deps/openssl` 那两个
+  6.5 MB 的 OpenSSL DLL**，它们改由 `build.ps1` 按"内置目录 → `-OpenSslDir` → Git for Windows"的顺序
+  解析并打印来源，见 `deps/openssl/README.md`）；
 - 版本号**只有一处**：`third_party/qingzhou/UPSTREAM_COMMIT`（`build.ps1` 每次构建打印它，
   `README/HANDOFF` 只引用它，不再各自复述 commit —— 直接回应了本条的"只应有一处"）；
 - **比"钉 commit"更强的一层**：`MANIFEST.sha256` 逐字节锁定内置内容，`build.ps1` 每次构建校验
@@ -1305,8 +1307,9 @@ Select-String -Path server\src\*.cj -Pattern 'peerOf|clientIpOf|containsAscii|is
 ## 附录 H · 轻舟源码在本仓库的分布清点（2026-09-15）
 
 > **2026-09-16 更新**：本附录的结论（"本仓库不含任何轻舟源码"）**已被 N-20 的修复取代** ——
-> 框架现已**内置**在 `server/third_party/qingzhou/`（29 个源文件 + LICENSE 等材料 +
-> `deps/openssl` 两个 DLL，共 6.74 MB；内容由 `MANIFEST.sha256` 校验，`build.ps1` 每次构建都验）。
+> 框架现已**内置**在 `server/third_party/qingzhou/`（29 个源文件 + LICENSE 等材料，**0.23 MB 纯源码**；
+> 内容由 `MANIFEST.sha256` 校验，`build.ps1` 每次构建都验。OpenSSL 那两个 DLL 不提交，
+> 见 `deps/openssl/README.md`）。
 > 本附录保留作为**修复前**的证据，下面这些命令的"预期值"已不再成立。
 
 **问题**：轻舟的源码现在存在本仓库的哪里？

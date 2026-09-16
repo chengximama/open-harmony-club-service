@@ -13,7 +13,6 @@
 
 param(
     [string]$CangjieHome = "D:\Cangjie",
-    [string]$QingZhou    = "E:\cangjie\qingzhou",
     [string]$CertDir     = "",
     [switch]$SkipCert
 )
@@ -33,16 +32,12 @@ New-Item -ItemType Directory -Force -Path (Join-Path $dist "certs") | Out-Null
 # ---------- 1. 制品 ----------
 Copy-Item $exe (Join-Path $dist "club-server.exe") -Force
 
-$runtimeDir = Join-Path $CangjieHome "runtime\lib\windows_x86_64_cjnative"
-$dlls = @(
-    @{ n = "libcangjie-runtime.dll"; d = $runtimeDir },
-    @{ n = "libboundscheck.dll";     d = $runtimeDir },
-    @{ n = "libcrypto-3-x64.dll";    d = "$QingZhou\deps\openssl" },
-    @{ n = "libssl-3-x64.dll";       d = "$QingZhou\deps\openssl" }
-)
-foreach ($x in $dlls) {
-    $src = Join-Path $x.d $x.n
-    if (-not (Test-Path $src)) { throw "缺少依赖 DLL：$src" }
+# 4 个依赖 DLL 全部从 build\ 取 —— 那是 build.ps1 已经解析并拷好的（连 OpenSSL 的来源判定
+# 也在那边），本脚本因此不必再关心"OpenSSL 从哪儿来"。
+$buildDir = Join-Path $root "build"
+foreach ($n in @("libcangjie-runtime.dll", "libboundscheck.dll", "libcrypto-3-x64.dll", "libssl-3-x64.dll")) {
+    $src = Join-Path $buildDir $n
+    if (-not (Test-Path $src)) { throw "缺少依赖 DLL：$src —— 请先跑 build.ps1（**不要**加 -NoDll）" }
     Copy-Item $src $dist -Force
 }
 
