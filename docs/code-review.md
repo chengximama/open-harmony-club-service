@@ -1847,5 +1847,20 @@ Compress-Archive -Path .\dist\club-server\* -DestinationPath .\dist\club-server-
 | 项 | 说明 |
 | --- | --- |
 | 队友机器上的**报错原文** | 未取得。上述四类覆盖了本机能复现的全部成因；若他报的错不在这四类之内，需要他给第一行错误 |
-| 从 GitHub **直连**克隆验证 | 私有仓无凭据时 GitHub 返回 `Repository not found`，无法直连复现；改用本机 clone（走同一套 `.gitattributes` 过滤规则）等价验证 |
+| 从 GitHub **直连**克隆验证 | **已补做，见 8.5**。先前的失败是**我把仓库地址猜错了**（`pyf-sys/cangjie_web` → `Repository not found`），**不是私有仓** —— 这条订正留着，免得以后再用错地址下"克隆不了"的结论 |
 | 他机器上 git 不是 Git for Windows | 若 `mingw64\bin` 不存在，OpenSSL 两个 DLL 会找不到。解析已用 `Get-Command git` 反推路径，报错里也写了 `-OpenSslDir` 的解法，但**未在那种机器上实测** |
+
+## 8.5 补做：从 GitHub 真克隆（2026-09-16 · 已推送的 `b696bae`）
+
+§8.4 里那条"无法直连验证"作废 —— 地址错了而已。用**真实地址**重做，全部通过：
+
+| 步骤 | 结果 |
+| --- | --- |
+| `git clone --depth 1 https://github.com/XueDric/open-harmony-club-service.git`（走本机代理） | ✅ HEAD = `b696bae`，与本地一致 |
+| 克隆内容里是否已带修复 | ✅ 含 `server/build.cmd` 与自动探测的 `build.ps1`、`build-package.ps1` |
+| 干净环境编译（清空 `CANGJIE_HOME`、PATH 去掉 cjenv shim，**不复制任何文件**，全用克隆自带） | ✅ `cjc=D:\Cangjie` / **1.1.3** → 编译通过，4 个 DLL 自动就位 |
+| 内置框架内容清单（**克隆下来的字节**，验 `.gitattributes` 的 `-text` 是否真生效） | ✅ **39 项 / 0 异常** |
+| 用克隆自带的 `build.cmd`（队友双击那条路）再编一次 | ✅ 编译通过 |
+
+> 结论：**队友只要 `git clone` + 跑 `build.cmd` 就能编**（前提是机器上装了 cjc 1.1.3 + stdx 1.1.3.1）；
+> 没装 SDK 的机器则直接收 `club-server-<日期>.zip`，**一行命令都不用敲**。
