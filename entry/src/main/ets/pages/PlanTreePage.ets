@@ -72,9 +72,8 @@ struct PlanTreeNode {
   }
 }
 
-@Entry
 @Component
-struct PlanTreePage {
+export default struct PlanTreePage {
   @State tree: PlanNode[] = []
   @State loading: boolean = true
   @State errorMsg: string = ''

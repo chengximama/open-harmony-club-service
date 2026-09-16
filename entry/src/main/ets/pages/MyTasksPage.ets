@@ -1,7 +1,6 @@
 // 首页「我的任务」。服务端已分组，直接渲染，别自己算逾期。
 // 接接口后：GET /tasks/mine。
 
-import router from '@ohos.router'
 import { TaskApi, MineGroups, TaskBrief } from '../api/TaskApi'
 import { TaskCard } from '../components/TaskCard'
 import { Color, FontSize, Radius, Shadow, Space, StatusColor } from '../core/Theme'
@@ -16,6 +15,9 @@ export default struct MyTasksPage {
   @State myTasks: MineGroups = EMPTY_MINE_GROUPS
   @State loading: boolean = true
   @State errorMsg: string = ''
+
+  // 由外层 TabBar 注入：点击顶部「课题」时切到课题 tab
+  onOpenPlans?: () => void
 
   private taskApi: TaskApi = new TaskApi()
 
@@ -161,7 +163,9 @@ export default struct MyTasksPage {
           .fontSize(FontSize.body)
           .fontColor(Color.primary)
           .onClick(() => {
-            router.pushUrl({ url: 'pages/PlanTreePage' })
+            if (this.onOpenPlans) {
+              this.onOpenPlans()
+            }
           })
       }
       .width('100%')
