@@ -195,7 +195,10 @@ try {
     $r = Hit "GET" "/api/club/members" $null $token $null
     Check "GET /api/club/members -> 200（会长 + 运维 共 2 人）" (($r.Status -eq 200) -and ($r.Body -match '"total"\s*:\s*2')) "body=$($r.Body)"
     Check "名录视图**不含** pw_hash / pw_salt / pw_iter" (-not ($r.Body -match 'pw_hash|pw_salt|pw_iter')) "泄露？$($r.Body)"
-    Check "运维账号在名录里能认出（role = ops）" ($r.Body -match '"role"\s*:\s*"ops"') "body=$($r.Body)"
+        # 对照：**App 的名录里看不到系统账号**（h_member 的 handleMemberList 过滤 role = ops，
+# 免得客户端把运维显示成"待分配"），而运维台直读库文件、**照常显示**它 —— 这里断言的是后者；
+    # 前者由 smoke.ps1 的"名录里没有运维账号"三条闸门盯着。
+    Check "运维账号在运维台名录里能认出（role = ops；App 名录里是隐藏的）" ($r.Body -match '"role"\s*:\s*"ops"') "body=$($r.Body)"
     $r = Hit "GET" "/api/club/depts" $null $token $null
     Check "GET /api/club/depts -> 200 且主席团 1 人" (($r.Status -eq 200) -and ($r.Body -match '主席团') -and ($r.Body -match '"active_members"\s*:\s*1')) "body=$($r.Body)"
     foreach ($ep in '/api/club/tasks', '/api/club/plans', '/api/club/links', '/api/club/audit?limit=50') {

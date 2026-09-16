@@ -117,6 +117,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1      
   账号（PBKDF2，存在 `db.json`）**不是一套**，不能互用 —— 运维人员用前者，写操作的身份是后者的 `ops` 账号。
 - 详见 `docs\API-NOTES.md`「坑 34」（状态码）与「坑 36」（关停回执竞态，已修）。
 
+#### 运维账号（`ops`）操作手册
+
+运维人员**只登录后台**（`admin/admin123`）；club-server 侧的身份是**专用运维账号**（`role = ops`）。
+
+| 要做什么 | 怎么做 |
+| --- | --- |
+| 建号 / 重设口令 | `cd server\build` → `..\club-server.exe init-ops <手机号> <口令> <数据目录>`（幂等；本机开发库现在是 `13800000009 / admin123`） |
+| 让运维台能用它 | 把手机号/口令填进 `build\admin\admin.env` 的 `club_user` / `club_pass`；留空则运维页只能看不能改（页面会提示） |
+| 换人 / 退役 | `..\club-server.exe retire-ops <手机号> <数据目录>`（停用并作废其全部令牌；记录保留，审计仍可追溯） |
+| 它能看到什么 | 除「移交会长」外与会长同权：成员处置 / 部门增删改 / 换注册口令 / 重置**会长**的口令 / 停服 |
+| 它在哪儿可见 | **App 名录里看不到**（服务端过滤系统账号，客户端不需要为它改标签）；运维台 `/club` 的「成员名录」里能看到，标签「运维」；按 id 查详情仍可达 |
+| 事后怎么追 | `<数据目录>/audit.log` 里 `actor=` 是运维账号 → `GET /api/club/audit`（运维台「审计日志」标签页） |
+
+> 三条不变量（都有测试闸门）：**移交会长必须 403**（会长专属）、**`ops` 不能用 API 分配**
+> （只能用 `init-ops`，否则会长能造出权限略高于自己的账号）、**会长也不能停用运维账号**（同档保护）。
+
 ---
 
 ## 3. 文档地图（写代码时按需查）
@@ -209,7 +225,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1      
 | 事实 | 说明 |
 | --- | --- |
 | **TLS 可用** | TLS 1.2/1.3 握手成功；TLS 1.0/1.1 **被服务端拒绝**（alert 70）；HTTPS 请求返回 200 |
-| **测试全绿** | 单测 **490** / 冒烟 **422** / TLS **22** / 前后端契约 **30** / 后台端到端 **29** / 运维页端到端 **52**（2026-09-16；跑法见 `README.md`） |
+| **测试全绿** | 单测 **490** / 冒烟 **427** / TLS **22** / 前后端契约 **30** / 后台端到端 **29** / 运维页端到端 **52**（2026-09-16；跑法见 `README.md`） |
 | **容量（近千人规模）** | 1000 成员 + 1000 任务（0.51 MB 库）：列表 30 ms 级、写 30 ms 级、4 并发登录 0.9 s；3000 + 3000（1.54 MB）分别约 45 / 48 ms 与 0.98 s。单机单进程**够用**；重新设计的阈值是 `db.json > 20 MB` 或日均写数千次 —— 全部实测见 `capacity-baseline.md` |
 | **部署文件集** | **制品 5 个 / 约 18.8 MB**：`club-server.exe` + `libcangjie-runtime.dll` + `libboundscheck.dll` + `libcrypto-3-x64.dll` + `libssl-3-x64.dll`（证书 2、启动脚本 2、`README.txt`、`dll-versions.txt` 另计 —— 整个 `dist\club-server\` 共 10 个文件）；由 `server/build-package.ps1` 生成 |
 | **运行时只需 2 个 DLL** | runtime 目录有 51 个，只需 `libcangjie-runtime.dll` 与 `libboundscheck.dll` |
@@ -362,7 +378,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1      
 | M12 | **按《鸿蒙俱乐部-全场景UI设计规格》对齐服务端**（13 页 PDF 逐条对照，报告见 `docs/ui-spec-conformance-review.md`）。按决定落地 8 条（含队友复验补的 2 条）：**D-1** 权限摘要补 5 个管理布尔（`manage_depts` / `view_register_code` / `change_register_code` / `manage_invite_links` / `transfer_presidency`，**全部由 `can()` 推导**）· **D-2** `GET /members?q=` 按姓名或部门名搜索（手机号不参与，隐私最小化）· **D-3** 任务/课题**读**范围放开到全社团（`view_scope` 对 active 统一 `all`；**写**范围一字未改）· **D-4** 阻塞任务的**求助对象** `needs_help`（进 blocked 时可带 `help_dept_id` / `help_member_id`，离开自动清空）+ 部长/副部长首页带出本部门阻塞项（`counts.borrowed_blocked`）· **D-5** `TaskBrief.overdue_days`（本地日界差）· **D-7** 成员详情 `stats` 补 `done_tasks` / `overdue_tasks` | ✅ **已完成并验证**：`Task` 加两个字段（旧库无需迁移，`reqIntOr` 容错）；三处旧断言按新口径更新，并补"回退即变红"闸门（单测 +45、冒烟 +35）。当前基线 **单测 471 / 冒烟 421 / TLS 22 / 契约 30 全绿**（2026-09-16）。**D-6（密码口径）定稿为 8–32 字节 + 只允许数字/英文/符号**（`passwordError()` 作唯一入口，注册/改密/`init-admin` 三处共用；有意偏离设计稿 P12 的 6 位下限）；其余 8 条差异（D-8~D-14）**按决定保留原版本**；**D-15（首页阻塞原因）/ D-16（招募链接预填闭环，接口 39→40）**为队友复验后追加 |
 | M13 | **升级轻舟到 `e072980`（= 上游 HEAD）+ 纳入自带后台管理界面**：快照换成 `e072980`（`src/` 29 → **36** 个文件，新增 `jwt.cj` / `ratelimit.cj` / `securityheaders.cj` / `websocket.cj` / `httpclient.cj` / `hybrid.cj` / `circuit.cj`；上游删掉了 `cjpm.lock`），并新增 `build.ps1 -Target admin` → `build\admin\admin.exe`（自包含 exe + `admin-web\dist` + `admin.env`；前端产物随仓库提交，**部署机不需要 Node/npm**）。后台数据层同样路由到**本地 JSON 文件**（复用 `fw_rbac_store.cj`，沧海 CangDB 未公开）。新增 `tests/admin-check.ps1` 端到端把关 | ✅ **已完成并验证**：五套全绿 —— **单测 471 / 冒烟 421 / TLS 22 / 跨仓契约 30 / 后台端到端 29**（2026-09-16）。附带查清一个**上游特性**：业务码在 body 的 `code`、HTTP 状态不承载语义，且 `passOnNotFound` 路由 miss 时会污染 `ctx.status` → **成功响应也可能带 404**（已逐字节比对 `src/api.cj` / `src/router.cj` / `src/auth.cj` 与上游一致；前端只看 `code` 所以界面正常）。细节见 `API-NOTES` 坑 34 |
 | M14 | **「社团管理」运维页**（后台里加 `/club`）：后台入口改成我们自己的 `server/src/ops/admin_main.cj`（上游那套路由照旧 + `/api/club/**` + 链尾 `statusNormalizer()` 修掉"成功响应带 404"）；新增 `club_view.cj`（社团库**只读**白名单视图：概览/名录/部门/任务/课题/招募链接/审计）与 `club_json.cj`（让 `store.cj` 能单独编进这条构建）；**读**直读库文件、**写**以专用运维账号的身份走 club-server 真实 API；前端另起 `server/admin-web`（上游版本 + `Club.vue`，`dist` 随仓库提交）。顺带修了一个**既有缺陷**：`POST /admin/shutdown` 的回执会被关停线程抢先关连接吞掉（实测 8 次里 6 次空 body），现在关停线程先等 1 秒 | ✅ **已完成并验证**：**单测 471 / 冒烟 421 / TLS 22 / 契约 30 / 后台 29 / 运维页 42** 全绿（2026-09-16）。三条闸门值得一提：运维接口**不含 `pw_*`**、`user` 角色访问 `/api/club/**` 得 403、关停回执必须是 `ok:true`（坑 36 的回归闸门） |
-| M15 | **运维身份独立于会长**（用户 2026-09-16 定："运维不应由会长执行，应有专门的运营人员；账号 admin，密码 admin123"）：新增内置身份 **`ops`**（`roleRank` 与会长同档；`roleAllows` = 除「移交会长」外全放行；`scopeAllows` 全社团；`checkAccess` 里豁免"同档不可互处置"这道闸，所以能处置会长）；`views.cj` 的 `roleLabel`/`permissionsOf` 覆盖它；**不可由 API 分配**（`isKnownRole` 里没有它）→ 只能 `club-server init-ops <手机号> <口令>` 建、`retire-ops` 停用。运维台侧：`admin.env` 新增 `club_user`/`club_pass`，新增 `/api/club/session`（后台代持该账号换令牌，内存缓存 6 小时），前端去掉会长登录表单改为自动取会话，并修掉角色代号写错（`lead`/`vice_lead`，原先误写成 `minister`）。顺带补齐**部门新增/改名**的审计（原先只有删除记了） | ✅ **已完成并验证**：**单测 490 / 冒烟 422 / TLS 22 / 契约 30 / 后台 29 / 运维页 52** 全绿（2026-09-16）。关键闸门：运维可换注册口令/建部门/重置**会长**口令，但**移交会长必须 403**；`ops` 不能用 API 分配（400）；会长也不能停用运维账号（同档保护）；审计里 `actor` 是"运维"。本机开发库已按甲方口令建了运维账号 `13800000009 / admin123`（生产必须换） |
+| M15 | **运维身份独立于会长**（用户 2026-09-16 定："运维不应由会长执行，应有专门的运营人员；账号 admin，密码 admin123"）：新增内置身份 **`ops`**（`roleRank` 与会长同档；`roleAllows` = 除「移交会长」外全放行；`scopeAllows` 全社团；`checkAccess` 里豁免"同档不可互处置"这道闸，所以能处置会长）；`views.cj` 的 `roleLabel`/`permissionsOf` 覆盖它；**不可由 API 分配**（`isKnownRole` 里没有它）→ 只能 `club-server init-ops <手机号> <口令>` 建、`retire-ops` 停用。运维台侧：`admin.env` 新增 `club_user`/`club_pass`，新增 `/api/club/session`（后台代持该账号换令牌，内存缓存 6 小时），前端去掉会长登录表单改为自动取会话，并修掉角色代号写错（`lead`/`vice_lead`，原先误写成 `minister`）。顺带补齐**部门新增/改名**的审计（原先只有删除记了）。**系统账号在 App 名录里隐藏**（按甲方选择"隐藏系统账号"而不是让客户端补标签）：`GET /members` 与 `?q=` 都不返回 `role = ops`，按 id 查详情仍可达 | ✅ **已完成并验证**：**单测 490 / 冒烟 427 / TLS 22 / 契约 30 / 后台 29 / 运维页 52** 全绿（2026-09-16）。关键闸门：运维可换注册口令/建部门/重置**会长**口令，但**移交会长必须 403**；`ops` 不能用 API 分配（400）；会长也不能停用运维账号（同档保护）；审计里 `actor` 是"运维"；名录/搜索都搜不到系统账号。本机开发库已按甲方口令建了运维账号 `13800000009 / admin123`（生产必须换） |
 
 **接口进度 40 / 40**：认证 5 · 组织与成员 20 · 任务 8 · 课题 6（= 39 个业务接口）+ 运维 `/health`。
 （早期写「38 / 39」是把 `/health` 漏算了；2026-09-16 新增 `GET /api/v1/join/{token}`（D-16）后为 40。
@@ -400,7 +416,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1      
 | 2 | **CangDB 上游无代码**（`gitcode.com/BIT-FSSLab/CangDB` 只有 README） | 轻舟新版 `store.cj`/`rbac.cj` 依赖它；已用文件存储适配版顶上（`fw_rbac_store.cj` + `fw_rbac.cj`）——**我们的服务端与轻舟自带的后台（`-Target admin`）共用它**，后台数据落在 `build\admin\admin-data\rbac.json`；拿到可用 CangDB 后替换回上游实现 |
 | 2b | ~~轻舟后台的成功响应也可能带 HTTP 404~~ | ✅ 已修（2026-09-16）：入口换成我们自己的 `src/ops/admin_main.cj` 后，加了链尾 `statusNormalizer()` 按 body 的 `code` 回写状态码；**内置框架一行未改**。见 `API-NOTES` 坑 34 |
 | 2c | **运维账号的生命周期与口令** | 只能用 `club-server init-ops`（重设口令）/ `retire-ops`（停用）管理，API 不给分配这一档。本机开发库现在是 `13800000009 / admin123`（按甲方指定的口令）—— **生产必须换强口令**，它等价于"会长权限减移交" |
-| 2d | **客户端不认识 `ops` 角色** | 客户端名录的角色标签只映射 5 档，运维账号会显示成"待分配"；需要客户端补一条 `ops → 运维` 映射（或在名录里隐藏系统账号）。服务端已如实下发 `role: "ops"` |
+| 2d | ~~客户端不认识 `ops` 角色~~ | ✅ 已按"**隐藏系统账号**"解决（服务端侧）：`GET /members` 名录与 `?q=` 搜索都不返回 `role = ops` 的账号 → **客户端零改动**，名录里也不会冒出"待分配"的运维账号。要看/管它用运维台（仍显示「运维」）。闸门在 smoke（名录不含 / 搜索不含 / 按 id 仍在） |
 | 2e | **改运维页前端需要 Node** | `dist` 随仓库提交，**部署机不需要 Node**；但改 `server\admin-web\src` 的人要 `npm install && npm run build`（本机用 DevEco 自带 node 18 + npm 10 实测通过） |
 | 3 | 工作区原先**不是 git 仓库** | 2026-09-13 已建 GitHub 仓库 `XueDric/open-harmony-club-service` 并上传；提交作者为 `XueDric <318242380+XueDric@users.noreply.github.com>`。**2026-09-14 已把三轮评审修复 + 仓库整理全部推送**，远端 `main` 与本地 HEAD 一致 |
 | 3b | **推送 github 的网络** | 2026-09-14 实测**直连可用**（`git push origin main` 直接成功，此前记录的"直连不通"已不适用）。若哪天直连超时（约 20s），改走本地代理：<br>`git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main`<br>（直连超时**别误判成权限问题**） |

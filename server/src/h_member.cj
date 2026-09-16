@@ -98,6 +98,17 @@ public func handleMemberList(ctx: Context, s: Store): Unit {
     try {
         let picked = ArrayList<Member>()
         for ((_k, x) in s.members) {
+            /*
+             * 系统账号（运维，`role = ops`）**不进名录**（2026-09-16，甲方选择"隐藏系统账号"）：
+             *   · 它不是社团成员，出现在名录里只会让人困惑；
+             *   · 客户端的名录角色标签只映射 5 档，认不出它（会显示成"待分配"）；
+             *   · 要看/管这个账号，用运维台 —— 它直读库文件（`/api/club/members`），不受这里影响。
+             * 只隐藏**列表**：按 id 查详情仍然可达（会长/运维需要时用得上），
+             * 而 id 不会从任何成员可见的列表里露出。
+             */
+            if (x.role == "ops") {
+                continue
+            }
             if (fStatus.size > 0 && x.status != fStatus) {
                 continue
             }

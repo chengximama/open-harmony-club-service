@@ -167,6 +167,15 @@ try {
     & $Exe init-admin 13800000001 password123 $dataRel | Out-Null
     Check "重复 init-admin 返回 1" ($LASTEXITCODE -eq 1) "exit=$LASTEXITCODE"
 
+    # 运维账号（role = ops）：名录要**隐藏**它（它不是社团成员，客户端那 5 档标签也认不出），
+    # 但它必须真实存在 —— 下面用它的 id 反查详情来证明"是隐藏、不是丢失"。
+    Write-Host "[准备] init-ops（系统账号，名录里应被隐藏）"
+    $opsOut = & $Exe init-ops 13800000009 opspassword $dataRel 2>&1 | Out-String
+    Check "init-ops 返回 0" ($LASTEXITCODE -eq 0) "out=$opsOut"
+    $opsId = 0
+    if ($opsOut -match '成员 id=(\d+)') { $opsId = [int]$Matches[1] }
+    Check "拿到运维账号 id" ($opsId -gt 0) "out=$opsOut"
+
     # ---------- 启动服务 ----------
     Write-Host ""
     Write-Host "[启动] serve :$Port"
@@ -299,6 +308,17 @@ try {
     $presId = (Call-Api "GET" "/api/v1/auth/me" $null $presToken).json.data.member.id
     $r = Call-Api "GET" "/api/v1/depts" $null $presToken
     Check "GET /depts -> 200" ($r.status -eq 200) "status=$($r.status)"
+
+    # ---------- 系统账号（ops）在名录里不可见，但它确实存在 ----------
+    # ⚠ 用独立的 $rm：这段紧跟上面的 /depts 断言，复用 $r 会把后面的断言读串（真踩过）。
+    # ⚠ Call-Api 返回的是 @{status; json; raw}（没有 .body），断言要用 .raw / .json —— 用 .body 会静默变成空串，
+    #    "-notmatch" 永远为真 = 假通过（本轮真踩过：3 条断言里 2 条是假的）。
+    $rm = Call-Api "GET" "/api/v1/members" $null $presToken
+    Check "名录里没有运维账号（隐藏系统账号）" (($rm.status -eq 200) -and ($rm.raw -notmatch '"role":"ops"') -and ($rm.raw -notmatch '13800000009')) "raw=$($rm.raw)"
+    $rm = Call-Api "GET" "/api/v1/members?q=13800000009" $null $presToken
+    Check "按手机号也搜不到运维账号（q= 搜索同样过滤）" (($rm.status -eq 200) -and ($rm.raw -notmatch '13800000009')) "raw=$($rm.raw)"
+    $rm = Call-Api "GET" "/api/v1/members/$opsId" $null $presToken
+    Check "运维账号本身仍在（按 id 能查到，是隐藏不是丢失）" (($rm.status -eq 200) -and ($rm.json.data.member.role -eq 'ops')) "status=$($rm.status) raw=$($rm.raw)"
     Check "预置 4 个组织" ($r.json.data.items.Count -eq 4) "count=$($r.json.data.items.Count)"
     $deptOps = ($r.json.data.items | Where-Object { $_.name -eq "运营部" }).id
     $deptPub = ($r.json.data.items | Where-Object { $_.name -eq "宣传部" }).id

@@ -231,6 +231,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1
   它的权限 = **除「移交会长」外与会长同权**（能重置会长的口令、能改部门、能换注册口令），
   **不可由 API 分配**；退役：`club-server retire-ops 13800000009 data`。
   → club-server 的审计日志里 `actor` 是运维，不是会长（职责分离可追溯）。
+  → 这个账号**在 App 的名录里看不到**（服务端过滤掉系统账号，免得客户端显示成"待分配"），
+    但在运维台的「成员名录」标签页里能看到（它直读库文件），标签是「运维」。
 - 只读视图是白名单：运维接口里**不含任何口令材料**（`pw_salt` / `pw_hash` / `pw_iter`）。
 - **`cwd` 必须是 `build\admin`**（按相对路径读 `admin.env` 与 `admin-web\dist`）。
 - 这套后台与 `club-server` **互不影响**（不同端口、不同数据文件、不同 exe），可以同时跑。
