@@ -58,7 +58,7 @@ public func deptBriefObj(s: Store, deptId: Int64): JsonObject {
 public func permissionsOf(m: Member): JsonObject {
     let p = JsonObject()
     let active = m.status == "active"
-    let global = active && (m.role == "president" || m.role == "vice_president")
+    let global = active && (m.role == "president" || m.role == "vice_president" || m.role == "ops")
     let deptAdmin = active && (m.role == "lead" || m.role == "vice_lead")
     /*
      * view_scope：**active 成员一律 all**（2026-09-16，D-3）。
@@ -111,6 +111,9 @@ public func permissionsOf(m: Member): JsonObject {
 public func roleLabel(role: String): String {
     if (role == "president") {
         return "会长"
+    }
+    if (role == "ops") {
+        return "运维"
     }
     if (role == "vice_president") {
         return "副会长"

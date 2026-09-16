@@ -32,6 +32,9 @@ export const api = {
   // 读：走运维台自己的后端（它只读社团库文件，因此不需要 club-server 在跑）
   // 写：不走这里 —— 直接 fetch club-server 的真实 API，见 views/Club.vue
   clubConfig: () => request('/api/club/config'),
+  // 运维会话：后台用 admin.env 的专用运维账号（club-server 的 role = ops）换令牌，
+  // 页面拿着它直连 club-server 做写操作 —— 运维人员不需要任何社团账号的口令。
+  clubSession: (force = false) => request('/api/club/session' + (force ? '?force=1' : '')),
   clubOverview: () => request('/api/club/overview'),
   clubMembers: (qs = '') => request('/api/club/members' + qs),
   clubDepts: () => request('/api/club/depts'),

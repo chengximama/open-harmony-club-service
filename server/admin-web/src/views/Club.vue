@@ -32,24 +32,25 @@ const q = ref('')
 const statusFilter = ref('')
 const taskStatus = ref('')
 
-// ---------- 写：直连 club-server ----------
+// ---------- 写：直连 club-server，身份是**后台代持的专用运维账号** ----------
+// 运维人员只登录后台一次（admin/admin123）；后台用 admin.env 里的 club_user/club_pass
+// 去 club-server 换一个运维令牌交给本页面，所以这里既不需要会长口令，也不显示任何凭据。
 const base = ref(localStorage.getItem('club_base') || '')
-const clubToken = ref(localStorage.getItem('club_token') || '')
-const clubMe = ref(JSON.parse(localStorage.getItem('club_me') || 'null'))
+const clubToken = ref('')
+const clubMe = ref(null)
 const clubUp = ref(null)
 const healthAt = ref('')
-const phone = ref('')
-const password = ref('')
-const loginErr = ref('')
+const sessionErr = ref('')
+const opsConfigured = ref(null)   // null=未知 true/false
+const opsAccount = ref('')
 
-const loggedIn = computed(() => !!clubToken.value && !!clubMe.value)
+const loggedIn = computed(() => !!clubToken.value)
 const me = computed(() => clubMe.value || {})
-const perms = computed(() => (clubMe.value && clubMe.value.permissions) || {})
 
 const ROLE_OPTIONS = [
   { code: 'vice_president', label: '副会长' },
-  { code: 'minister', label: '部长' },
-  { code: 'vice_minister', label: '副部长' },
+  { code: 'lead', label: '部长' },
+  { code: 'vice_lead', label: '副部长' },
   { code: 'member', label: '成员' }
 ]
 const STATUS_OPTIONS = [
@@ -90,30 +91,43 @@ async function clubFetch(path, options = {}) {
 }
 
 async function clubLogin() {
-  loginErr.value = ''
-  try {
-    const data = await clubFetch('/api/v1/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ phone: phone.value.trim(), password: password.value })
-    })
-    clubToken.value = data.token
-    clubMe.value = { ...data.member, permissions: data.permissions }
-    localStorage.setItem('club_token', data.token)
-    localStorage.setItem('club_me', JSON.stringify(clubMe.value))
-    password.value = ''
-    note.value = '已以 ' + (data.member.name || data.member.phone) + ' 的身份登录 club-server'
-  } catch (e) {
-    loginErr.value = e.message
-  }
+  return ensureSession(true)
 }
 
-async function clubLogout() {
-  try { await clubFetch('/api/v1/auth/logout', { method: 'POST' }) } catch (_) {}
-  clubToken.value = ''
-  clubMe.value = null
-  localStorage.removeItem('club_token')
-  localStorage.removeItem('club_me')
-  note.value = '已退出 club-server'
+/*
+ * 取运维会话：后台用 admin.env 里的专用运维账号（club-server 的 role = ops）登录 club-server，
+ * 把令牌交给本页面。页面上不出现任何社团账号的口令，运维人员只登录后台。
+ * 令牌只放在这个页面的内存里（刷新页面会重新取一次，后台侧有 6 小时缓存，不会反复烧 PBKDF2）。
+ */
+async function ensureSession(force = false) {
+  sessionErr.value = ''
+  try {
+    const d = await api.clubSession(force)
+    opsConfigured.value = !!d.configured
+    opsAccount.value = (d.identity && d.identity.phone) || ''
+    if (!d.configured) {
+      clubToken.value = ''
+      clubMe.value = null
+      return
+    }
+    // 运维页可能不和服务端同一台机器：非本机打开时按"页面的 host + club_port"拼地址
+    if (d.api_base || d.club_port) {
+      const host = window.location.hostname
+      const isLocal = host === '127.0.0.1' || host === 'localhost' || host === ''
+      base.value = isLocal ? d.api_base : (window.location.protocol + '//' + host + ':' + d.club_port)
+      saveBase()
+    }
+    if (d.error) {
+      sessionErr.value = d.error
+      clubToken.value = ''
+      clubMe.value = null
+      return
+    }
+    clubToken.value = d.token || ''
+    clubMe.value = d.identity || null
+  } catch (e) {
+    sessionErr.value = e.message
+  }
 }
 
 async function checkHealth() {
@@ -197,18 +211,29 @@ async function refresh() {
 }
 
 // ---------- 写操作（直连 club-server 的真实 API） ----------
-async function guard(fn) {
+async function guard(fn, retried = false) {
   err.value = ''
   note.value = ''
   if (!loggedIn.value) {
-    err.value = '请先在上面用会长账号登录 club-server（写操作走它的真实 API）'
-    return
+    await ensureSession(false)
+    if (!loggedIn.value) {
+      err.value = sessionErr.value ||
+        '运维会话不可用：确认 club-server 在跑，并按提示在 admin.env 里配置 club_user / club_pass'
+      return
+    }
   }
   try {
     const msg = await fn()
     if (msg) note.value = msg
     await Promise.all([loadOverview(), loadMembers(), loadTasks()])
   } catch (e) {
+    /* 令牌过期/被作废（例如运维账号被 retire-ops 重设过口令）→ 刷新一次会话再重试一遍 */
+    if (!retried && /AUTH_REQUIRED|401|未登录|缺少令牌/.test(String(e.message))) {
+      await ensureSession(true)
+      if (loggedIn.value) {
+        return guard(fn, true)
+      }
+    }
     err.value = e.message
   }
 }
@@ -247,15 +272,9 @@ function resetPassword(m) {
 
 function transferPresidency(m) {
   return guard(async () => {
-    if (!confirm('把会长移交给 ' + m.name + '？你将被降为所选角色，此操作不可撤销。')) return ''
-    const selfRole = prompt('你自己降为哪个角色？（vice_president / minister / vice_minister / member）', 'vice_president')
-    if (!selfRole) return ''
-    await clubFetch('/api/v1/members/' + m.id + '/transfer-presidency', {
-      method: 'POST',
-      body: JSON.stringify({ self_role: selfRole.trim() })
-    })
-    await clubLogout()
-    return '已移交会长给 ' + m.name + '，请用新会长的账号重新登录'
+    // 会长专属：运维账号调用会被 club-server 拒（403 FORBIDDEN_ROLE）。
+    // 这里保留按钮是为了把口径讲清楚，而不是指望它成功。
+    return '「移交会长」是会长专属动作，运维不参与 —— 请让会长本人在 App 里操作'
   })
 }
 
@@ -276,10 +295,23 @@ function shutdownClub() {
     await clubFetch('/admin/shutdown', { method: 'POST', body: '{}' })
     clubToken.value = ''
     clubMe.value = null
-    localStorage.removeItem('club_token')
-    localStorage.removeItem('club_me')
     await checkHealth()
     return '已请求关停：club-server 会在 1 秒内退出（可在启动它的窗口看到「服务已停止」）'
+  })
+}
+
+/* 新增部门：部门增删改在 club-server 里是**会长与运维**才有的权限
+ * （副会长不行）—— 这也是"运维与会长同权"在最常用的一处的体现。 */
+function createDept() {
+  return guard(async () => {
+    const name = prompt('新部门名称（例如：外联部）')
+    if (!name) return ''
+    const d = await clubFetch('/api/v1/depts', {
+      method: 'POST',
+      body: JSON.stringify({ name: name.trim() })
+    })
+    await loadAll()
+    return '已新增部门：' + ((d.dept && d.dept.name) || name)
   })
 }
 
@@ -288,7 +320,10 @@ function copy(t) {
   note.value = '已复制：' + t
 }
 
-onMounted(loadAll)
+onMounted(async () => {
+  await ensureSession(false)
+  await loadAll()
+})
 </script>
 
 <template>
@@ -309,18 +344,24 @@ onMounted(loadAll)
           <span class="muted" v-if="healthAt">{{ healthAt }}</span>
           <button class="btn ghost sm" @click="checkHealth">重新探测</button>
         </div>
-        <div class="who" v-if="loggedIn">
-          已登录：<b>{{ me.name || me.phone }}</b>
-          <span class="tag">{{ me.role || '-' }}</span>
-          <span class="tag" v-if="me.dept">{{ me.dept.name }}</span>
-          <button class="btn ghost sm" @click="shutdownClub">优雅停服</button>
-          <button class="btn ghost sm" @click="clubLogout">退出</button>
-        </div>
-        <div class="who" v-else>
-          <input v-model="phone" class="sm-input" placeholder="会长手机号">
-          <input v-model="password" class="sm-input" type="password" placeholder="口令">
-          <button class="btn sm" @click="clubLogin">登录 club-server</button>
-          <span class="err inline">{{ loginErr }}</span>
+        <div class="who">
+          <template v-if="loggedIn">
+            运维身份：<b>{{ me.name || me.phone }}</b>
+            <span class="tag gold">{{ me.role_label || me.role || '-' }}</span>
+            <span class="muted">（后台代持，页面不接触社团口令）</span>
+            <button class="btn ghost sm" @click="shutdownClub">优雅停服</button>
+            <button class="btn ghost sm" @click="clubLogin">刷新运维会话</button>
+          </template>
+          <template v-else>
+            <span class="err inline" v-if="sessionErr">{{ sessionErr }}</span>
+            <span class="muted" v-else-if="opsConfigured === false">
+              未配置运维账号 → 只能看不能改。在 club-server 跑
+              <code>club-server init-ops &lt;手机号&gt; &lt;口令&gt; &lt;数据目录&gt;</code>，
+              再把手机号/口令填进 admin.env 的 club_user / club_pass。
+            </span>
+            <span class="muted" v-else>正在获取运维会话…</span>
+            <button class="btn ghost sm" @click="ensureSession(true)">重试</button>
+          </template>
         </div>
       </div>
 
@@ -392,7 +433,7 @@ onMounted(loadAll)
               <td>{{ m.open_tasks }}</td>
               <td class="muted">{{ m.joined_at || '—' }}</td>
               <td class="ops">
-                <button class="btn ghost sm" @click="assign(m)" :disabled="!perms.set_role && perms.set_role !== undefined">
+                <button class="btn ghost sm" @click="assign(m)">
                   {{ m.status === 'pending' ? '分配' : (m.status === 'disabled' ? '恢复' : '改派') }}
                 </button>
                 <button class="btn ghost sm" @click="resetPassword(m)">重置口令</button>
@@ -407,6 +448,10 @@ onMounted(loadAll)
 
       <!-- 部门 -->
       <div v-if="tab === 'depts'">
+        <div class="row">
+          <button class="btn ghost" @click="createDept">新增部门</button>
+          <span class="muted">部门增删改是「会长与运维」才有的权限（副会长不行）</span>
+        </div>
         <table>
           <thead><tr><th>ID</th><th>名称</th><th>排序</th><th>在用成员</th><th>顶层课题</th></tr></thead>
           <tbody>

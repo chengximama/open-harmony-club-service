@@ -32,6 +32,8 @@ func usage(): Unit {
     println("")
     println("用法:")
     println("  club-server init-admin <手机号> <初始密码> [数据目录]   初始化首任会长与 4 个组织（仅空库可执行）")
+    println("  club-server init-ops <手机号> <口令> [数据目录]         创建/重设运维账号（角色 ops；除移交会长外与会长同权）")
+    println("  club-server retire-ops <手机号> [数据目录]              停用运维账号（保留记录）")
     println("  club-server serve [端口] [数据目录]                    启动 HTTP 服务（默认 8080 / data）")
     println("  club-server serve-tls [端口] [数据目录] [证书] [私钥]  启动 HTTPS（默认 8443 / data / certs/cert.pem / certs/key.pem）")
     println("  club-server test                                       运行单测")
@@ -136,6 +138,111 @@ func cmdInitAdmin(phone: String, pw: String, dir: String): Int64 {
         println("已创建首任会长：${phone}（成员 id=${m.id}，部门=${m.dept_id}）")
         println("当前注册口令：${s.register_code}")
         println("数据目录：${s.dir}（db.json）")
+    } finally {
+        s.lock.unlock()
+    }
+    return 0
+}
+
+/*
+ * 运维账号（`role = "ops"`）的建号 / 重设口令 —— 2026-09-16 新增。
+ *
+ * 为什么要专门的账号：运维不该由会长本人做（职责分离）。运维人员用后台自己的账号
+ * （admin/admin123）登录运维台，运维台再用这个账号去调 club-server ——
+ * 于是审计里 actor 是"运维"，而不是会长。
+ *
+ * 为什么只能用命令行建（API 不给分配这一档，见 views.cj 的 isKnownRole）：
+ * 运维的权限是"除移交会长外与会长同权"，比副会长大；若 API 能分配它，
+ * 会长就能造出权限略高于自己的账号，绕过"会长只能通过移交产生"这条约束。
+ * 本机命令 = 需要有这台机器的访问权，与 /admin/shutdown 的本机信任同一档。
+ *
+ * 幂等：手机号已存在就**重设口令 + 把角色校准回 ops**（人员轮换时重新发凭据就是这个用法）。
+ */
+func cmdInitOps(phone: String, pw: String, dir: String): Int64 {
+    if (!isPhone(phone)) {
+        println("手机号格式不正确（11 位，以 1 开头）")
+        return 1
+    }
+    let pwErr = passwordError(pw)
+    if (pwErr.size > 0) {
+        println(pwErr)
+        return 1
+    }
+    let loaded = loadOrExit(dir)
+    let s = match (loaded) {
+        case Some(x) => x
+        case None => return 1
+    }
+    s.lock.lock()
+    try {
+        let rec = newPasswordRecord(pw)
+        let now = nowEpoch()
+        match (memberByPhone(s, phone)) {
+            case Some(m) =>
+                m.pw_salt = rec[0]
+                m.pw_hash = rec[1]
+                m.pw_iter = rec[2]
+                m.role = "ops"
+                m.status = "active"
+                revokeOtherTokens(s, m.id, "")
+                storeSaveNow(s)
+                println("已重设运维账号口令：${phone}（成员 id=${m.id}，角色已校准为 ops）")
+            case None =>
+                let m = Member()
+                m.id = s.next_member
+                s.next_member += 1
+                m.name = "运维"
+                m.phone = phone
+                m.pw_salt = rec[0]
+                m.pw_hash = rec[1]
+                m.pw_iter = rec[2]
+                m.role = "ops"
+                /* 运维不属于任何部门：dept_id = 0（它不是社团干部，名录里会排在最后） */
+                m.dept_id = 0
+                m.status = "active"
+                m.joined_at = now
+                s.members[m.id] = m
+                storeSaveNow(s)
+                println("已创建运维账号：${phone}（成员 id=${m.id}，角色 ops）")
+        }
+        println("权限：除「移交会长」外与会长同权；不可由 API 分配，只能用本命令创建")
+        println("下一步：把手机号与口令填进 build\\admin\\admin.env 的 club_user / club_pass")
+        println("数据目录：${s.dir}（db.json）")
+    } finally {
+        s.lock.unlock()
+    }
+    return 0
+}
+
+/* 运维账号退役：停用它（保留记录，审计里仍能查到它做过什么）。 */
+func cmdRetireOps(phone: String, dir: String): Int64 {
+    if (!isPhone(phone)) {
+        println("手机号格式不正确（11 位，以 1 开头）")
+        return 1
+    }
+    let loaded = loadOrExit(dir)
+    let s = match (loaded) {
+        case Some(x) => x
+        case None => return 1
+    }
+    s.lock.lock()
+    try {
+        let m = match (memberByPhone(s, phone)) {
+            case Some(x) => x
+            case None =>
+                println("没有这个手机号的成员：${phone}")
+                return 1
+        }
+        if (m.role != "ops") {
+            /* 只退役运维账号：误把普通成员（尤其会长）停用掉是没法接受的副作用 */
+            println("该账号的角色是 ${m.role}，不是运维账号；retire-ops 只处理 ops")
+            return 1
+        }
+        m.status = "disabled"
+        revokeOtherTokens(s, m.id, "")
+        storeSaveNow(s)
+        println("已停用运维账号：${phone}（成员 id=${m.id}）")
+        println("若要彻底删除，直接在数据目录的 db.json 里去掉该成员（或换个手机号重建）")
     } finally {
         s.lock.unlock()
     }
@@ -451,6 +558,31 @@ main(args: Array<String>): Int64 {
             "data"
         }
         return cmdInitAdmin(args[1], args[2], dir)
+    }
+    if (args[0] == "init-ops") {
+        if (args.size < 3) {
+            println("用法: club-server init-ops <手机号> <口令> [数据目录]")
+            println("  创建/重设**运维账号**（角色 ops：除「移交会长」外与会长同权）")
+            return 1
+        }
+        let dir = if (args.size > 3) {
+            args[3]
+        } else {
+            "data"
+        }
+        return cmdInitOps(args[1], args[2], dir)
+    }
+    if (args[0] == "retire-ops") {
+        if (args.size < 2) {
+            println("用法: club-server retire-ops <手机号> [数据目录]")
+            return 1
+        }
+        let dir = if (args.size > 2) {
+            args[2]
+        } else {
+            "data"
+        }
+        return cmdRetireOps(args[1], dir)
     }
     if (args[0] == "serve") {
         var port: UInt16 = 8080

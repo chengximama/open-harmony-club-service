@@ -345,7 +345,14 @@ if ($Target -eq "admin") {
             "# club-server 的地址：club_api 供运维台自己探测 /health（服务端侧），",
             "# club_port 供浏览器拼地址（http://<运维页的 host>:<club_port>），两者可不同。",
             "club_api=http://127.0.0.1:8080",
-            "club_port=8080"
+            "club_port=8080",
+            "",
+            "# 专用运维账号（club-server 侧的 role = ops，只能用 club-server init-ops 创建）。",
+            "# 运维人员只用后台账号 admin/admin123 登录；写操作由后台以**这个账号**的身份发出，",
+            "# 所以 club-server 的审计里 actor 是运维，而不是会长 —— 运维与会长职责分离。",
+            "# 留空 = 运维页只能看不能改（页面会提示怎么做）。",
+            "club_user=",
+            "club_pass="
         )
         [System.IO.File]::WriteAllLines($envFile, $lines, [System.Text.UTF8Encoding]::new($false))
         Write-Host "[build] 已生成 build\admin\admin.env（JSON 数据层；secret 已随机）"

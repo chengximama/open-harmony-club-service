@@ -49,8 +49,30 @@ class OpsConfig {
     public var clubPort: Int64 = 8080             /* 前端拼 club-server 地址用 */
     public var adminDataDir: String = "admin-data" /* 备份落这里 */
     public var rbacDb: String = "admin-data/rbac.json"
+    /* 专用运维账号（club-server 侧的 `role = ops`，由 club-server init-ops 创建）。
+     * 为什么由后台代持：运维不该由会长执行 —— 运维人员只用后台账号 admin/admin123 登录，
+     * 写操作以这个运维账号的身份发出去，club-server 的审计里 actor 就是"运维"。 */
+    public var clubUser: String = ""
+    public var clubPass: String = ""
     public init() {}
 }
+
+/*
+ * 运维会话（内存缓存）：后台用 club_user/club_pass 登录 club-server 换到的令牌。
+ * 只在后台进程内存里，不落盘；TTL 内复用，避免每次开页面都烧一次 PBKDF2（~400 ms）。
+ */
+class ClubSession {
+    public var token: String = ""
+    public var at: Int64 = 0
+    public var name: String = ""
+    public var role: String = ""
+    public var phone: String = ""
+    public var err: String = ""
+    public init() {}
+}
+
+/* 缓存有效期（秒）：club-server 的令牌本身是 30 天，这里只是别把登录做得太频繁。 */
+let OPS_SESSION_TTL: Int64 = 6 * 3600
 
 /* ===================== 响应壳（与上游 admin 前端约定一致：{code,message,data}） ===================== */
 
@@ -152,6 +174,65 @@ func opsStamp(): String {
 /* ===================== 社团库读取（只读） ===================== */
 
 /*
+ * 确保有一个可用的 club-server 运维会话（必要时登录）。
+ *
+ * 登录用框架 httpclient.cj 的 httpPostJson —— 它语义上"非 2xx / 网络错误一律返回 None"，
+ * 所以我们再探一次 /health 来区分"连不上"和"凭据不对"（两类问题处置完全不同）。
+ */
+func clubSessionEnsure(cfg: OpsConfig, sess: ClubSession, force: Bool): Unit {
+    let now = nowEpoch()
+    if (!force && sess.token.size > 0 && now - sess.at < OPS_SESSION_TTL) {
+        return
+    }
+    let url = opsJoin(cfg.apiBase, "api/v1/auth/login")
+    let body = JsonObject()
+    jPutStr(body, "phone", cfg.clubUser)
+    jPutStr(body, "password", cfg.clubPass)
+    sess.token = ""
+    sess.err = ""
+    match (httpPostJson(url, body.toString())) {
+        case Some(text) =>
+            var token = ""
+            var name = ""
+            var role = ""
+            var phone = ""
+            try {
+                let root = JsonValue.fromStr(text).asObject()
+                match (jsonGetObject(root, "data")) {
+                    case Some(d) =>
+                        token = jsonGetStr(d, "token") ?? ""
+                        match (jsonGetObject(d, "member")) {
+                            case Some(m) =>
+                                name = jsonGetStr(m, "name") ?? ""
+                                role = jsonGetStr(m, "role") ?? ""
+                                phone = jsonGetStr(m, "phone") ?? ""
+                            case None => ()
+                        }
+                    case None => ()
+                }
+            } catch (e: Exception) {
+                token = ""
+            }
+            if (token.size == 0) {
+                sess.err = "club-server 的登录响应看不懂（版本不匹配？）"
+                return
+            }
+            sess.token = token
+            sess.at = now
+            sess.name = name
+            sess.role = role
+            /* 登录响应里的 member 是"简报"（不含手机号），手机号以配置为准 */
+            sess.phone = cfg.clubUser
+        case None =>
+            /* 区分"连不上"与"凭据不对" —— 两类问题的处置完全不同 */
+            match (httpGetText(opsJoin(cfg.apiBase, "health"))) {
+                case Some(_) => sess.err = "运维账号凭据被拒绝：club_user=${cfg.clubUser}（口令错？账号被 retire-ops 停用？）"
+                case None => sess.err = "连不上 club-server：${cfg.apiBase}（没起？地址/端口在 admin.env 里改）"
+            }
+    }
+}
+
+/*
  * 每个请求现读现解析（社团库是 KB~MB 级、运维台访问频率极低），换取"永远最新"，
  * 且不需要缓存失效逻辑。读的是原子落盘后的完整文件（club-server 写 .tmp 再 rename）。
  */
@@ -226,6 +307,10 @@ main(): Int64 {
     ops.clubPort = cfg.getIntOr("club_port", 8080)
     ops.rbacDb = dbPath
     ops.adminDataDir = opsDirOf(dbPath)
+    ops.clubUser = cfg.getOr("club_user", "")
+    ops.clubPass = cfg.getOr("club_pass", "")
+    /* 运维会话（内存缓存）：后台用它以**运维账号**的身份调 club-server */
+    let clubSess = ClubSession()
 
     /* ---------- 后台自己的 RBAC 库（JSON 文件，见 src/fw_rbac_store.cj） ---------- */
     let store = RbacStore(dbPath)
@@ -356,7 +441,49 @@ main(): Int64 {
         jPutStr(o, "admin_data_dir", ops.adminDataDir)
         jPutStr(o, "rbac_db", ops.rbacDb)
         jPutInt(o, "admin_port", Int64(port))
+        jPutBool(o, "ops_account_configured", ops.clubUser.size > 0 && ops.clubPass.size > 0)
+        jPutStr(o, "ops_account", ops.clubUser)
         clubPutTime(o, "boot_at", bootEpoch)
+        opsOk(ctx, o)
+    })
+
+    /*
+     * 运维会话：后台用 admin.env 里的**专用运维账号**（club-server 的 role = ops）
+     * 登录 club-server，把令牌交给前端。
+     *
+     * 为什么这样做（而不是让运维人员自己输会长口令，也不是后台逐条代理写）：
+     *   · 运维人员只登录后台一次（admin/admin123），不需要知道任何社团账号的口令；
+     *   · 写操作的**身份**是运维账号 —— club-server 的审计里 actor 就是"运维"，
+     *     与会长做的操作分得清清楚楚（职责分离）；
+     *   · 前端仍然直连 club-server（CORS 已开），因此 PATCH/DELETE 这些方法都能用，
+     *     后台不必自己实现一套 HTTP 转发。
+     * 令牌只在本进程内存里缓存（TTL 6 小时），前端拿到的也只是这个运维令牌。
+     */
+    clubRouter.get("/api/club/session", { ctx: Context, _: () -> Unit =>
+        let o = JsonObject()
+        if (ops.clubUser.size == 0 || ops.clubPass.size == 0) {
+            jPutBool(o, "configured", false)
+            jPutStr(o, "hint", "未配置运维账号：先在 club-server 跑 " +
+                "`club-server init-ops <手机号> <口令> <数据目录>`，" +
+                "再把手机号/口令填进 admin.env 的 club_user / club_pass")
+            opsOk(ctx, o)
+            return
+        }
+        let force = ctx.queryParamOr("force", "") == "1"
+        clubSessionEnsure(ops, clubSess, force)
+        jPutBool(o, "configured", true)
+        jPutStr(o, "api_base", ops.apiBase)
+        jPutInt(o, "club_port", ops.clubPort)
+        jPutStr(o, "token", clubSess.token)
+        if (clubSess.err.size > 0) {
+            jPutStr(o, "error", clubSess.err)
+        }
+        let id = JsonObject()
+        jPutStr(id, "name", clubSess.name)
+        jPutStr(id, "phone", clubSess.phone)
+        jPutStr(id, "role", clubSess.role)
+        jPutStr(id, "role_label", clubRoleLabel(clubSess.role))
+        o.put("identity", id)
         opsOk(ctx, o)
     })
 
@@ -510,6 +637,12 @@ main(): Int64 {
     println("  账号 admin/admin123（管理员） user/user123（普通用户）")
     println("  运维页 http://127.0.0.1:${port}/club")
     println("  社团库 ${ops.dataDir}　club-server ${ops.apiBase}")
+    if (ops.clubUser.size > 0) {
+        println("  运维身份 ${ops.clubUser}（club-server 的 role = ops：除移交会长外与会长同权）")
+    } else {
+        println("  ⚠ 未配置运维账号（admin.env 的 club_user / club_pass）→ 运维页只能看、不能改")
+        println("    先在 club-server 跑：club-server init-ops <手机号> <口令> <数据目录>")
+    }
 
     /* ---------- 优雅关闭：主线程轮询关闭标志 ---------- */
     let handle = app.serve(port)

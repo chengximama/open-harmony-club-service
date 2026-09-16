@@ -40,6 +40,8 @@ cd build
 | `club-server serve [端口] [数据目录]` | 启动 HTTP（默认 `8080` / `data`） |
 | `club-server serve-tls [端口] [数据目录] [证书] [私钥]` | 启动 HTTPS（默认 `8443` / `data` / `certs/cert.pem` / `certs/key.pem`） |
 | `club-server init-admin <手机号> <初始密码> [数据目录]` | 预置首任会长 + 4 个组织（仅空库可执行） |
+| `club-server init-ops <手机号> <口令> [数据目录]` | 创建/重设**运维账号**（角色 `ops`：除「移交会长」外与会长同权；不可由 API 分配） |
+| `club-server retire-ops <手机号> [数据目录]` | 停用运维账号（保留记录，审计仍可追溯） |
 | `club-server test` | 运行单测 |
 | `POST /admin/shutdown` | 优雅关闭（**仅本机可访问**；Windows 无信号机制） |
 
@@ -94,7 +96,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-package.ps1
 | **M11 第四轮复验修复** | `docs/code-review.md` 第四轮 6 条：**N-14** 本机判定改按地址相等（原为子串匹配 `::1`，可被远程 IPv6 关停服务）· **N-15** 四个 handler 改两阶段赋值（被 4xx 拒绝不再留半改状态）· **N-16** 登录两条路径等价 PBKDF2（堵住时序枚举手机号）· **N-17** 审计 IO 移出锁 · **N-18** 任务与课题必须同部门 · **N-19** 招募 token 32 字节 | ✅ **已完成并验证**：新增单测闸门 `testLoopbackPeer` / `testLoginCreds` / `testAuditDeferred` 与冒烟 §22.5。**当轮基线 387 / 360 / 22 全绿**（2026-09-15） |
 | **M12 按 UI 设计规格对齐** | 《鸿蒙俱乐部-全场景UI设计规格》13 页逐条对照（报告 `docs/ui-spec-conformance-review.md`），按决定落地 8 条：**D-1** 权限摘要 5 个管理布尔 · **D-2** 名录 `?q=` 搜索 · **D-3** 任务/课题**读**范围放开到全社团（**写**不变）· **D-4** 阻塞任务求助对象 `needs_help` · **D-5** `overdue_days` · **D-7** 成员详情补 `done_tasks`/`overdue_tasks` · **D-15** 首页阻塞原因 · **D-16** 招募链接预填闭环（接口 39→40）。**D-6** 密码口径定稿 **8–32 字节 + 只允许数字/英文/符号** | ✅ **已完成并验证**：**当前基线 471 / 421 / 22 / 契约 30 全绿**（2026-09-16） |
 | **M13 轻舟升级 + 自带后台** | 内置框架升到 **`e072980`**（= 上游 HEAD；`src/` 29 → **36** 个文件，新增 `jwt` / `ratelimit` / `securityheaders` / `websocket` / `httpclient` / `hybrid` / `circuit`）；新增 **`build.ps1 -Target admin`** → `build\admin\admin.exe`（上游 `examples\admin.cj` + 预构建 `admin-web\dist`，**部署机不需要 Node/npm**），数据层复用 `fw_rbac_store.cj` **落到本地 JSON 文件**；新增 `tests/admin-check.ps1` 端到端把关 | ✅ **已完成并验证**：**五套全绿 471 / 421 / 22 / 契约 30 / 后台 29**（2026-09-16）。附带查清上游"业务码在 body 的 `code`、成功响应也可能带 HTTP 404"这一特性（`API-NOTES` 坑 34，**不改内置框架**） |
-| **M14 「社团管理」运维页** | 后台加一页 `/club`：入口换成我们自己的 `server/src/ops/admin_main.cj`（上游那套路由 + `/api/club/**` + 链尾 `statusNormalizer()` 修状态码）；`club_view.cj` 提供社团库**只读**白名单视图（概览/名录/部门/任务/课题/招募链接/审计）；`club_json.cj` 让 `store.cj` 能单独编进这条构建。**读**直读库文件、**写**由浏览器带会长令牌直连 club-server 真实 API；前端另起 `server/admin-web`（上游版本 + `Club.vue`） | ✅ **已完成并验证**：**运维页端到端 42 / 0**（`tests/ops-check.ps1`）。顺带修了 `POST /admin/shutdown` 回执被吞的既有缺陷（实测 8 次里 6 次空 body）——见 `API-NOTES` 坑 36 |
+| **M14 「社团管理」运维页** | 后台加一页 `/club`：入口换成我们自己的 `server/src/ops/admin_main.cj`（上游那套路由 + `/api/club/**` + 链尾 `statusNormalizer()` 修状态码）；`club_view.cj` 提供社团库**只读**白名单视图（概览/名录/部门/任务/课题/招募链接/审计）；`club_json.cj` 让 `store.cj` 能单独编进这条构建。**读**直读库文件、**写**以专用运维账号的身份走 club-server 真实 API；前端另起 `server/admin-web`（上游版本 + `Club.vue`） | ✅ **已完成并验证**：**运维页端到端 42 / 0**（`tests/ops-check.ps1`）。顺带修了 `POST /admin/shutdown` 回执被吞的既有缺陷（实测 8 次里 6 次空 body）——见 `API-NOTES` 坑 36 |
+| **M15 运维身份 `ops`** | 新增内置身份 **`ops`**（运维不该由会长执行）：`roleRank` 与会长同档、`roleAllows` 除「移交会长」外全放行、`scopeAllows` 全社团、`checkAccess` 豁免"同档不可互处置"（所以能处置会长）；**不可由 API 分配**，只能 `club-server init-ops` / `retire-ops`。运维台侧：`admin.env` 加 `club_user`/`club_pass`，新增 `/api/club/session`（后台代持换令牌），前端去掉会长登录表单；顺带修掉角色代号写错（`lead`/`vice_lead` 被误写成 `minister`）、补齐部门新增/改名的审计 | ✅ **已完成并验证**：**单测 490 / 冒烟 422 / 运维页端到端 52** 全绿。闸门：运维能换注册口令/建部门/重置会长口令，但**移交会长必须 403**；`ops` 不能 API 分配；审计 `actor` 是"运维" |
 
 **接口进度：40 / 40**（认证 5 + 组织与成员 20 + 任务 8 + 课题 6 = 39 个业务接口，另加运维 `/health`）。
 另有一个不在接口清单里的公开页面 `GET /join/{token}`（招募链接落地页，无需登录）。
@@ -111,7 +114,7 @@ server/
   build.cmd               build.ps1 的包装（免 -ExecutionPolicy Bypass）
   third_party/qingzhou/   内置的轻舟框架源码（36 个 .cj + examples/admin.cj + admin-web/ 含预构建 dist + LICENSE；OpenSSL 两个 DLL 不提交，构建时自动找；出处见其 PROVENANCE.md）
   src/
-    main.cj               入口：serve / init-admin / test + 全部路由注册
+    main.cj               入口：serve / init-admin / init-ops / retire-ops / test + 全部路由注册
     store.cj              6 张表的数据模型 + 内存 Store + 原子落盘 + 查询/排序/课题树辅助
     errors.cj             错误码表（api-design §1.3 的代码化）
     jsonw.cj              响应包装 {ok,data}/{ok,error} + 取参 + 字段校验器
@@ -154,10 +157,10 @@ server/
 ## 测试
 
 ```powershell
-# 单测：时间/历法、口令哈希、权限矩阵（含档位规则、N-7「不可作用于同权/更高权者」、N-10 assign 同权）、注册节流（N-6 按 IP + 退避）、落盘往返与坏记录拒绝（含 N-5）、视图/分页、任务分组、课题树与聚合、堆排序边界、令牌回收、两段式落盘契约、轻舟 RBAC 适配层、本机判定（N-14）、登录口令材料（N-16）、审计缓冲（N-17）（471 项）
+# 单测：时间/历法、口令哈希、权限矩阵（含档位规则、N-7「不可作用于同权/更高权者」、N-10 assign 同权）、注册节流（N-6 按 IP + 退避）、落盘往返与坏记录拒绝（含 N-5）、视图/分页、任务分组、课题树与聚合、堆排序边界、令牌回收、两段式落盘契约、轻舟 RBAC 适配层、本机判定（N-14）、登录口令材料（N-16）、审计缓冲（N-17）（490 项）
 .\build\club-server.exe test
 
-# 冒烟测试：真实 HTTP、状态码、错误码、权限边界（含 H-1 同部门接管、N-7 同权重置/降级/禁用、N-10 assign 同权）、幂等、环形校验、删除上提、审计日志、落地页转义与 CSP、注册节流（N-6）、重启持久性、被拒请求不留半改状态与跨部门挂课题（N-15 / N-18）、UI 规格对齐（D-1…D-7）（421 项）
+# 冒烟测试：真实 HTTP、状态码、错误码、权限边界（含 H-1 同部门接管、N-7 同权重置/降级/禁用、N-10 assign 同权）、幂等、环形校验、删除上提、审计日志、落地页转义与 CSP、注册节流（N-6）、重启持久性、被拒请求不留半改状态与跨部门挂课题（N-15 / N-18）、UI 规格对齐（D-1…D-7）（422 项）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1
 
 # TLS：证书 SAN、TLS 1.2/1.3 通过、1.0/1.1 被拒、真证书校验下走一遍登录（22 项）

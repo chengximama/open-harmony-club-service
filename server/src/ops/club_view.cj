@@ -81,11 +81,19 @@ func clubPlanTitle(s: Store, id: Int64): String {
     }
 }
 
+/*
+ * 角色代号 → 中文。代号必须与 club-server 一致：
+ *   president / ops / vice_president / lead / vice_lead / member
+ * ⚠ 中间两档是 **lead / vice_lead**（不是 minister）—— 2026-09-16 这里写错过一次，
+ *   结果是运维页把"部长"显示成空白、下拉框发出去的代号还会被服务端拒。
+ *   闸门：tests/ops-check.ps1 会分配 lead / vice_lead 并回读中文标签。
+ */
 func clubRoleLabel(role: String): String {
     if (role == "president") { return "会长" }
+    if (role == "ops") { return "运维" }
     if (role == "vice_president") { return "副会长" }
-    if (role == "minister") { return "部长" }
-    if (role == "vice_minister") { return "副部长" }
+    if (role == "lead") { return "部长" }
+    if (role == "vice_lead") { return "副部长" }
     if (role == "member") { return "成员" }
     return ""
 }

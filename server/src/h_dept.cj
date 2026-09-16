@@ -57,6 +57,10 @@ public func handleDeptCreate(ctx: Context, s: Store): Unit {
         d.name = name
         d.sort = sort
         s.departments[d.id] = d
+        /* 部门增删改是**会长与运维**独占的敏感动作，三条都要留痕（原先只有删除记了审计）。
+         * 2026-09-16 补：运维页开放「新增部门」之后这条尤其不能缺 ——
+         * 否则"谁建的部门"在审计里查不到，运维与会长之间的职责分离就断了一半。 */
+        audit(s, m.id, "create-dept", d.id, "部门=${name} sort=${sort}")
         storeSave(s)
         let data = JsonObject()
         jPutObj(data, "dept", deptView(s, d))
@@ -126,6 +130,8 @@ public func handleDeptUpdate(ctx: Context, s: Store): Unit {
             case None => ()
         }
         if (touched) {
+            /* 同 handleDeptCreate：改名 / 改排序也要留痕（与删除部门同口径） */
+            audit(s, m.id, "update-dept", d.id, "部门=${d.name} sort=${d.sort}")
             storeSave(s)
         }
         let data = JsonObject()

@@ -488,7 +488,7 @@ can(member, action, target) -> bool
 | --- | --- | --- |
 | `id` | int | |
 | `name` | string | 姓名 |
-| `role` | string \| null | `president` / `vice_president` / `lead` / `vice_lead` / `member`；**`pending` 时为 `null`** |
+| `role` | string \| null | `president` / `vice_president` / `lead` / `vice_lead` / `member`；**`pending` 时为 `null`**。另有一个**内置运维身份 `ops`**（2026-09-16 新增，不可由 API 分配、只能 `init-ops` 创建；权限=会长去掉移交会长。见 §3.8 的运维口径与 `v1-scope.md` §3.4.4） |
 | `dept` | object \| null | `{ "id": 2, "name": "运营部" }`；**`pending` 时为 `null`** |
 | `status` | string | `pending`（待分配）/ `active`（正式）/ `disabled`（已退出） |
 | `joined_at` | string | ISO 8601 |
@@ -1080,6 +1080,7 @@ Part 3 的接口权限，按如下模型。**这张表细化了 `v1-scope.md` §
 | 4 | **注册口令是否存明文** | **建议存明文**（仅会长 / 副会长可读）。它不是个人凭证，而是像群邀请码一样**需要被随时展示**的东西；存哈希会导致会长只能靠"重置"才能知道当前口令 |
 | 5 | 部长能否审批定向到本部门的待分配账号 | v1 **先不做**（审批统一归会长 / 副会长）。若招新期仍是瓶颈，再作为增强——它能把审批压力真正下放 |
 | 6 | 编辑成员姓名的权限 | 部长 / 副部长限本部门；跨部门与角色变更归社团级 |
+| 7 | **运维身份 `ops`（2026-09-16 新增，已实现）** | 运维不该由会长执行：运维台（轻舟后台 `/club`）以**专用运维账号**的身份调本服务，审计里 actor 是运维。口径 = **除「移交会长」外与会长同权**；**不可由 API 分配**，只能 `club-server init-ops <手机号> <口令> [数据目录]` 创建、`retire-ops` 停用。矩阵不单列它（它是内置身份，不是第 6 档可分配角色），见 §3.8 上方的说明与 `v1-scope.md` §3.4.4 |
 
 ---
 

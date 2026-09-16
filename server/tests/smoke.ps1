@@ -1156,6 +1156,9 @@ try {
     Check "审计含重置密码记录" ($auditText -match "reset-password")
     Check "审计含注册口令更换记录" ($auditText -match "change-register-code")
     Check "审计区分恢复与普通分配（M-4）" (($auditText -match "restore-member") -and ($auditText -match "assign-member")) "audit=$auditText"
+    # 部门增删改三条都要留痕（2026-09-16 补：原先只有删除记了审计；
+    # 运维页开放「新增部门」后，"谁建的部门"必须查得到）
+    Check "审计含部门新增/改名记录" (($auditText -match "create-dept") -and ($auditText -match "update-dept")) "audit=$auditText"
 
     # ---------- 24. 重启后数据仍在 ----------
     Write-Host ""

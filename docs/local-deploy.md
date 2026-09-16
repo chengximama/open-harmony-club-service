@@ -220,9 +220,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1
 - 后台自己的数据落在 `build\admin\admin-data\rbac.json`（原子写：先 `.tmp` 再 rename）。
 - 运维页 `/club` **只放给角色 1**（`user` 拿到 403）。它**读**社团库文件
   （`admin.env` 的 `club_data`，默认 `../data` —— 即从 `build\` 启动 club-server 时的数据目录），
-  所以 **club-server 没起也能看**；**写**（分配/停用/重置口令/移交会长/轮换口令/优雅停服）
-  由浏览器带**会长令牌直连 club-server 的真实 API** —— 也就是页面里要用会长手机号+口令登录一次。
-  这样 club-server 始终是唯一写入者，权限与业务规则仍由它把关。
+  所以 **club-server 没起也能看**。
+- **写操作的身份是"专用运维账号"**（运维不该由会长执行）。三步：
+  ```powershell
+  cd build
+  ..\build\club-server.exe init-ops 13800000009 admin123 data   # ① 建运维账号（一次性；生产换强口令）
+  # ② 把手机号/口令填进 build\admin\admin.env 的 club_user / club_pass
+  # ③ 运维人员只用后台账号 admin/admin123 打开 /club —— 页面上不需要任何社团口令
+  ```
+  它的权限 = **除「移交会长」外与会长同权**（能重置会长的口令、能改部门、能换注册口令），
+  **不可由 API 分配**；退役：`club-server retire-ops 13800000009 data`。
+  → club-server 的审计日志里 `actor` 是运维，不是会长（职责分离可追溯）。
 - 只读视图是白名单：运维接口里**不含任何口令材料**（`pw_salt` / `pw_hash` / `pw_iter`）。
 - **`cwd` 必须是 `build\admin`**（按相对路径读 `admin.env` 与 `admin-web\dist`）。
 - 这套后台与 `club-server` **互不影响**（不同端口、不同数据文件、不同 exe），可以同时跑。

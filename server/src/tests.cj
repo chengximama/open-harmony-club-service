@@ -509,6 +509,41 @@ func testPerms(t: TR): Unit {
     t.ok("会长改会长本人", can(pres, Action.SetRole, presTarget))
     t.ok("会长跨部门建任务", can(pres, Action.CreateTask, other))
 
+    /*
+     * 运维（ops，2026-09-16）：**除「移交会长」外与会长同权**。
+     * 存在的理由：运维不该由会长本人执行（职责分离）—— 运维台用专用账号调 club-server，
+     * 审计里 actor 就是运维账号。这里把"同权"和"唯一减法"都钉住：
+     * 少一条就会悄悄退化成副会长档（做不了部门增删改、换不了注册口令）。
+     */
+    let ops = mkMember(3, "ops", 0)   /* 运维不属于任何部门：dept_id = 0 */
+    t.ok("运维不能移交会长（唯一减法）", !can(ops, Action.TransferPresidency, other))
+    t.eqs("运维移交会长被拒的错误码", checkAccess(ops, Action.TransferPresidency, other) ?? "", "FORBIDDEN_ROLE")
+    t.ok("运维可增改部门（会长独占的那几项）", can(ops, Action.ManageDept, other))
+    t.ok("运维可删部门", can(ops, Action.DeleteDept, other))
+    t.ok("运维可换注册口令", can(ops, Action.ChangeRegisterCode, other))
+    t.ok("运维可看注册口令", can(ops, Action.ViewRegisterCode, other))
+    t.ok("运维可管招募链接", can(ops, Action.ManageInviteLink, other))
+    t.ok("运维可跨部门建任务（全社团范围）", can(ops, Action.CreateTask, other))
+    /* 与会长**同档**，但要能处置会长 —— "会长忘口令、运维帮他重置"正是典型运维场景。
+     * （权限层放行；handler 另有「最后一个会长」保护，见 h_member.cj 的 FORBIDDEN_LAST_PRESIDENT。） */
+    t.ok("运维可重置会长的口令", can(ops, Action.ResetPassword, presTarget))
+    t.ok("运维可禁用会长（handler 另有最后一个会长保护）", can(ops, Action.DisableMember, presTarget))
+    t.ok("运维可改会长的角色", can(ops, Action.SetRole, presTarget))
+    /* 但「重置密码不含本人」这条对它照旧（作废自己全部令牌 = 响应 200 后自己掉线） */
+    let opsSelf = Target()
+    opsSelf.member_id = 3
+    opsSelf.target_role = "ops"
+    t.ok("运维不能重置自己的口令（N-7 口径照旧）", !can(ops, Action.ResetPassword, opsSelf))
+    /* 这一档**不可由 API 分配**：否则会长能造出权限略高于自己的账号 */
+    t.ok("ops 不是可分配角色（只能由 init-ops 创建）", !isKnownRole("ops"))
+    t.eqs("ops 的角色中文名", roleLabel("ops"), "运维")
+    t.ok("运维权限摘要：manage_depts 为真", reqBoolOr(permissionsOf(ops), "manage_depts", false))
+    t.ok("运维权限摘要：change_register_code 为真", reqBoolOr(permissionsOf(ops), "change_register_code", false))
+    t.ok("运维权限摘要：transfer_presidency 为假", !reqBoolOr(permissionsOf(ops), "transfer_presidency", true))
+    /* 反向闸门：副会长档没有因为新增 ops 被顺手放开 */
+    t.ok("副会长仍不能增改部门（未因 ops 放开）", !can(vp, Action.ManageDept, other))
+    t.ok("副会长仍不能换注册口令（未因 ops 放开）", !can(vp, Action.ChangeRegisterCode, other))
+
     /* 副会长：除移交与改动会长本人外同权 */
     t.ok("副会长不能移交", !can(vp, Action.TransferPresidency, other))
     t.ok("副会长不能改会长本人", !can(vp, Action.SetRole, presTarget))
