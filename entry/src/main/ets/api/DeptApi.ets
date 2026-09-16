@@ -49,6 +49,10 @@ export interface UpdateDeptRequest {
   sort?: number;
 }
 
+export interface CreateLinkRequest {
+  dept_id: number;
+}
+
 // ─── API 类 ───
 
 export class DeptApi {
@@ -85,7 +89,8 @@ export class DeptApi {
 
   /** POST /api/v1/dept-invite-links — 创建招募链接 */
   async createLink(deptId: number): Promise<ApiResponse<InviteLinkView>> {
-    return this.client.post<InviteLinkView>('/dept-invite-links', { dept_id: deptId });
+    const data: CreateLinkRequest = { dept_id: deptId };
+    return this.client.post<InviteLinkView>('/dept-invite-links', data);
   }
 
   /** DELETE /api/v1/dept-invite-links/{token} — 停用招募链接 */

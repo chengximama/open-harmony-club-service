@@ -25,20 +25,20 @@ export interface TaskBrief {
   owner: MemberBrief | null;
   dept: DeptBrief | null;
   plan: PlanRef | null;
-  due_at: string | null;       // null = 无截止时间
-  is_overdue: boolean;  // 服务端计算的派生量
-  blocked: boolean;     // 服务端计算的派生量 (status === 'blocked')
-  updated_at: string | null;
+  due_at: string | null;  // ISO 8601，null = 无截止时间
+  is_overdue: boolean;    // 服务端计算的派生量
+  blocked: boolean;       // 服务端计算的派生量 (status === 'blocked')
+  updated_at: string;     // 服务端生成
 }
 
 /** TaskDetail = TaskBrief + — views.cj:taskDetail */
 export interface TaskDetail extends TaskBrief {
   desc: string;
-  blocker: string;         // blocked 时填值，否则 ""
+  blocker: string | null;  // blocked 时填值，否则 null
   plan_path: PlanRef[];    // 课题祖先链（从根到直属）
   created_by: MemberBrief | null;
-  created_at: string | null;
-  completed_at: string | null;    // 未完成 = null
+  created_at: string;
+  completed_at: string | null;  // 未完成 = null
 }
 
 // ─── 请求类型 ───
@@ -71,13 +71,37 @@ export interface TaskLookupRequest {
   task_ids: number[];
 }
 
+/** GET /api/v1/tasks 查询参数 — 全部可选，服务端过滤 */
+export interface TaskListParams {
+  dept_id?: number;
+  owner_id?: number;
+  status?: TaskStatus;
+  plan_id?: number;
+  overdue?: boolean;
+  include_subplans?: boolean;
+  page?: number;
+  size?: number;
+}
+
 /** POST /api/v1/tasks/lookup 响应 */
 export interface TaskLookupResponse {
   items: TaskBrief[];
   missing: number[];
 }
 
+/** POST /api/v1/tasks 响应 — 服务端把任务包在 data.task 下（幂等命中时附 duplicated） */
+export interface CreateTaskResponse {
+  task: TaskDetail;
+  duplicated?: boolean;
+}
+
 /** GET /api/v1/tasks/mine 响应 — MineGroups */
+export interface MineCounts {
+  overdue: number;
+  blocked: number;
+  open_total: number;
+}
+
 export interface MineGroups {
   overdue: TaskBrief[];
   blocked: TaskBrief[];
@@ -85,11 +109,7 @@ export interface MineGroups {
   due_week: TaskBrief[];
   later: TaskBrief[];
   no_due: TaskBrief[];
-  counts: {
-    overdue: number;
-    blocked: number;
-    open_total: number;
-  };
+  counts: MineCounts;
 }
 
 // ─── API 类 ───
@@ -107,27 +127,20 @@ export class TaskApi {
   }
 
   /** GET /api/v1/tasks — 任务列表（筛选 + 分页） */
-  async list(params?: {
-    dept_id?: number;
-    owner_id?: number;
-    status?: TaskStatus;
-    plan_id?: number;
-    overdue?: boolean;
-    include_subplans?: boolean;
-    page?: number;
-    per_page?: number;
-  }): Promise<ApiResponse<PagedResponse<TaskBrief>>> {
-    const query = new URLSearchParams();
-    if (params?.dept_id) query.set('dept_id', String(params.dept_id));
-    if (params?.owner_id) query.set('owner_id', String(params.owner_id));
-    if (params?.status) query.set('status', params.status);
-    if (params?.plan_id) query.set('plan_id', String(params.plan_id));
-    if (params?.overdue !== undefined) query.set('overdue', String(params.overdue));
-    if (params?.include_subplans !== undefined) query.set('include_subplans', String(params.include_subplans));
-    if (params?.page) query.set('page', String(params.page));
-    if (params?.per_page) query.set('per_page', String(params.per_page));
-    const qs = query.toString();
-    return this.client.get<PagedResponse<TaskBrief>>(`/tasks${qs ? '?' + qs : ''}`);
+  async list(params?: TaskListParams): Promise<ApiResponse<PagedResponse<TaskBrief>>> {
+    const parts: string[] = [];
+    if (params !== undefined) {
+      if (params.dept_id !== undefined) parts.push(`dept_id=${params.dept_id}`);
+      if (params.owner_id !== undefined) parts.push(`owner_id=${params.owner_id}`);
+      if (params.status !== undefined) parts.push(`status=${params.status}`);
+      if (params.plan_id !== undefined) parts.push(`plan_id=${params.plan_id}`);
+      if (params.overdue !== undefined) parts.push(`overdue=${params.overdue}`);
+      if (params.include_subplans !== undefined) parts.push(`include_subplans=${params.include_subplans}`);
+      if (params.page !== undefined) parts.push(`page=${params.page}`);
+      if (params.size !== undefined) parts.push(`size=${params.size}`);
+    }
+    const qs = parts.join('&');
+    return this.client.get<PagedResponse<TaskBrief>>(`/tasks${qs.length > 0 ? '?' + qs : ''}`);
   }
 
   /** GET /api/v1/tasks/{id} — 任务详情 */
@@ -135,9 +148,9 @@ export class TaskApi {
     return this.client.get<TaskDetail>(`/tasks/${id}`);
   }
 
-  /** POST /api/v1/tasks — 创建任务 */
-  async create(data: CreateTaskRequest): Promise<ApiResponse<TaskDetail>> {
-    return this.client.post<TaskDetail>('/tasks', data);
+  /** POST /api/v1/tasks — 创建任务（响应在 data.task 下） */
+  async create(data: CreateTaskRequest): Promise<ApiResponse<CreateTaskResponse>> {
+    return this.client.post<CreateTaskResponse>('/tasks', data);
   }
 
   /** PATCH /api/v1/tasks/{id} — 更新任务（只改传了的值） */
@@ -150,7 +163,7 @@ export class TaskApi {
     return this.client.put<TaskDetail>(`/tasks/${id}/status`, data);
   }
 
-  /** DELETE /api/v1/tasks/{id} — 删除任务（软删） */
+  /** DELETE /api/v1/tasks/{id} — 删除任务（软删除） */
   async delete_(id: number): Promise<ApiResponse<Record<string, never>>> {
     return this.client.delete_<Record<string, never>>(`/tasks/${id}`);
   }

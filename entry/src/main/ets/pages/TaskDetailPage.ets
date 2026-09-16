@@ -5,6 +5,7 @@ import router from '@ohos.router'
 import { TaskApi, TaskDetail, TaskStatus, PlanRef, UpdateTaskStatusRequest } from '../api/TaskApi'
 import { StatusChip } from '../components/StatusChip'
 import { Color, FontSize, Radius, Space, StatusColor, statusLabel } from '../core/Theme'
+import { CalendarSyncService } from '../util/CalendarSync'
 
 const EMPTY_TASK_DETAIL: TaskDetail = {
   id: 0,
@@ -39,6 +40,7 @@ struct TaskDetailPage {
   @State errorMsg: string = ''
 
   private taskApi: TaskApi = new TaskApi()
+  private calendarSync: CalendarSyncService = CalendarSyncService.getInstance()
   private statusOptions: string[] = ['todo', 'doing', 'blocked', 'done']
 
   aboutToAppear(): void {
@@ -82,15 +84,28 @@ struct TaskDetailPage {
       this.detail = resp.data
       this.currentStatus = resp.data.status
       this.blockerText = resp.data.blocker ?? ''
+      if (resp.data.status === 'done') {
+        this.calendarSync.removeTask(this.detail.id, getContext(this))
+      }
       AlertDialog.show({ message: '已保存' })
     } else {
       AlertDialog.show({ message: resp.error?.message ?? '保存失败' })
     }
   }
 
+  private async addToCalendar(): Promise<void> {
+    if (this.detail.due_at === null || this.detail.status === 'done') {
+      AlertDialog.show({ message: '该任务无截止时间或已完成，无需加入日历' })
+      return
+    }
+    const msg = await this.calendarSync.addOrUpdateTask(this.detail, getContext(this))
+    AlertDialog.show({ message: msg })
+  }
+
   private async doDelete(): Promise<void> {
     const resp = await this.taskApi.delete_(this.detail.id)
     if (resp.ok) {
+      await this.calendarSync.removeTask(this.detail.id, getContext(this))
       router.back()
     } else {
       AlertDialog.show({ message: resp.error?.message ?? '删除失败' })
@@ -302,11 +317,7 @@ struct TaskDetailPage {
                 .backgroundColor(Color.primarySoft)
                 .fontColor(Color.primary)
                 .onClick(() => {
-                  if (this.detail.due_at !== null && this.detail.status !== 'done') {
-                    AlertDialog.show({ message: '已加入系统日历（骨架阶段暂未真正写入）' })
-                  } else {
-                    AlertDialog.show({ message: '该任务无截止时间或已完成，无需加入日历' })
-                  }
+                  this.addToCalendar()
                 })
               Button('删除任务')
                 .layoutWeight(1)

@@ -3,7 +3,7 @@
  * 后端 Part 5：课题 6 个接口
  * 后端来源：backend-src/h_plan.cj · views.cj
  */
-import { HttpClient, ApiResponse } from './HttpClient';
+import { HttpClient, ApiResponse, PagedResponse } from './HttpClient';
 import type { MemberBrief, DeptBrief } from './AuthApi';
 import type { TaskBrief, PlanRef } from './TaskApi';
 
@@ -22,11 +22,11 @@ export interface PlanBrief {
   owner: MemberBrief | null;
   dept: DeptBrief | null;
   due_at: string | null;
-  progress: PlanProgress | null;  // total=0 时为 null
+  progress: PlanProgress;        // 递归聚合值，恒有 {done,total}，total=0 时为 {0,0}
   task_count: number;
   child_count: number;
-  created_at: string | null;
-  updated_at: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 /** PlanDetail = PlanBrief + — views.cj:planDetail */
@@ -45,7 +45,18 @@ export interface PlanDetailResponse {
   plan: PlanDetail;
   path: PlanRef[];
   children: PlanNode[];
-  tasks: TaskBrief[];
+  tasks: PagedResponse<TaskBrief>;
+}
+
+/** POST /api/v1/plans 响应 — 课题对象在 data.plan 下 */
+export interface CreatePlanResponse {
+  plan: PlanDetail;
+  duplicated?: boolean;
+}
+
+/** PATCH /api/v1/plans/{id} / POST /api/v1/plans/{id}/move 响应 */
+export interface PlanWriteResponse {
+  plan: PlanDetail;
 }
 
 // ─── 请求类型 ───
@@ -57,6 +68,8 @@ export interface CreatePlanRequest {
   dept_id?: number;
   desc?: string;
   due_at?: string | null;
+  /** 客户端生成的幂等 token，防重复提交 */
+  client_token?: string;
 }
 
 export interface UpdatePlanRequest {
@@ -67,8 +80,8 @@ export interface UpdatePlanRequest {
 }
 
 export interface MovePlanRequest {
-  /** 目标父课题 id，0 或不传表示移到根级 */
-  parent_id?: number;
+  /** 目标父课题 id，null 表示提升为顶层 */
+  new_parent_id?: number | null;
 }
 
 /** GET /api/v1/plans 响应 */
@@ -95,22 +108,22 @@ export class PlanApi {
     return this.client.get<PlanDetailResponse>(`/plans/${id}`);
   }
 
-  /** POST /api/v1/plans — 创建课题 */
-  async create(data: CreatePlanRequest): Promise<ApiResponse<PlanDetail>> {
-    return this.client.post<PlanDetail>('/plans', data);
+  /** POST /api/v1/plans — 创建课题（响应在 data.plan 下） */
+  async create(data: CreatePlanRequest): Promise<ApiResponse<CreatePlanResponse>> {
+    return this.client.post<CreatePlanResponse>('/plans', data);
   }
 
-  /** PATCH /api/v1/plans/{id} — 更新课题 */
-  async update(id: number, data: UpdatePlanRequest): Promise<ApiResponse<PlanDetail>> {
-    return this.client.patch<PlanDetail>(`/plans/${id}`, data);
+  /** PATCH /api/v1/plans/{id} — 更新课题（响应在 data.plan 下） */
+  async update(id: number, data: UpdatePlanRequest): Promise<ApiResponse<PlanWriteResponse>> {
+    return this.client.patch<PlanWriteResponse>(`/plans/${id}`, data);
   }
 
-  /** POST /api/v1/plans/{id}/move — 移动课题（改父级） */
-  async move(id: number, data: MovePlanRequest): Promise<ApiResponse<PlanDetail>> {
-    return this.client.post<PlanDetail>(`/plans/${id}/move`, data);
+  /** POST /api/v1/plans/{id}/move — 移动课题（改父级，响应在 data.plan 下） */
+  async move(id: number, data: MovePlanRequest): Promise<ApiResponse<PlanWriteResponse>> {
+    return this.client.post<PlanWriteResponse>(`/plans/${id}/move`, data);
   }
 
-  /** DELETE /api/v1/plans/{id} — 删除课题（子课题上提，任务保留） */
+  /** DELETE /api/v1/plans/{id} — 删除课题（子课题上提一级，任务保留） */
   async delete_(id: number): Promise<ApiResponse<Record<string, never>>> {
     return this.client.delete_<Record<string, never>>(`/plans/${id}`);
   }
