@@ -6,7 +6,7 @@ import { AuthApi, ChangePasswordRequest, UserPermissions } from '../api/AuthApi'
 import { TokenStore } from '../store/TokenStore';
 import { PermissionStore } from '../store/PermissionStore';
 import { ApiRequestError } from '../api/HttpClient';
-import { replaceTo } from '../utils/RouterUtils';
+import { replaceTo, pushTo } from '../utils/RouterUtils';
 
 // ─── 设计令牌 ───
 class Colors {
@@ -196,6 +196,38 @@ struct ProfilePage {
 
           // ─── 菜单卡片 ───
           Column() {
+            // 社团管理（只有有 manage_members 权限的用户可见）
+            if (this.permStore.permissions?.manage_members) {
+              Row() {
+                Stack() {
+                  Circle()
+                    .width(32)
+                    .height(32)
+                    .fill(Colors.primaryBg)
+                  Text('⚙️')
+                    .fontSize(16)
+                }
+                .width(32)
+                .height(32)
+
+                Text('社团管理')
+                  .fontSize(Font.body)
+                  .fontColor(Colors.textPrimary)
+                  .fontWeight(FontWeight.Medium)
+                  .margin({ left: 12 })
+
+                Blank()
+
+                Text('›')
+                  .fontSize(22)
+                  .fontColor(Colors.textTertiary)
+              }
+              .width('100%')
+              .height(56)
+              .padding({ left: 16, right: 16 })
+              .onClick(() => { pushTo('pages/ManagePage'); })
+            }
+
             // 修改密码
             Row() {
               Stack() {

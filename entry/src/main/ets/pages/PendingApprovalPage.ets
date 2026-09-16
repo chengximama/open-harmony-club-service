@@ -283,6 +283,7 @@ struct AssignResultDialog {
   }
 }
 
+@Entry
 @Component
 export default struct PendingApprovalPage {
   @State members: PendingMemberUI[] = PENDING_MEMBERS;

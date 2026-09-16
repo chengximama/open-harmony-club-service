@@ -1,5 +1,8 @@
 // 成员名录页面（B同学负责）
 // 按 4 个部门分组展示成员，点击卡片进入成员详情
+// 入口：顶部「待分配审批」按钮（跳转 @Entry 页面，按 manage_members 权限由后端兜底）
+
+import { pushTo } from '../utils/RouterUtils';
 
 interface Member {
   id: number;
@@ -144,10 +147,19 @@ export default struct MemberListPage {
         Text('🔍  搜索成员')
           .fontSize(14)
           .fontColor('#999999')
-          .width('100%')
+          .layoutWeight(1)
           .padding(12)
           .backgroundColor('#F5F5F5')
           .borderRadius(8)
+
+        Text('待分配')
+          .fontSize(13)
+          .fontColor('#1E88E5')
+          .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+          .backgroundColor('#E3F2FD')
+          .borderRadius(8)
+          .margin({ left: 8 })
+          .onClick(() => { pushTo('pages/PendingApprovalPage'); })
       }
       .width('100%')
       .padding({ left: 16, right: 16, top: 12, bottom: 8 })
