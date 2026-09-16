@@ -1,2 +1,16 @@
 {
+  "src": [
+    "pages/Index",
+    "pages/LoginPage",
+    "pages/RegisterPage",
+    "pages/PendingWaitPage",
+    "pages/SplashPage",
+    "pages/ProfilePage",
+    "pages/TaskListPage",
+    "pages/TaskDetailPage",
+    "pages/PlanTreePage",
+    "pages/PlanDetailPage",
+    "pages/CreateTaskPage",
+    "pages/CreatePlanPage"
+  ]
 }

@@ -261,7 +261,7 @@ func testStore(t: TR): Unit {
     s.register_code = "K3M9P2"
     s.register_code_by = 1
 
-    storeSave(s)
+    storeSaveNow(s)
 
     t.ok("db.json 已生成", exists(s.dbFile()))
     t.ok("tmp 已清理", !exists(s.dbFile() + ".tmp"))
@@ -299,7 +299,7 @@ func testStore(t: TR): Unit {
     t.eqi("next_member 往返", l.next_member, 2)
 
     /* 备份文件：**第二次保存**时才会生成（第一次没有旧库可备份） */
-    storeSave(s)
+    storeSaveNow(s)
     t.ok("bak 已生成（第二次保存）", exists(s.dbFile() + ".bak"))
 
     /* 坏库：必须报错，绝不静默降级为空库（否则下次保存会覆盖真实数据） */
@@ -319,7 +319,7 @@ func testStore(t: TR): Unit {
      * 这里手写一个"数组里混了一个字符串"的库，要求 storeLoad 直接拒绝启动。
      */
     let good = storeLoad(dir + "-m7")
-    storeSave(good) /* 先建出目录，再用坏内容覆盖 db.json */
+    storeSaveNow(good) /* 先建出目录，再用坏内容覆盖 db.json */
     let badJson = "{\"version\":1,\"departments\":[\"这不是一个部门对象\",{\"id\":1,\"name\":\"课题部\",\"sort\":0}],\"members\":[]}"
     File.writeTo(good.dbFile(), badJson.toArray())
     var threw2 = false
@@ -337,7 +337,7 @@ func testStore(t: TR): Unit {
      */
     let idemDir = dir + "-n5"
     let goodIdem = storeLoad(idemDir)
-    storeSave(goodIdem) /* 先建出目录，再用坏内容覆盖 db.json */
+    storeSaveNow(goodIdem) /* 先建出目录，再用坏内容覆盖 db.json */
     let badIdem = "{\"version\":1,\"departments\":[],\"members\":[],\"idem\":[\"这不是一个幂等记录\"]}"
     File.writeTo(goodIdem.dbFile(), badIdem.toArray())
     var threw3 = false
@@ -353,7 +353,7 @@ func testStore(t: TR): Unit {
     lf.count = 3
     lf.first_at = 1789898400
     s.login_fail["13800000000"] = lf
-    storeSave(s)
+    storeSaveNow(s)
     let after = String.fromUtf8(File.readFrom(s.dbFile()))
     t.ok("login_fail 不落盘（M-3）", !containsAscii(after, "login_fail"))
     /* 但内存里仍然有效（限流照常工作） */
@@ -1247,6 +1247,396 @@ func testRegThrottle(t: TR): Unit {
     }
 }
 
+/* ===================== 轻舟 RBAC 适配层（本地适配，非上游原版） ===================== */
+
+/*
+ * 覆盖 server/src/fw_rbac_store.cj + fw_rbac.cj：轻舟升级后新增的 RBAC 数据层与授权中间件，
+ * 因 CangDB 上游无代码而由我们适配（数据层 = 文件存储、响应 = 我们的错误格式）。
+ * 这里测的是"适配后的行为与上游语义一致"，重点是**落盘往返**（换成文件存储后的关键差异）。
+ */
+func testRbacAdaptation(t: TR): Unit {
+    println("- 轻舟 RbacStore 适配版（文件存储，无 CangDB）")
+    let dir = "test-data-rbac"
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+    let path = "${dir}/rbac.json"
+    let st = RbacStore(path)
+
+    /* 种子数据与上游一致：2 个角色、6 个权限、2 个账号 */
+    t.eqi("角色数=2", st.listRoles().size, 2)
+    t.eqi("权限数=6", st.listPermissions().size, 6)
+    t.eqi("用户数=2", st.listUsers().size, 2)
+    t.eqs("角色名 admin", st.roleNameOf(1), "admin")
+    t.eqs("不存在的角色名=空", st.roleNameOf(99), "")
+
+    /* RBAC 链：用户 -> 角色 -> 权限（分步查询 + 应用层组合，与上游同口径） */
+    t.ok("admin 有 user:list", st.hasPermission(1, "user:list"))
+    t.ok("admin 有 dashboard:view", st.hasPermission(1, "dashboard:view"))
+    t.ok("user 没有 user:list", !st.hasPermission(2, "user:list"))
+    t.ok("user 有 dashboard:view", st.hasPermission(2, "dashboard:view"))
+    t.eqi("admin 权限码 6 个", st.permissionCodesOf(1).size, 6)
+    t.eqi("user 权限码 1 个", st.permissionCodesOf(2).size, 1)
+    t.ok("不存在的用户无权限", !st.hasPermission(99, "user:list"))
+
+    match (st.findUserByUsername("admin")) {
+        case Some(u) => t.eqi("admin 的角色 id", u.roleId, 1)
+        case None => t.ok("admin 存在", false)
+    }
+    t.ok("不存在的用户名 -> None", st.findUserByUsername("nobody").isNone())
+    t.ok("按 id 查得到", st.findUserById(2).isSome())
+
+    /* 落盘往返：换成文件存储后最关键的一条 —— 重开后数据必须还在 */
+    let newId = st.createUser("tester", hashPassword("pw123456", "salt", 10), 2)
+    t.ok("新用户 id 递增", newId > 2)
+    st.close()
+
+    let st2 = RbacStore(path)
+    t.ok("重开后新用户还在", st2.findUserByUsername("tester").isSome())
+    t.eqi("重开后用户数=3", st2.listUsers().size, 3)
+    t.ok("重开后权限仍然正确", st2.hasPermission(1, "user:delete"))
+    t.ok("删除用户返回 true", st2.deleteUser(newId))
+    t.ok("重复删除返回 false", !st2.deleteUser(newId))
+    st2.close()
+
+    let st3 = RbacStore(path)
+    t.eqi("删除后用户数=2", st3.listUsers().size, 2)
+    st3.close()
+
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+}
+
+/*
+ * 容量基准动作 4：storeSave 只在锁内取快照，写盘由 snapshotFlush 中间件在锁外完成。
+ * 这里直接验证这条两段式契约本身（HTTP 层的端到端验证在冒烟测试 [24] 重启持久性里）：
+ *   · storeSave 之后磁盘上**还没有**新数据 → 证明整库 IO 确实不在锁内那一段
+ *   · pending 里已有完整快照，flushPending 之后磁盘上就有了
+ *   · 没有待写快照时 flushPending 是空操作（幂等）
+ *   · 序号守卫：并发写盘收敛到最新版本，旧快照不会覆盖新快照
+ */
+func testDeferredSave(t: TR): Unit {
+    println("- store 动作4：快照在锁内、写盘在锁外")
+    let dir = "build/test-data-deferred"
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+    let s = Store(dir)
+
+    let d = Department()
+    d.id = 1
+    d.name = "秘书处"
+    s.departments[1] = d
+
+    /* 第一段：锁内只取快照 —— 磁盘上不该有任何东西 */
+    storeSave(s)
+    t.ok("storeSave 后 pending 里有快照", s.pending.isSome())
+    t.ok("storeSave 后**还没写盘**（IO 已移出锁内那一段）", !exists(s.dbFile()))
+
+    /* 第二段：锁外写盘 */
+    flushPending(s)
+    t.ok("flushPending 后 db.json 已生成", exists(s.dbFile()))
+    t.ok("flushPending 清空 pending", s.pending.isNone())
+    let text = String.fromUtf8(File.readFrom(s.dbFile()))
+    t.ok("落盘内容含本次变更", containsAscii(text, "秘书处"))
+
+    /* 幂等：没有待写快照时是空操作，不碰文件 */
+    flushPending(s)
+    t.eqs("无待写快照时 flushPending 不改文件", String.fromUtf8(File.readFrom(s.dbFile())), text)
+    t.ok("tmp 已清理", !exists(s.dbFile() + ".tmp"))
+
+    /* 序号守卫：拿旧快照后写，不能把更新的版本覆盖回去 */
+    let oldSnap = storeSnapshot(s)
+    let newSnap = storeSnapshot(s)
+    writeSnapshot(s, newSnap)
+    writeSnapshot(s, oldSnap)
+    t.eqi("旧快照被序号守卫拦住（saved_seq 不倒退）", s.saved_seq, newSnap.seq)
+    t.ok("seq 单调递增", newSnap.seq > oldSnap.seq)
+
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+}
+
+/*
+ * 容量基准动作 3：签发令牌时顺手回收过期令牌（auth.cj 的 pruneTokens）。
+ * 回归点：原先 tokens 表**只增不减**（只有"某个已过期令牌被再次使用"才会删掉它），
+ * 用户不再登录就永远留着，而每次写盘都要把整表序列化进 db.json。
+ */
+func testTokenPrune(t: TR): Unit {
+    println("- auth 令牌回收（动作3）")
+    let dir = "build/test-data-prune"
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+    let s = Store(dir)
+    let now: Int64 = 1789898400
+    /* 用 2286 年当"永不过期"，避免测试依赖真实时钟（issueToken 内部会取 nowEpoch） */
+    let far = 9999999999999
+
+    for (i in 1..=3) {
+        let r = TokenRecord()
+        r.member_id = 1
+        r.created_at = now - 100000
+        r.expires_at = now - i
+        s.tokens["expired-${i}"] = r
+    }
+    for (i in 1..=2) {
+        let r = TokenRecord()
+        r.member_id = 1
+        r.created_at = now
+        r.expires_at = far
+        s.tokens["live-${i}"] = r
+    }
+
+    t.eqi("回收前 5 条", s.tokens.size, 5)
+    t.eqi("回收了 3 条过期令牌", pruneTokens(s, now), 3)
+    t.eqi("剩下 2 条活跃令牌", s.tokens.size, 2)
+    t.ok("过期令牌已删除", !s.tokens.contains("expired-1"))
+    t.ok("活跃令牌保留", s.tokens.contains("live-1"))
+
+    /* 没有过期令牌时是空操作 */
+    t.eqi("无过期令牌时返回 0", pruneTokens(s, now), 0)
+    t.eqi("无过期令牌时表大小不变", s.tokens.size, 2)
+
+    /* 真正的调用点：issueToken 会顺手回收（1970 年到期，任何真实时钟下都算过期） */
+    let dead = TokenRecord()
+    dead.member_id = 1
+    dead.created_at = 1
+    dead.expires_at = 1
+    s.tokens["expired-later"] = dead
+    let issued = issueToken(s, 7)
+    t.ok("新令牌已签发", s.tokens.contains(issued[0]))
+    t.ok("issueToken 顺手回收了过期令牌", !s.tokens.contains("expired-later"))
+    t.eqi("表大小 = 2 活跃 + 1 新", s.tokens.size, 3)
+
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+}
+
+/*
+ * 容量基准动作 1：sortByKey 由插入排序换成堆排序（store.cj）。
+ * 复杂度是性能属性、不适合在单测里断言时间；这里守住的是**换实现不能换语义**：
+ * 逆序输入、同键输入、单元素、空数组四个边界。
+ */
+func testSortEdge(t: TR): Unit {
+    println("- sort 堆排序边界（动作1）")
+    let n = 500
+    let arr = ArrayList<Task>()
+    var i = n
+    while (i > 0) {
+        let x = Task()
+        x.id = i
+        x.title = "T${i}"
+        /* 确定性乱序：7919 与 100000 互质，键与 id 顺序完全错开 */
+        x.due_at = (i * 7919) % 100000
+        arr.add(x)
+        i -= 1
+    }
+    let out = sortedTasksByDue(arr)
+    t.eqi("元素一个不少", out.size, n)
+    var ordered = true
+    var j = 1
+    while (j < out.size) {
+        if (out[j - 1].due_at > out[j].due_at) {
+            ordered = false
+        }
+        j += 1
+    }
+    t.ok("500 条乱序输入排成升序", ordered)
+    /* 键含 id，同 due_at 也必须是全序（不会因不稳定而乱） */
+    var strict = true
+    j = 1
+    while (j < out.size) {
+        if (out[j - 1].due_at == out[j].due_at && out[j - 1].id >= out[j].id) {
+            strict = false
+        }
+        j += 1
+    }
+    t.ok("同截止时间按 id 兜底", strict)
+
+    /* 全部同键：仍然不丢元素、按 id 升序 */
+    let same = ArrayList<Task>()
+    var k: Int64 = 100
+    while (k > 0) {
+        let x = Task()
+        x.id = k
+        x.due_at = 5000
+        same.add(x)
+        k -= 1
+    }
+    let out2 = sortedTasksByDue(same)
+    t.eqi("同键元素数不变", out2.size, 100)
+    t.eqi("同键首元素是最小 id", out2[0].id, 1)
+    t.eqi("同键末元素是最大 id", out2[99].id, 100)
+
+    /* 边界：单元素 / 空数组 */
+    let one = ArrayList<Task>()
+    let only = Task()
+    only.id = 9
+    only.due_at = 1
+    one.add(only)
+    t.eqi("单元素原样返回", sortedTasksByDue(one).size, 1)
+    t.eqi("空数组返回空", sortedTasksByDue(ArrayList<Task>()).size, 0)
+}
+
+/*
+ * N-14：本机判定的回归闸门。
+ *
+ * 用纯函数 `isLoopbackPeer` 覆盖各种对端文本 —— 冒烟测试只能从本机发包，
+ * 造不出"远程 IPv6 对端"，所以**反例只能落在单测里**（第四轮评测 §四专门指出
+ * /admin/shutdown 只有正例，N-14 正是从这里逃逸的）。
+ * 下面"不是本机"那几条正是老实现（`containsAscii(p, "::1")`）会误判的输入。
+ */
+func testLoopbackPeer(t: TR): Unit {
+    println("- 本机判定（N-14）")
+    /* 真回环：各种写法都要放行 */
+    t.ok("[::1]:5000 是本机", isLoopbackPeer("[::1]:5000"))
+    t.ok("[127.0.0.1]:5000 是本机", isLoopbackPeer("[127.0.0.1]:5000"))
+    t.ok("127.0.0.1:5000 是本机", isLoopbackPeer("127.0.0.1:5000"))
+    t.ok("裸 ::1 是本机", isLoopbackPeer("::1"))
+    t.ok("[0:0:0:0:0:0:0:1]:5000 是本机（全展开）", isLoopbackPeer("[0:0:0:0:0:0:0:1]:5000"))
+    t.ok("[::ffff:127.0.0.1]:5000 是本机（IPv4 映射）", isLoopbackPeer("[::ffff:127.0.0.1]:5000"))
+
+    /* 远程 —— 这些在"子串匹配 ::1"的老实现下**全部为 true**（N-14 的漏洞面） */
+    t.ok("[2001:db8::1]:5000 不是本机", !isLoopbackPeer("[2001:db8::1]:5000"))
+    t.ok("[fe80::1a2b:3c4d:5e6f]:5000 不是本机", !isLoopbackPeer("[fe80::1a2b:3c4d:5e6f]:5000"))
+    t.ok("[fd00::1]:5000 不是本机", !isLoopbackPeer("[fd00::1]:5000"))
+    t.ok("[2001:db8::1000]:5000 不是本机", !isLoopbackPeer("[2001:db8::1000]:5000"))
+    t.ok("[2001:db8::abcd]:5000 不是本机", !isLoopbackPeer("[2001:db8::abcd]:5000"))
+    t.ok("100.64.0.9:5000 不是本机", !isLoopbackPeer("100.64.0.9:5000"))
+    t.ok("空串不是本机", !isLoopbackPeer(""))
+    t.ok("localhost 不再被当作本机（socket 对端是地址，不是主机名）", !isLoopbackPeer("localhost:5000"))
+
+    /* 顺带盯住 N-12：裸 IPv6 不再被切成 ":" 之类的垃圾 key */
+    t.eqs("裸 IPv6 整串即地址", ipOfPeerText("::1"), "::1")
+    t.eqs("方括号 IPv6 取括号内", ipOfPeerText("[2001:db8::1]:5000"), "2001:db8::1")
+    t.eqs("IPv4 带端口切掉端口", ipOfPeerText("127.0.0.1:14764"), "127.0.0.1")
+    t.eqs("裸 IPv4 原样返回", ipOfPeerText("10.0.0.7"), "10.0.0.7")
+    t.eqs("空串原样返回空", ipOfPeerText(""), "")
+}
+
+/*
+ * N-16：登录材料选择的回归闸门。
+ *
+ * 手机号不存在时也必须拿到**等价成本**的材料。一旦有人改回"不存在就跳过 PBKDF2"，
+ * 返回值会退化成空串 / 0 次迭代，这里立刻变红。
+ * （"响应时间相等"本身会 flaky，不写进测试；时间表靠手工复测，见 code-review 第四轮。）
+ */
+func testLoginCreds(t: TR): Unit {
+    println("- 登录口令材料（N-16）")
+    let real = loginCreds(true, "aabbccdd", "eeff0011", 100000)
+    t.eqs("号码存在：用真实盐", real[0], "aabbccdd")
+    t.eqs("号码存在：用真实摘要", real[1], "eeff0011")
+    t.eqi("号码存在：用真实迭代数", real[2], 100000)
+
+    let dummy = loginCreds(false, "aabbccdd", "eeff0011", 1)
+    t.ok("号码不存在：盐非空（会真的算）", dummy[0].size > 0)
+    t.ok("号码不存在：摘要非空", dummy[1].size > 0)
+    t.ok("号码不存在：不泄露真实盐", dummy[0] != "aabbccdd")
+    t.ok("号码不存在：不泄露真实摘要", dummy[1] != "eeff0011")
+    t.eqi("号码不存在：迭代数取标准值", dummy[2], PBKDF2_ITER)
+    t.eqi("两条路径迭代数相同（成本等价）", dummy[2], real[2])
+    /* 弱形式：假材料格式合法，能真正走完一遍 PBKDF2（不会因格式错误提前返回） */
+    t.ok("假材料能走完 PBKDF2（口令不匹配）", !verifyPw("whatever123", dummy[0], dummy[1], dummy[2]))
+}
+
+/*
+ * N-17：审计行"锁内只挂缓冲、锁外才落盘"的回归闸门。
+ * audit() 不碰磁盘；flushPending()（请求链末端、已解锁）才 append。
+ */
+func testAuditDeferred(t: TR): Unit {
+    println("- 审计行锁外落盘（N-17）")
+    let dir = "build/test-data-audit"
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+    let s = Store(dir)
+    audit(s, 1, "reset-password", 2, "note\twith\ttabs\nand-a-forged-line")
+    t.eqi("audit() 只挂缓冲", s.audit_pending.size, 1)
+    t.ok("audit() 没有立刻写文件（锁内不做 IO）", !exists("${dir}/audit.log"))
+
+    flushPending(s)
+    t.ok("flushPending 之后审计落盘", exists("${dir}/audit.log"))
+    t.eqi("缓冲已清空", s.audit_pending.size, 0)
+    let text = String.fromUtf8(File.readFrom("${dir}/audit.log"))
+    t.ok("含动作名", containsAscii(text, "reset-password"))
+    t.ok("含 target", containsAscii(text, "target=2"))
+    var nl = 0
+    for (b in text.toArray()) {
+        if (b == 10) {
+            nl += 1
+        }
+    }
+    t.eqi("注入的换行没伪造出第二条记录（L-9 仍生效）", nl, 1)
+    t.ok("制表符被替换成空格", !containsAscii(text, "note\twith"))
+
+    /* 审计缓冲是内存态，绝不能进 db.json */
+    storeSaveNow(s)
+    let db = String.fromUtf8(File.readFrom(s.dbFile()))
+    t.ok("audit_pending 不落盘", !containsAscii(db, "audit_pending"))
+
+    if (exists(dir)) {
+        remove(dir, recursive: true)
+    }
+}
+
+/*
+ * N-21：登录的**按 IP** 节流 + PBKDF2 并发闸门。
+ *
+ * 与别的条不同，这里断言的是"闸门本身"（计数、锁定、并发上限）；
+ * 端到端的"12 个不同未注册号码 → 出现 429"放在冒烟里，且**必须从非回环地址打**
+ * —— 回环被有意排除在这道节流之外（理由见 h_auth.cj 的注释）。
+ */
+func testLoginIpThrottle(t: TR): Unit {
+    println("- 登录按 IP 节流 + PBKDF2 并发闸门（N-21）")
+    let s = Store("build/test-data-n21")
+    let now = nowEpoch()
+
+    /* 1) 按 IP 累计到上限就锁；另一个 IP 完全不受影响 */
+    var i: Int64 = 0
+    while (i < REG_FAIL_LIMIT - 1) {
+        loginIpFailBump(s, "10.0.0.1")
+        i += 1
+    }
+    t.ok("错 9 次还没锁", !loginIpLocked(s, "10.0.0.1", now))
+    loginIpFailBump(s, "10.0.0.1")
+    t.ok("第 10 次触发锁定", loginIpLocked(s, "10.0.0.1", now))
+    t.ok("另一个 IP 不受影响", !loginIpLocked(s, "10.0.0.2", now))
+
+    /* 2) 与注册是**两张表**：登录被锁不影响同一 IP 的注册（NAT 后是同一个出口） */
+    t.ok("登录被锁不影响该 IP 的注册", !regLocked(s, "10.0.0.1", now))
+
+    /* 3) 同一套递增退避：到点自动解除 */
+    t.ok("锁定期内判定为锁", loginIpLocked(s, "10.0.0.1", now + 60))
+    t.ok("锁到期自动解除", !loginIpLocked(s, "10.0.0.1", now + REG_FAIL_LOCK_BASE + 2))
+
+    /* 4) PBKDF2 并发闸门：到上限就拒（不排队），释放后可再进 */
+    var got: Int64 = 0
+    var k: Int64 = 0
+    while (k < MAX_PBKDF2_INFLIGHT) {
+        if (pbkdf2Enter(s)) {
+            got += 1
+        }
+        k += 1
+    }
+    t.eqi("上限内全部放行", got, MAX_PBKDF2_INFLIGHT)
+    t.ok("超过上限被拒（不排队）", !pbkdf2Enter(s))
+    t.eqi("在跑计数 = 上限", s.pbkdf2_inflight, MAX_PBKDF2_INFLIGHT)
+    pbkdf2Leave(s)
+    t.ok("释放一个后可以再进", pbkdf2Enter(s))
+
+    /* 5) 多释放也不会把计数弄成负数（异常路径的安全网） */
+    var m: Int64 = 0
+    while (m < MAX_PBKDF2_INFLIGHT + 3) {
+        pbkdf2Leave(s)
+        m += 1
+    }
+    t.eqi("多释放不会变负", s.pbkdf2_inflight, 0)
+}
+
 /* ===================== 入口 ===================== */
 
 public func runTests(): Int64 {
@@ -1257,8 +1647,16 @@ public func runTests(): Int64 {
     testIds(t)
     testPassword(t)
     testStore(t)
+    testDeferredSave(t)
+    testTokenPrune(t)
+    testSortEdge(t)
+    testLoopbackPeer(t)
+    testLoginCreds(t)
+    testAuditDeferred(t)
+    testLoginIpThrottle(t)
     testPerms(t)
     testRegThrottle(t)
+    testRbacAdaptation(t)
     testViews(t)
     testPart3Views(t)
     testPaging(t)

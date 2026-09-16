@@ -2,6 +2,8 @@
 /oh_modules
 /local.properties
 /.idea
+# 编辑器个人设置（VS Code：autoSave、TS 校验开关之类，与本项目无关）
+/.vscode
 **/build
 /.hvigor
 .cxx
@@ -10,10 +12,7 @@
 /.clang-tidy
 **/.test
 /.appanalyzer
-**/cj_res
-**/*.cj.macrocall
-**/ability_mainability_entry.cj
-**/module_**_entry.cj
+**/.preview
 **/IDL_Dependencies_List~
 **/build-script-cache
 
@@ -41,3 +40,6 @@
 
 # 生成给仓颉团队的证据包（由 server/build/make-report-zip.ps1 生成，不入库）
 /cangjie-runtime-crash-report-*.zip
+
+# 内置轻舟的 OpenSSL 依赖 DLL（6.5 MB 二进制，不进仓库；来源见该目录 README.md）
+server/third_party/qingzhou/deps/openssl/*.dll

@@ -1,34 +1,69 @@
-// 成员详情页面
+// 成员详情页面（B同学负责）
 // 点击成员名录里的卡片跳转进来
 
-import { MemberDetail, TaskBrief, ROLE_MAP } from '../model/MemberModel';
-import { Colors, Radius, Spacing, StatusColors, StatusColorPair } from '../model/Theme';
+interface Task {
+  id: number;
+  title: string;
+  status: string;   // todo / doing / blocked / done
+  dueAt: string;
+}
+
+interface MemberDetail {
+  id: number;
+  name: string;
+  role: string;
+  roleLabel: string;
+  deptId: number;
+  deptName: string;
+  status: string;
+  joinedAt: string;
+  phone: string;
+  tasks: Task[];
+}
+
+// ====== 假数据 ======
+const ROLE_LABEL: Record<string, string> = {
+  'president': '会长',
+  'vice_president': '副会长',
+  'lead': '部长',
+  'vice_lead': '副部长',
+  'member': '成员',
+};
 
 const MEMBER_DETAIL: MemberDetail = {
   id: 1,
   name: '王会长',
   role: 'president',
-  dept: { id: 1, name: '主席团' },
+  roleLabel: '会长',
+  deptId: 0,
+  deptName: '主席团',
   status: 'active',
-  joined_at: '2026-09-01',
+  joinedAt: '2026-09-01',
+  phone: '138****0000',
+  tasks: [
+    { id: 101, title: '社团招新总体方案', status: 'doing', dueAt: '2026-09-20' },
+    { id: 102, title: '与指导老师沟通', status: 'todo', dueAt: '2026-09-18' },
+    { id: 103, title: '第一次全体大会', status: 'todo', dueAt: '2026-09-25' },
+  ],
 };
 
-const MEMBER_TASKS: TaskBrief[] = [
-  { id: 101, title: '社团招新总体方案', status: 'doing', owner: null, dept: null, plan: null, due_at: '2026-09-20', is_overdue: false, blocked: false, updated_at: '2026-09-10T10:00:00+08:00' },
-  { id: 102, title: '与指导老师沟通', status: 'todo', owner: null, dept: null, plan: null, due_at: '2026-09-18', is_overdue: false, blocked: false, updated_at: '2026-09-12T14:00:00+08:00' },
-  { id: 103, title: '第一次全体大会', status: 'todo', owner: null, dept: null, plan: null, due_at: '2026-09-25', is_overdue: false, blocked: false, updated_at: '2026-09-14T09:00:00+08:00' },
-];
-
 const STATUS_LABEL: Record<string, string> = {
-  'todo': '未开始',
+  'todo': '待开始',
   'doing': '进行中',
   'blocked': '阻塞',
   'done': '已完成',
 };
 
+const STATUS_COLOR: Record<string, string> = {
+  'todo': '#999999',
+  'doing': '#1E88E5',
+  'blocked': '#FB8C00',
+  'done': '#43A047',
+};
+
 @Component
 struct TaskRow {
-  task: TaskBrief = { id: 0, title: '', status: 'todo', owner: null, dept: null, plan: null, due_at: '', is_overdue: false, blocked: false, updated_at: '' };
+  task: Task = { id: 0, title: '', status: 'todo', dueAt: '' };
 
   build() {
     Row() {
@@ -36,43 +71,28 @@ struct TaskRow {
         Text(this.task.title)
           .fontSize(14)
           .fontWeight(FontWeight.Medium)
-          .fontColor(Colors.textPrimary)
 
-        Text(this.getDueText())
+        Text(`截止 ${this.task.dueAt}`)
           .fontSize(12)
-          .fontColor(Colors.textTertiary)
+          .fontColor('#999999')
           .margin({ top: 2 })
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
 
-      Text(STATUS_LABEL[this.task.status] || '未开始')
+      Text(STATUS_LABEL[this.task.status] || '待开始')
         .fontSize(12)
-        .fontColor(this.getStatusColor().fg)
+        .fontColor(STATUS_COLOR[this.task.status])
         .padding({ left: 8, right: 8, top: 2, bottom: 2 })
-        .backgroundColor(this.getStatusColor().bg)
-        .borderRadius(Radius.capsule)
+        .backgroundColor(this.task.status === 'done' ? '#E8F5E9' :
+          this.task.status === 'doing' ? '#E3F2FD' :
+          this.task.status === 'blocked' ? '#FFF3E0' : '#F5F5F5')
+        .borderRadius(4)
     }
     .width('100%')
-    .padding(Spacing.cardInner)
-    .backgroundColor(Colors.surface)
+    .padding(12)
+    .backgroundColor(Color.White)
     .margin({ bottom: 1 })
-  }
-
-  getDueText(): string {
-    if (!this.task.due_at) return '无截止';
-    const label = this.task.is_overdue ? '已逾期' : '截止';
-    return `${label} ${this.task.due_at}`;
-  }
-
-  getStatusColor(): StatusColorPair {
-    switch (this.task.status) {
-      case 'overdue': return StatusColors.overdue;
-      case 'blocked': return StatusColors.blocked;
-      case 'doing':   return StatusColors.doing;
-      case 'done':    return StatusColors.done;
-      default:        return StatusColors.todo;
-    }
   }
 }
 
@@ -80,19 +100,16 @@ struct TaskRow {
 export default struct MemberDetailPage {
   memberId: number = 0;
   @State member: MemberDetail = MEMBER_DETAIL;
-  @State tasks: TaskBrief[] = MEMBER_TASKS;
-
-  getRoleLabel(): string {
-    return ROLE_MAP[this.member.role] || '成员';
-  }
+  @State showResetPassword: boolean = false;
+  @State showDisableConfirm: boolean = false;
 
   getAvatarColor(): string {
     switch (this.member.role) {
-      case 'president': return StatusColors.overdue.fg;
-      case 'vice_president': return StatusColors.blocked.fg;
-      case 'lead': return Colors.primary;
-      case 'vice_lead': return StatusColors.done.fg;
-      default: return StatusColors.pending.fg;
+      case 'president': return '#E53935';
+      case 'vice_president': return '#FB8C00';
+      case 'lead': return '#1E88E5';
+      case 'vice_lead': return '#43A047';
+      default: return '#7E57C2';
     }
   }
 
@@ -109,138 +126,141 @@ export default struct MemberDetailPage {
             .borderRadius(36)
             .backgroundColor(this.getAvatarColor())
             .textAlign(TextAlign.Center)
-            .margin({ bottom: Spacing.md })
+            .margin({ bottom: 12 })
 
           Text(this.member.name)
             .fontSize(22)
             .fontWeight(FontWeight.Bold)
-            .fontColor(Colors.textPrimary)
 
-          Text(`${this.member.dept?.name || '未分配'} · ${this.getRoleLabel()}`)
+          Text(`${this.member.deptName} · ${this.member.roleLabel}`)
             .fontSize(14)
-            .fontColor(Colors.textSecondary)
-            .margin({ top: Spacing.xs })
+            .fontColor('#666666')
+            .margin({ top: 4 })
         }
         .width('100%')
-        .padding(Spacing.xl)
-        .backgroundColor(Colors.surface)
-        .borderRadius(Radius.card)
-        .margin({ left: Spacing.page, right: Spacing.page, top: Spacing.page })
+        .padding(24)
+        .backgroundColor(Color.White)
+        .borderRadius(8)
+        .margin({ left: 16, right: 16, top: 16 })
 
         // 基本信息
         Column() {
           Text('基本信息')
             .fontSize(14)
-            .fontColor(Colors.textTertiary)
+            .fontColor('#999999')
             .width('100%')
-            .padding({ left: Spacing.lg, top: Spacing.md, bottom: Spacing.sm })
+            .padding({ left: 16, top: 12, bottom: 8 })
 
           Row() {
-            Text('部门')
+            Text('手机号')
               .fontSize(14)
-              .fontColor(Colors.textSecondary)
+              .fontColor('#666666')
               .width(80)
-            Text(this.member.dept?.name || '未分配')
+            Text(this.member.phone)
               .fontSize(14)
-              .fontColor(Colors.textPrimary)
+              .fontColor('#333333')
           }
           .width('100%')
-          .padding({ left: Spacing.lg, right: Spacing.lg, top: Spacing.sm, bottom: Spacing.sm })
+          .padding({ left: 16, right: 16, top: 8, bottom: 8 })
 
-          Divider().color(Colors.divider).margin({ left: Spacing.lg })
+          Divider().color('#F0F0F0').margin({ left: 16 })
 
           Row() {
             Text('加入时间')
               .fontSize(14)
-              .fontColor(Colors.textSecondary)
+              .fontColor('#666666')
               .width(80)
-            Text(this.member.joined_at)
+            Text(this.member.joinedAt)
               .fontSize(14)
-              .fontColor(Colors.textPrimary)
+              .fontColor('#333333')
           }
           .width('100%')
-          .padding({ left: Spacing.lg, right: Spacing.lg, top: Spacing.sm, bottom: Spacing.sm })
+          .padding({ left: 16, right: 16, top: 8, bottom: 8 })
 
-          Divider().color(Colors.divider).margin({ left: Spacing.lg })
+          Divider().color('#F0F0F0').margin({ left: 16 })
 
           Row() {
             Text('状态')
               .fontSize(14)
-              .fontColor(Colors.textSecondary)
+              .fontColor('#666666')
               .width(80)
             Text(this.member.status === 'active' ? '正常' : this.member.status)
               .fontSize(14)
-              .fontColor(this.member.status === 'active' ? StatusColors.done.fg : StatusColors.overdue.fg)
+              .fontColor(this.member.status === 'active' ? '#43A047' : '#E53935')
           }
           .width('100%')
-          .padding({ left: Spacing.lg, right: Spacing.lg, top: Spacing.sm, bottom: Spacing.md })
+          .padding({ left: 16, right: 16, top: 8, bottom: 12 })
         }
         .width('100%')
-        .backgroundColor(Colors.surface)
-        .borderRadius(Radius.card)
-        .margin({ left: Spacing.page, right: Spacing.page, top: Spacing.md })
+        .backgroundColor(Color.White)
+        .borderRadius(8)
+        .margin({ left: 16, right: 16, top: 12 })
 
         // 负责的任务
         Column() {
           Row() {
             Text('负责的任务')
               .fontSize(14)
-              .fontColor(Colors.textTertiary)
+              .fontColor('#999999')
 
             Blank()
 
-            Text(`${this.tasks.length} 项`)
+            Text(`${this.member.tasks.length} 项`)
               .fontSize(14)
-              .fontColor(Colors.textTertiary)
+              .fontColor('#999999')
           }
           .width('100%')
-          .padding({ left: Spacing.lg, right: Spacing.lg, top: Spacing.lg, bottom: Spacing.sm })
+          .padding({ left: 16, right: 16, top: 16, bottom: 8 })
 
           Column() {
-            ForEach(this.tasks, (task: TaskBrief) => {
+            ForEach(this.member.tasks, (task: Task) => {
               TaskRow({ task: task })
-            }, (task: TaskBrief) => task.id.toString())
+            }, (task: Task) => task.id.toString())
 
-            if (this.tasks.length === 0) {
+            if (this.member.tasks.length === 0) {
               Text('暂无任务')
                 .fontSize(14)
-                .fontColor(Colors.textTertiary)
+                .fontColor('#999999')
                 .width('100%')
                 .textAlign(TextAlign.Center)
-                .padding(Spacing.xl)
+                .padding(20)
             }
           }
         }
         .width('100%')
-        .backgroundColor(Colors.surface)
-        .borderRadius(Radius.card)
-        .margin({ left: Spacing.page, right: Spacing.page, top: Spacing.md })
+        .backgroundColor(Color.White)
+        .borderRadius(8)
+        .margin({ left: 16, right: 16, top: 12 })
 
         // 操作按钮区
         Column() {
           Button('重置密码')
             .type(ButtonType.Normal)
-            .backgroundColor(StatusColors.blocked.bg)
-            .fontColor(StatusColors.blocked.fg)
+            .backgroundColor('#FFF3E0')
+            .fontColor('#FB8C00')
             .width('100%')
-            .borderRadius(Radius.button)
-            .margin({ bottom: Spacing.md })
+            .margin({ bottom: 12 })
+            .onClick(() => {
+              this.showResetPassword = true;
+            })
 
           Button('移出社团')
             .type(ButtonType.Normal)
-            .backgroundColor(StatusColors.overdue.bg)
-            .fontColor(StatusColors.overdue.fg)
+            .backgroundColor('#FFEBEE')
+            .fontColor('#E53935')
             .width('100%')
-            .borderRadius(Radius.button)
+            .onClick(() => {
+              this.showDisableConfirm = true;
+            })
         }
         .width('100%')
-        .padding(Spacing.lg)
-        .margin({ left: Spacing.page, right: Spacing.page, top: Spacing.xl, bottom: Spacing.page })
+        .padding(16)
+        .margin({ left: 16, right: 16, top: 20, bottom: 32 })
       }
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(Colors.canvas)
+    .backgroundColor('#FAFAFA')
     .scrollBar(BarState.Off)
   }
 }

@@ -2,14 +2,14 @@
 
 > **下个对话从这里开始。** 本文自包含——读完它 + 第 3 节的文档，即可直接接手。
 
-- 更新时间：**2026-09-14**
+- 更新时间：**2026-09-15**
 - 工作区：`E:\harmonyOS\cangjie_web`
 - 设计阶段：**已完成，接口冻结**（39 / 39）
-- **当前阶段：服务端全部完成并验证**（M1–M8，含三轮独立代码评审修复）；**客户端仍是 DevEco 初始模板，待开工**
-- 三套测试基线：**单测 300 / 冒烟 347 / TLS 22 全绿**（跑法见 `README.md` 顶部）
+- **当前阶段：服务端全部完成并验证**（M1–M11，含三轮独立代码评审修复 + 轻舟升级/CangDB 适配 + 容量基准与四项性能改造 + 第四轮复验的 6 条安全/一致性修复）；**客户端技术栈定为 ArkTS，已接入组内上传的成员模块 3 页并能编译打包（未签名、未接接口）** —— 见 `client-build.md`
+- 三套测试基线：**单测 398 / 冒烟 362 / TLS 22 全绿**（跑法见 `README.md` 顶部；容量基准 `server/tests/bench.ps1` 按需跑，见 `capacity-baseline.md`）
 
 > §8、§9 是**设计阶段**给出的开工建议与待问问题，现已全部执行完，保留作方法论参考；
-> §11 记录服务端从 M1 到 M8 的实际进展，**数字以那里的最新一条为准**。
+> §11 记录服务端从 M1 到 M11 的实际进展，**数字以那里的最新一条为准**。
 
 ---
 
@@ -17,7 +17,7 @@
 
 社团内部管理工具。解决两个问题：**① 社团里有哪些人 ② 每件事由谁负责、做到什么程度。**
 
-- 客户端：鸿蒙 App（仓颉）
+- 客户端：鸿蒙 App（**ArkTS**）
 - 服务端：仓颉 1.1.3 + 轻舟框架，部署在 Windows 云服务器
 - 第一版（v1）目标：社团内部试用 2 周
 
@@ -27,7 +27,7 @@
 
 | 项 | 决定 |
 | --- | --- |
-| 客户端 | 鸿蒙 App，**仓颉** |
+| 客户端 | 鸿蒙 App，**ArkTS**（2026-09-14 定；此前仓颉方案已退役） |
 | 服务端 | **仓颉 1.1.3 + 轻舟（QingZhou）框架** |
 | 服务器 | **Windows**（与开发机同平台） |
 | 部署 | **本机编译 → 拷制品**，服务器不装编译器 |
@@ -41,23 +41,37 @@
 | --- | --- |
 | 编译器 | `D:\Cangjie\bin\cjc.exe` — **1.1.3** (cjnative) |
 | stdx | `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` — **1.1.3.1** |
-| 轻舟源码 | `E:\cangjie\qingzhou` — commit **`1cad35b` + 本地 2 行补丁** |
-| OpenSSL 3 | `E:\cangjie\qingzhou\deps\openssl\` 下两个 DLL |
+| 轻舟框架 | **已内置在本仓库**：`server\third_party\qingzhou`（上游 commit 在其中的 `UPSTREAM_COMMIT`；内容由 `MANIFEST.sha256` 校验，`build.ps1` 每次构建都会验）—— 2026-09-15 迁移，见 `third_party\qingzhou\PROVENANCE.md` |
+| OpenSSL 3 | **不随仓库提交**（6.5 MB 二进制）：`build.ps1` 按 **`third_party\qingzhou\deps\openssl` → `-OpenSslDir` → Git for Windows 的 `mingw64\bin`** 顺序找并打印来源（见该目录 `README.md`） |
 | 仓颉运行时 | `D:\Cangjie\runtime\lib\windows_x86_64_cjnative` |
+| **DevEco Studio** | **6.1.1.300** @ `D:\DevEco Studio`：自带 SDK **API 24 / 6.1.1.125**、hvigor **6.24.4**、JBR **21**（构建客户端必须用它的 JBR，原因见 `client-build.md`） |
 
 ### 本机验证过的编译命令
+
+**日常构建用 `server\build.ps1`**（它已处理好轻舟的排除项与我们的源文件）：
+
+```powershell
+cd server
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1   # -> build\club-server.exe + 4 个 DLL
+```
+
+脚本内部做的事（要手写时照此，**排除列表必须与脚本一致**）：
 
 ```powershell
 $CJC  = "D:\Cangjie\bin\cjc.exe"
 $STDX = "E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx"
-$ROOT = "E:\cangjie\qingzhou"
+$FW   = "<仓库>\server\third_party\qingzhou"   # 已内置；上游 commit 见其中的 UPSTREAM_COMMIT
 $libs = (Get-ChildItem "$STDX\libstdx*.a" | ForEach-Object { "-l:$($_.Name)" })
-$fw   = Get-ChildItem "$ROOT\src\*.cj" |
-        Where-Object { $_.Name -notin @('unit_tests.cj') } |
+# 轻舟：排除自带入口/自测，以及依赖 CangDB 的 store.cj / rbac.cj（那两张改用我们的适配版）
+$fw   = Get-ChildItem "$FW\src\*.cj" |
+        Where-Object { $_.Name -notin @('main.cj', 'unit_tests.cj', 'manual_runner.cj', 'store.cj', 'rbac.cj') } |
         ForEach-Object { $_.FullName }
+$src  = Get-ChildItem "E:\harmonyOS\cangjie_web\server\src\*.cj" | ForEach-Object { $_.FullName }
 
-& $CJC @fw --import-path $STDX -L $STDX @libs -lcrypt32 -Woff unused -o "$ROOT\build\main.exe"
+& $CJC @fw @src --import-path $STDX -L $STDX @libs -lcrypt32 -Woff unused -o "build\club-server.exe"
 ```
+
+> ⚠️ 少排除一个就会报 `can not find package 'cangdb'`，或撞上框架自带的 `main` / 单测符号。
 
 ---
 
@@ -68,12 +82,15 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | `v1-scope.md` | **范围基准** v0.10：11 页面、6 张表、19 条业务规则、权限矩阵 | 想知道"这个要不要做" |
 | `api-design.md` | **完整接口设计** Part 1–6，39 个接口逐条定义 | **写服务端时全程对照** |
 | `frontend-brief.md` | **前端对接精简版**：页面清单、通用约定、错误码、**5 件必知事项** | **客户端同事先看这个** |
+| **`client-build.md`** | **客户端构建与现状**：ArkTS 构建命令、两个环境坑、迁移记录、剩余 TODO | **动客户端前先看这个** |
+| **`client-integration-review.md`** | **客户端接入适配检查（待办清单）**：队友 PR #2 能编译但调不通服务端 —— 3 条拦路问题（INTERNET 权限 / baseUrl 相对路径 / 响应信封少剥一层）+ 10 处接口路径·方法对不上，带实测状态码 | **客户端同学接接口前必看**；改完可删/归档 |
 | `deploy-windows-verify.md` | 部署与验证、目标配置基线 | 部署时看 |
 | **`code-review.md`** | **代码评审报告（三轮）**：24 + 9 + 4 条，全部已修，附回退实测证据 | 想知道"哪些坑已经踩过、为什么这样写" |
+| **`capacity-baseline.md`** | **容量基准与四项性能改造**：可复现基准（`server/tests/bench.ps1`）、改造前后实测矩阵、每项的**真实**收益与"没测出收益"的地方、容量阈值 | 被问"近千人扛不扛得住""这项优化值不值"时 |
 | `README.md` | 仓库唯一入口：进度、目录结构、六条最容易踩的坑 | 第一次打开这个仓库时 |
 | *（对外材料已移出仓库）* | 轻舟 TLS 实测与缺陷清单、仓颉运行时缺陷报告 —— 见上层 `cangjie-upstream\` | 追溯上游问题时看 |
 | **`server-guide.md`** | **服务端**：构建/初始化/运行/测试、进度表、两条实现纪律 | **写服务端时先看** |
-| **`API-NOTES.md`** | **服务端**：编译期 API 事实清单 + **28 条**踩坑记录 | 加新函数前先查（避让框架同名符号） |
+| **`API-NOTES.md`** | **服务端**：编译期 API 事实清单 + **30 条**踩坑记录 | 加新函数前先查（避让框架同名符号） |
 
 ---
 
@@ -145,37 +162,40 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | 事实 | 说明 |
 | --- | --- |
 | **TLS 可用** | TLS 1.2/1.3 握手成功；TLS 1.0/1.1 **被服务端拒绝**（alert 70）；HTTPS 请求返回 200 |
-| **三套测试全绿** | 单测 **300** / 冒烟 **347** / TLS **22**（2026-09-14；跑法见 `README.md`） |
-| **部署文件集** | **5 个文件 / 约 18.8 MB**：`club-server.exe` + `libcangjie-runtime.dll` + `libboundscheck.dll` + `libcrypto-3-x64.dll` + `libssl-3-x64.dll`（证书、启动脚本与说明另计）；由 `server/build-package.ps1` 生成 |
+| **三套测试全绿** | 单测 **398** / 冒烟 **362** / TLS **22**（2026-09-15；跑法见 `README.md`） |
+| **容量（近千人规模）** | 1000 成员 + 1000 任务（0.51 MB 库）：列表 30 ms 级、写 30 ms 级、4 并发登录 0.9 s；3000 + 3000（1.54 MB）分别约 45 / 48 ms 与 0.98 s。单机单进程**够用**；重新设计的阈值是 `db.json > 20 MB` 或日均写数千次 —— 全部实测见 `capacity-baseline.md` |
+| **部署文件集** | **制品 5 个 / 约 18.8 MB**：`club-server.exe` + `libcangjie-runtime.dll` + `libboundscheck.dll` + `libcrypto-3-x64.dll` + `libssl-3-x64.dll`（证书 2、启动脚本 2、`README.txt`、`dll-versions.txt` 另计 —— 整个 `dist\club-server\` 共 10 个文件）；由 `server/build-package.ps1` 生成 |
 | **运行时只需 2 个 DLL** | runtime 目录有 51 个，只需 `libcangjie-runtime.dll` 与 `libboundscheck.dll` |
 
 ### ⚠️ 必须知道的坑
 
 | 坑 | 表现 / 解法 |
 | --- | --- |
-| **轻舟当前版本编译不过**（DEF-1） | `PrivateKey.decodeFromPem` 未实现 → 已打本地补丁，见下 |
+| **轻舟新版 `store.cj` / `rbac.cj` 依赖 CangDB** | `import cangdb.*` 找不到包（CangDB 上游仓只有 README、没有代码）→ 已用 `server/src/fw_rbac_store.cj`（文件存储）+ `fw_rbac.cj`（我们的错误格式）适配，`build.ps1` 排除框架原版 |
 | **块注释里不能出现 `/*`** | 仓颉块注释可嵌套 → 会吞到文件末尾，报 `unterminated block comment` |
 | **服务 `cwd` 必须是 exe 所在目录** | 数据目录与证书按相对路径读；`cwd` 不对会出现**假失败 + 假通过** |
 | **crypto 缺 OpenSSL 3 时** | **编译期无警告**，运行时才 500；两个 DLL 必须与 exe 同目录 |
 | **项目路径保持纯 ASCII** | 否则 `cjpm` 报 `Invalid utf8 byte sequence` |
-| **用工具局部编辑 `.ps1` 会丢 BOM** | PS 5.1 按 ANSI 解析中文注释，报 `MissingEndCurlyBrace` / `意外的标记` 这类**看起来像手写语法错**的解析失败。改完 `.ps1` 必须确认 BOM 仍在（2026-09-14 已实证 3 次：`smoke.ps1` ×2、`build.ps1` ×1） |
+| **用工具局部编辑 `.ps1` 会丢 BOM** | PS 5.1 按 ANSI 解析中文注释，报 `MissingEndCurlyBrace` / `意外的标记` 这类**看起来像手写语法错**的解析失败。改完 `.ps1` 必须确认 BOM 仍在（2026-09-14 已实证 4 次：`smoke.ps1` ×2、`build.ps1` ×2 —— 含**文件编辑工具**改中文注释那次） |
 | **Windows 无 `std.runtime.Signal`** | 优雅关闭靠 `POST /admin/shutdown`，**该端点必须限制为本机可访问** |
 | **部署别只拷 2 个 OpenSSL DLL** | 会启动即失败——还缺 `libcangjie-runtime.dll` |
 
-### 本地补丁（DEF-1，必须保留）
+### 本地补丁（DEF-1）—— **2026-09-14 已撤销**
 
-`E:\cangjie\qingzhou\src\app.cj` 已改 2 处：
+上游 `141a735`「修复 TLS 验证报告缺陷（DEF-1~DEF-5）」已修同一处，且实现更可移植
+（我们原来用的是 `GeneralPrivateKey`，备份在 `E:\cangjie\def1-local-patch.patch`）：
 
 ```diff
-@@ import 区
-+import stdx.crypto.keys.*
-+import stdx.crypto.common.*
-@@ serveTls()
 -        let key = PrivateKey.decodeFromPem(keyPem)
-+        let key: PrivateKey = GeneralPrivateKey.decodeFromPem(keyPem)
++        // RSAPrivateKey.decodeFromPem 在 stdx 1.0.5.1 与 1.1.3.1 均实现
++        let key = RSAPrivateKey.decodeFromPem(keyPem)
 ```
 
-已反馈轻舟团队（见上层 `cangjie-upstream\qingzhou-tls-verification.md`）。**上游修复后可撤销。**
+**已实测**：升级到 `3ea387e` 后 `tests/tls-check.ps1` **22 / 0 全绿**，撤补丁不影响 TLS。
+
+→ 结论：本项目现在**跑在轻舟上游原版上，对框架源码没有任何补丁**。
+唯一的例外是 CangDB 适配，但那不是改框架源码，而是在我们自己仓库里提供替代实现（见 §11 与
+`server/src/fw_rbac_store.cj` 的文件头）。
 
 ---
 
@@ -183,7 +203,7 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 
 > **以 §11.4 的现行清单为准**（本节原表已合并过去，避免两处各写一份而逐渐不一致）。
 > 仍未解决的仍是那几项：**服务器步骤 0**（架构 / 公网 IP / 端口 / 防火墙 + 云安全组）、
-> **轻舟 DEF-1 上游未修**、**服务器可用期限与备份交接人**，以及**本机直连 github.com 需走代理**。
+> **服务器可用期限与备份交接人**，以及**轻舟的 CangDB 依赖（上游仓库只有 README、没有代码）**。
 > 已定：忘记密码不做自助找回（由管理员重置；会长也一样，见 §4.3 的口径）。
 
 ---
@@ -194,6 +214,7 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 
 ### 第 0 步（30 分钟，先做）：验证全链路
 在 `E:\cangjie\qingzhou` 起一个最小服务 → 本机访问 → 打包 6 个文件 → 确认能跑。
+（**历史记录**：当时框架还在仓库外；2026-09-15 起已内置到 `server\third_party\qingzhou`。）
 **目的是把"编译→运行→部署"这条链路先打通**，再往里塞业务逻辑。
 
 ### 第 1 步：服务端骨架
@@ -229,14 +250,16 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 
 ## 11. 服务端进展（2026-09-13 更新）
 
-> 客户端由小组其他成员并行推进；本工作区当前只做服务端。轻舟上游更新没等到，
-> 继续使用 **`1cad35b` + 本地 DEF-1 补丁**（补丁**不能撤**，撤了就编译不过）。
+> 客户端由小组其他成员并行推进；本工作区当前只做服务端。
+> 轻舟已于 2026-09-14 升级到 **`3ea387e`**（DEF-1 上游已修，本地补丁已撤）；
+> 新版新增的 `src/store.cj` / `src/rbac.cj` 因依赖 CangDB（上游无代码）改由我们的适配版提供，
+> `build.ps1` 中排除框架原版。
 
 ### 11.1 已完成并验证：M1 骨架 + M2 组织与成员
 
 > 下表数字是 **M2 完成当时（2026-09-13）的快照**，保留用于对照；**当前基线见 §11.3 与 `README.md`**。
 
-代码在 `server/src/`（**现为 21 个源文件**），详见 `server-guide.md`。
+代码在 `server/src/`（**现为 23 个源文件**），详见 `server-guide.md`。
 **接口进度（当时）24 / 39**（认证 5 + 组织与成员 19）；其余为任务 8、课题 6、运维 1（`/health` 已做）。
 
 | 验证（2026-09-13 快照） | 结果 |
@@ -283,8 +306,11 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | M4 | Part 5 课题 6 个接口（环形校验、深度 6、删除上提、O(n) 聚合） | ✅ **已完成并验证**（单测 233 / 冒烟 280 全绿） |
 | M5 | 打包部署 · 带 SAN 自签证书 · TLS 关卡 | 🟡 **本机部分已完成**（TLS 22 项全绿 + 部署包 18.8 MB 端到端跑通）；公网部署**卡在服务器步骤 0**（架构 / 公网 IP / 端口 / 防火墙） |
 | M6 | 按 `docs/code-review.md` **第一轮**修缺陷（3 个 P0 权限漏洞 + 8 个 P1 + 13 个 P2，共 24 条） | ✅ **已完成并验证**（单测 273 / 冒烟 325 / TLS 22 全绿，2026-09-14） |
-| M7 | `docs/code-review.md` **第二轮**：独立复验第一轮 24 条（全部确认修复）+ **9 条新发现**（N-1…N-9） | ✅ **已完成**——9 条全部处理（N-8 按约定不改）：N-1（落地页 HTML 转义）/ N-2 / N-3 / N-4 / N-5（`idem` 补 `checkLoaded`）/ **N-6（注册节流改为按客户端 IP + 递增退避，因此未新增接口，接口计数仍是 39 / 39）** / **N-7（不可作用于同权或更高权的人，已从"重置密码"推广到改名 / 改角色 / 禁用）** / N-9（CSP），每条都带"回退即变红"的回归断言。当前基线 **单测 300 / 冒烟 347 / TLS 22 全绿** |
+| M7 | `docs/code-review.md` **第二轮**：独立复验第一轮 24 条（全部确认修复）+ **9 条新发现**（N-1…N-9） | ✅ **已完成**——9 条全部处理（N-8 按约定不改）：N-1（落地页 HTML 转义）/ N-2 / N-3 / N-4 / N-5（`idem` 补 `checkLoaded`）/ **N-6（注册节流改为按客户端 IP + 递增退避，因此未新增接口，接口计数仍是 39 / 39）** / **N-7（不可作用于同权或更高权的人，已从"重置密码"推广到改名 / 改角色 / 禁用）** / N-9（CSP），每条都带"回退即变红"的回归断言。当轮基线 **单测 322 / 冒烟 347 / TLS 22 全绿** |
 | M8 | `docs/code-review.md` **第三轮复验**：复验第二轮 9 条 + **4 条新发现**（N-10…N-13） | ✅ **已完成**——第二轮 9 条全部确认修复；**N-10**（`assign` / `assign-batch` 漏在同权保护之外：副会长可降级同权者，甚至用 `assign` 推翻会长对同权者的移出决定）已修，批量改为逐条判定；N-11 文档限定词、N-12 裸 IPv6 退化注释、N-13 分布式局限说明均已处理 |
+| M9 | **升级轻舟到 `3ea387e` + 适配 CangDB 缺失的 RBAC 层**：上游 `141a735` 修好 DEF-1 → 本地补丁撤销；框架新增的 `src/store.cj` / `src/rbac.cj` 依赖 CangDB（上游仓只有 README、没有代码）→ 用 `server/src/fw_rbac_store.cj`（文件存储的数据层）+ `fw_rbac.cj`（`requirePermission` 中间件、我们的错误格式）替代，`build.ps1` 排除框架原版 | ✅ **已完成并验证**（提交 `d77c500`）：撤补丁后 TLS 关卡重跑 **22 / 0 全绿**；当轮基线 **单测 322 / 冒烟 347 / TLS 22**。拿得到可用 CangDB 后，删掉两个适配文件、从排除列表去掉 `store.cj` / `rbac.cj` 即可回到上游原版 |
+| M10 | **容量基准与四项性能改造**（`docs/capacity-baseline.md`）：新增可复现基准 `server/tests/bench.ps1`（真实 HTTP，可与 `git worktree` 旧提交对比）；排序插入→堆 · PBKDF2 移出锁 · 令牌回收 · 整库落盘移出锁 | ✅ **已完成并验证**（提交 `f47088f`）：4 并发登录 **1574 → 867 ms**（串行因子 0.99 → 0.56）是唯一有量级收益的一项；排序与落盘在千人档落在噪声内，价值是**最坏情况下界**与**库变大后的锁占用** —— 文档里已如实写明。当轮基线 **单测 349 / 冒烟 347 / TLS 22 全绿**（2026-09-15） |
+| M11 | `docs/code-review.md` **第四轮复验**：6 条新发现（**N-14** 本机判定子串匹配 `::1` → 远程 IPv6 可关停服务 · **N-15** 被 4xx 拒绝却留半改状态并落盘 · **N-16** 登录时序侧信道可枚举手机号 · **N-17** 审计 IO 在锁内 · **N-18** 任务可挂任意部门课题 · **N-19** 招募 token 仅 32 位），另指出 `/admin/shutdown` 缺反例断言 | ✅ **已完成并验证**：6 条全修 + 补 3 组单测闸门与 1 段冒烟闸门。**N-16 时间表：修复前 388/382/431 ms 对 28/29/30 ms（13×），修复后 486/453/453 对 433/484/464（≈1.0×）**。当前基线 **单测 387 / 冒烟 360 / TLS 22 全绿**（2026-09-15） |
 
 **接口进度 39 / 39**：认证 5 · 组织与成员 19 · 任务 8 · 课题 6（= 38 个业务接口）+ 运维 `/health`。
 （早期写「38 / 39」是把 `/health` 漏算了；另有一个不在接口清单里的公开落地页 `GET /join/{token}`。）
@@ -318,7 +344,7 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 | # | 事项 | 影响 |
 | --- | --- | --- |
 | 1 | **服务器步骤 0 未跑** | 卡 M5：需确认架构是否 x64、公网 IP、端口、防火墙+安全组 |
-| 2 | 轻舟 DEF-1 上游未修 | 本地补丁顶着；补丁已记录在 `server/build.ps1` 与 `API-NOTES.md` |
+| 2 | **CangDB 上游无代码**（`gitcode.com/BIT-FSSLab/CangDB` 只有 README） | 轻舟新版 `store.cj`/`rbac.cj` 依赖它；已用文件存储适配版顶上（`fw_rbac_store.cj` + `fw_rbac.cj`），拿到可用 CangDB 后替换回上游实现 |
 | 3 | 工作区原先**不是 git 仓库** | 2026-09-13 已建 GitHub 仓库 `XueDric/open-harmony-club-service` 并上传；提交作者为 `XueDric <318242380+XueDric@users.noreply.github.com>`。**2026-09-14 已把三轮评审修复 + 仓库整理全部推送**，远端 `main` 与本地 HEAD 一致 |
 | 3b | **推送 github 的网络** | 2026-09-14 实测**直连可用**（`git push origin main` 直接成功，此前记录的"直连不通"已不适用）。若哪天直连超时（约 20s），改走本地代理：<br>`git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main`<br>（直连超时**别误判成权限问题**） |
 | 4 | 忘记密码：v1 由会长重置 | 已定 |
@@ -328,44 +354,103 @@ $fw   = Get-ChildItem "$ROOT\src\*.cj" |
 
 ### 11.5 客户端交接要点（**客户端同事从这里开始**）
 
-**现状：`entry/` 仍是 DevEco 初始模板，未接任何接口。** 服务端已全部就绪（39 / 39），可直接对接。
+> **技术栈已定：ArkTS**（2026-09-14；此前的仓颉方案已退役）。
+> **现状：已接入组内上传的成员模块 3 页，本机实测能编译打包；但未接任何接口、未配签名、未上真机。**
+> 构建命令、两个环境坑、完整 TODO → 见 **`client-build.md`**（动客户端前先看那个）。
 
-1. **开工前先替换模板值**：`AppScope/app.json5` 的 `bundleName`、应用名与图标、首页占位文案。
-   发布前若忘掉，装到手机上会显示 DevEco 的示例名（README「未决事项」#7 有记录）。
-2. **接口与错误码**：精简版看 `frontend-brief.md`（页面清单 / 通用约定 / 错误码 / **5 件必知事项**），
-   完整定义看 `api-design.md`。**接口已冻结，要改先提出来。**
-3. **页面 11 个，首页必须是「我的任务」**，不是组织架构图。
-4. **两项客户端自己的工作要单独排期**：日历同步机制（本地映射 + `POST /tasks/lookup` 比对）、
-   自签证书信任配置（证书**必须带 SAN**，写 `IP:<公网IP>`）。
-5. **本机联调起服务**：
+#### A. 先让它跑起来
 
-   ```powershell
-   cd server
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1      # 编译（并拷 4 个依赖 DLL）
-   cd build
-   .\club-server.exe init-admin 13800000000 你的密码123 dev-data       # 预置首任会长 + 4 个组织
-   .\club-server.exe serve 8080 dev-data                               # HTTP
-   # HTTPS： .\club-server.exe serve-tls 8443 dev-data ..\certs\cert.pem ..\certs\key.pem
-   ```
+```powershell
+$ds = "D:\DevEco Studio"
+$env:DEVECO_SDK_HOME = "$ds\sdk"      # DevEco 自带 SDK（API 24 / 6.1.1.125）
+$env:JAVA_HOME       = "$ds\jbr"      # ⚠ 必须用它的 JBR 21；本机 PATH 上是 JDK 1.7，会报 UnsupportedClassVersionError
+$env:PATH = "$ds\jbr\bin;$ds\tools\node;$ds\tools\ohpm\bin;$env:PATH"
+Set-Location E:\harmonyOS\cangjie_web
+& "$ds\tools\hvigor\bin\hvigorw.bat" assembleHap --no-daemon
+```
 
-   ⚠️ **`cwd` 必须是 exe 所在目录**（数据目录与证书按相对路径读）；冒烟脚本用独立数据目录
-   `build\smoke-data`，不会碰你的联调数据。
-6. **要能处理这几类"看起来像 bug 的 403 / 429"**（都属于服务端设计，不是缺陷）：
-   - **同权保护**：副会长试图降级 / 禁用 / 重置另一位副会长 → `403 FORBIDDEN_ROLE`（见 §4.3）；
-   - **最后一个会长**：`403/409 FORBIDDEN_LAST_PRESIDENT`；
-   - **注册被节流**：`429 TOO_MANY_ATTEMPTS` —— 节流**按客户端 IP**（2026-09-14 起），
-     只影响注册、不影响登录与其它接口；
-   - **`pending` 账号**：能登录但 `permissions` 全 false、`view_scope = none`，
-     客户端应跳「等待管理员分配」页，**不进主界面**。
+产物：`entry/build/default/outputs/default/entry-default-**unsigned**.hap`。
+用 DevEco 打开项目直接 Build 也可以（IDE 会自己用对 JBR）；**但定稿前命令行也要能过**，
+否则 CI / 别人机器上会重现同一个 Java 版本坑。
+
+#### B. 客户端当前进度（别高估）
+
+| 项 | 状态 | 说明 |
+| --- | --- | --- |
+| 页面 | **3 / 11** | 成员名录 · 待分配审批 · 管理；**缺首页「我的任务」** |
+| 接口 | **0 / 39** | 页面全是假数据，**没有任何网络层**（grep `http\|api/v1\|token` → 0 命中） |
+| 构建 | ✅ 通过 | `hvigorw assembleHap` → BUILD SUCCESSFUL（清空 `build` 干净重建同样通过） |
+| 签名 | ❌ 未配 | 产物是 unsigned，**装不上设备** |
+| 真机 | 未验证 | `hdc list targets` 为空；模拟器镜像有 6.1.1 / 7.0.0 |
+
+#### C. 交接清单（按优先级）
+
+1. **配置签名**（唯一挡住"装到手机"的一步）：DevEco → `File > Project Structure > Signing Configs`
+   勾 **Automatically generate signature**（需登录华为账号）。之后 `assembleHap` 产出已签名 HAP。
+2. **确认首页方向** ⚠️：`frontend-brief.md` §1 明确写「**首页必须是「我的任务」**，不是组织架构图」，
+   而现在 `Index.ets` 的三个 Tab 全是成员 / 管理方向。这是**产品方向问题，不是代码问题**，先跟组内对齐。
+3. **补 8 个缺失页面**：登录、注册、**我的任务（首页）**、任务列表、任务详情、课题列表、课题详情、
+   加入流程、我的设置（共 11 页，现有 3 页）。
+4. **接接口**：先读 `frontend-brief.md`（精简版）+ `api-design.md`（唯一权威）。接之前先处理
+   **`client-build.md` §3.4 的 8 处契约差异** —— 最容易踩的三个：
+   ① 部门 id 服务端从 **1** 开始（页面里是 0 起，而 `dept_id = 0` 含义是**未分配**）；
+   ② 角色下拉**不能有 `president`**（`assign` / `PATCH /members` 一律拒绝，会长只能走移交）；
+   ③ 成员详情**拿不到手机号**（`MemberBrief` 不含手机号，只有 `GET /auth/me` 的本人视图有）。
+5. **两类"有界面没逻辑"的地方要补**（`client-build.md` §3.5）：6 个 `@State` 只写不读 →
+   重置密码 / 移出社团 / 新建部门 / 随机轮换 / 移交会长 等按钮**点了没反应**；
+   成员详情的 `memberId` 只被赋值而未取数（点谁都显示同一个人）。
+6. **`pending` 账号要跳「等待管理员分配」页**，不进主界面（见下面 E 段第 4 条）。
+
+#### D. 两项需**单独排期**的客户端工作（brief §6.③ 与 §6.④）
+
+- **日历同步机制**：服务端**不存**日历字段，全部在客户端本地完成 —— 本地维护
+  `task_id → {event_id, cached_due_at, cached_status}`，拉任务时比对（`due_at` 变→更新、
+  `status=done`→删除、不在服务端返回中→删除、权限被拒→降级为 `.ics` 导出），
+  用 `POST /tasks/lookup` 的 `missing` 批量回收。**不做更新/删除，日历会堆错误提醒。**
+- **自签证书信任**：鸿蒙默认不信任自签证书，要在 `resources/base/profile/` 配网络安全配置并内置 CA。
+  ⚠️ 证书**必须带 SAN**（服务是 IP 访问，SAN 写 `IP:<公网IP>`）；轻舟示例自带证书**没有 SAN，不能用**。
+
+#### E. 接口与错误码
+
+精简版看 `frontend-brief.md`（页面清单 / 通用约定 / 错误码 / **5 件必知事项**），
+完整定义看 `api-design.md`。**接口已冻结（39 / 39），要改先提出来。**
+
+**要能处理这几类"看起来像 bug 的 403 / 429"**（都属于服务端设计，不是缺陷）：
+
+- **同权保护**：副会长试图降级 / 禁用 / 重置 / 改名另一位副会长 → `403 FORBIDDEN_ROLE`（见 §4.3）；
+  该规则覆盖五类动作：重置密码 / 调部门改角色 / 移出社团 / 编辑姓名 / **审批分配（`assign`、`assign-batch`）**；
+- **最后一个会长**：`403/409 FORBIDDEN_LAST_PRESIDENT`；
+- **注册被节流**：`429 TOO_MANY_ATTEMPTS` —— 节流**按客户端 IP**（2026-09-14 起），
+  只影响注册、不影响登录与其它接口；
+- **`pending` 账号**：能登录但 `permissions` 全 false、`view_scope = none`，
+  客户端应跳「等待管理员分配」页，**不进主界面**。
+
+#### F. 本机联调起服务
+
+```powershell
+cd server
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1      # 编译（并拷 4 个依赖 DLL）
+cd build
+.\club-server.exe init-admin 13800000000 你的密码123 dev-data       # 预置首任会长 + 4 个组织
+.\club-server.exe serve 8080 dev-data                               # HTTP
+# HTTPS： .\club-server.exe serve-tls 8443 dev-data ..\certs\cert.pem ..\certs\key.pem
+```
+
+⚠️ **`cwd` 必须是 exe 所在目录**（数据目录与证书按相对路径读）；冒烟脚本用独立数据目录
+`build\smoke-data`，不会碰你的联调数据。
+
+> **注意**：客户端用 HTTPS 连自签服务时要先做 D 段第二条（内置 CA）；联调阶段可先用
+> `serve 8080` 走 HTTP —— 但 HarmonyOS 对**明文 HTTP 也有限制**，需实测确认默认行为。
 
 ---
 
-### 11.6 仓库结构（2026-09-14 整理后）
+### 11.6 仓库结构（2026-09-14 · ArkTS 迁移后）
 
 | 变动 | 说明 |
 | --- | --- |
+| **客户端换栈**（2026-09-14） | `entry/` 由**仓颉**改为 **ArkTS**：页面在 `entry/src/main/ets/pages/`、入口 `entry/src/main/ets/entryability/EntryAbility.ets`。原仓颉脚手架（`src/main/cangjie/`、`cjpm.toml/.lock`、`src/test/`、`src/ohosTest/`）已删除；构建方式见 `client-build.md` |
 | **对外材料移出仓库** | 仓颉运行时缺陷报告 + Issue 稿件 + 最小复现 `repro.cj`、轻舟 TLS 需求与实测 → 上层 `E:\harmonyOS\cangjie-upstream\`（5 个文件）。仓库内 17 处引用已改写为指向那里 |
-| **删除** | `entry/src/test`、`entry/src/ohosTest` 的 DevEco 模板示例（8 个文件）；已核对 `build-profile.json5` 不引用这两个目录，不影响主构建 |
-| **入库文件** | **63 个**（整理前 76）：`server` 25 · `entry` 17 · `docs` 8 · `AppScope` 5 · 根配置 8 |
-| **`server/build/` 已清空** | 构建产物、冒烟/TLS 测试数据、日志都删了（释放 38.22 MB）。**下次跑测试前先执行 `build.ps1`** |
-| **保留** | `server/dist/`（完整部署包，可直接部署）· `server/certs/`（证书 + 私钥）· `oh_modules/`（鸿蒙依赖，重装需联网）· `.idea/`、`local.properties` |
+| **删除** | 早先删掉了 `entry/src/test`、`entry/src/ohosTest` 的 DevEco 模板示例（8 个文件）；本次迁移又删掉仓颉客户端的 5 个跟踪文件 |
+| **入库文件** | **65 个**：`server` 25 · `entry` 18 · `docs` 9 · `AppScope` 5 · 根配置 7 · 其它 1 |
+| **`server/build/` 是构建产物** | 构建产物、冒烟/TLS 测试数据、日志都不入库。**下次跑测试前先执行 `build.ps1`** |
+| **保留（不入库）** | `server/dist/`（完整部署包，可直接部署）· `server/certs/`（证书 + 私钥）· `oh_modules/`（鸿蒙依赖，重装需联网）· `.idea/`、`local.properties` · `entry/build/`（HAP 产物） |

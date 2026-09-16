@@ -1,6 +1,6 @@
 # 服务端 API 事实清单（探针实测）
 
-> 环境：cjc **1.1.3** (cjnative, x86_64-w64-mingw32) + stdx **1.1.3.1** + 轻舟 `1cad35b`（含 DEF-1 本地补丁）
+> 环境：cjc **1.1.3** (cjnative, x86_64-w64-mingw32) + stdx **1.1.3.1** + 轻舟 **`3ea387e`**（DEF-1 已由上游 `141a735` 修复，本地补丁已撤；上游 `src/store.cj` / `src/rbac.cj` 依赖 CangDB，本项目改用 `fw_rbac_store.cj` / `fw_rbac.cj` 适配并在 `build.ps1` 中排除原版）
 > 方法：`.probe/` 下写了 8 轮最小探针逐个编译验证，**只采用实测通过的签名**。
 > 这份清单是为了让后续开发不用重复试错——写代码前先查这里。
 
@@ -117,8 +117,9 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 ```
 
 - 错误链（`compose.cj`）：业务链抛异常 → `ctx.throw_err(e)` → 执行 `onError` 注册的中间件 → 最后 `ctx.commit()`。
-- `serveTls(port, certPem, keyPem)` 收的是 **PEM 字符串**（不是路径），且内部用 `GeneralPrivateKey`
-  （上游修好 DEF-1 后即可去掉本地补丁）。
+- `serveTls(port, certPem, keyPem)` 收的是 **PEM 字符串**（不是路径）。
+  上游 `141a735` 起内部用 `RSAPrivateKey.decodeFromPem`（我们早先那个 `GeneralPrivateKey`
+  的本地补丁已随之撤销，不要再打）。
 
 ---
 
@@ -156,9 +157,11 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 | 23 | **原生命令参数里的双引号会被吃掉** | `curl -d '{"a":"b"}'` 里的引号在 PS 5.1 传参时被剥离，服务端收到非法 JSON（表现为 400）。改用 `--data-binary @临时文件` |
 | 24 | **openssl / curl 往 stderr 写日志** | 脚本若用 `$ErrorActionPreference = "Stop"`，会把「原生命令写了 stderr」当成致命错误直接中断。用 `Continue` + 显式断言 |
 | 25 | **部署包里带着私钥** | `server/dist/club-server/certs/key.pem` 与 `server/certs/key.pem` 都必须在 `.gitignore` 里；`git check-ignore -v <路径>` 自检 |
-| 26 | **局部编辑会让 `.ps1` 丢掉 BOM** | 第 11 条讲的是"新脚本要带 BOM"，这里补上更隐蔽的一半：**已经正常的脚本被局部改写后 BOM 会消失**（多数工具默认写无 BOM 的 UTF-8）。下一次运行时整个文件按 ANSI 解析，中文变乱码，报出 `意外的标记"build\smoke-data"`、`表达式或语句中包含意外的标记` 这类**看起来像手写语法错误**的解析失败——很容易误判成"脚本改坏了"。判定：`[System.IO.File]::ReadAllBytes($p)[0..2]` 是否为 `EF BB BF`。改完 `.ps1` 必须确认 BOM 仍在。**2026-09-14 实测补充**：用**文件编辑工具**（不是 shell）对 `smoke.ps1` 做局部编辑，BOM **同样会丢**（编辑前 `EF BB BF`、编辑后没有），已手动补回 —— 所以"只要不用 shell 处理就没事"是错的，**任何局部编辑之后都要查一遍** |
+| 26 | **局部编辑会让 `.ps1` 丢掉 BOM** | 第 11 条讲的是"新脚本要带 BOM"，这里补上更隐蔽的一半：**已经正常的脚本被局部改写后 BOM 会消失**（多数工具默认写无 BOM 的 UTF-8）。下一次运行时整个文件按 ANSI 解析，中文变乱码，报出 `意外的标记"build\smoke-data"`、`表达式或语句中包含意外的标记` 这类**看起来像手写语法错误**的解析失败——很容易误判成"脚本改坏了"。判定：`[System.IO.File]::ReadAllBytes($p)[0..2]` 是否为 `EF BB BF`。改完 `.ps1` 必须确认 BOM 仍在。**2026-09-14 实测补充**：用**文件编辑工具**（不是 shell）对 `smoke.ps1` 做局部编辑，BOM **同样会丢**（编辑前 `EF BB BF`、编辑后没有），已手动补回 —— 所以"只要不用 shell 处理就没事"是错的，**任何局部编辑之后都要查一遍**。**2026-09-14 第二次实证**：同样的编辑方式改 `server/build.ps1`（加中文注释）后 BOM 再次消失，运行时直接报 `Missing closing '}'`（解析失败），补回 BOM 即恢复 |
 | 27 | **不要用 PowerShell 双引号字符串处理 `.md` / `.cj` / `.ps1` 的内容** | 双引号里反引号是转义引导符：反引号 + `r` → CR、+ `a` → BEL、+ `t` → TAB、+ `n` → LF。markdown 里的代码跨度（如 `` `restore-member` ``、`` `router.middleware()` ``）**正好全部命中**，于是反引号与首字母被静默吃掉，行被拆断或塞进不可见控制字符——本次真把 `docs/code-review.md` 写坏（2 个裸 BEL 字节 + 3 行残缺重复片段）。改用文件编辑工具，或用**单引号**字符串（单引号里反引号不是转义符）。改完自检非法控制字符（脚本见 `docs/code-review.md` 的 N-2 条） |
 | 28 | **`Get-Content` 读 UTF-8 无 BOM 的中文文件会丢行** | PS 5.1 不带 `-Encoding UTF8` 时按 **ANSI** 解码：某些 UTF-8 中文字节落在 GBK **前导字节**区间（0x81–0xFE），会把紧跟其后的 `0x0A` 当成第二字节**吞掉**，两行被并成一行 —— 于是**行数统计与内容都不可信**。实测：`docs\HANDOFF.md` 真实 **371** 行，`(Get-Content).Count` 只报 **283**；`docs\frontend-brief.md` 真实 **256** 行，只报 **222**。读文本一律用 `Get-Content -Encoding UTF8`，或直接用文件工具；字节级检查（`[System.IO.File]::ReadAllBytes`）不受影响 |
+| 29 | **注释里的 `⚠️` 会触发仓颉 `unsecure character` 警告** | 仓颉对 **U+FE0F（变体选择符）** 报 `warning: unsecure character:\u{FE0F}` —— 就是"带 emoji 变体选择符的 `⚠️`"（两个码位：U+26A0 + U+FE0F）。它只是警告（`-Woff unused` 不覆盖 parser 警告），但会弄脏构建输出，且以后可能收紧成错误。**注释里写 `⚠`（单码位），别写 `⚠️`。** 实测：`server/src/fw_rbac_store.cj` 文件头用了 `⚠️` → 报 1 warning，去掉后构建输出干净（2026-09-14） |
+| 30 | **PS 5.1 里 `System.Net.Http` 默认没加载** | `New-Object System.Net.Http.HttpClient` 直接报 `Cannot find type [System.Net.Http.HttpClientHandler]: verify that the assembly containing this type is loaded` —— .NET 4.x 把 `System.Net.Http` 放在**独立程序集**，Windows PowerShell 5.1 启动时不会自动加载它。先 `Add-Type -AssemblyName System.Net.Http`（PowerShell 7 自带，不需要）。**用途**：写并发基准时要"真并发"发请求，`Start-Job`/`Start-Process` 起进程太重、会把测量本身污染掉，用 `HttpClient` + `PostAsync`/`SendAsync` 收集 `Task` 再 `[System.Threading.Tasks.Task]::WaitAll(...)` 才是干净的墙钟计时。注意默认会走系统代理（本机 `127.0.0.1:7897` 代理挂掉时直接连不上），要设 `$handler.UseProxy = $false`。见 `server/tests/bench.ps1` |
 
 ---
 
@@ -234,6 +237,31 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 > 结论都固化在本文档里。
 
 ---
+
+### 5.5 复现记录：2026-09-16 该更新**再次**被装上，同一崩溃回归
+
+| 证据 | 值 |
+| --- | --- |
+| 更新事件（`WindowsUpdateClient` ID 19） | **2026-09-16 09:35:18 `KB5124010 (26300.9539)` 安装成功**（与 5.1 里 09-13 21:40 那次同一个 KB） |
+| `Win32_QuickFixEngineering` | `KB5124010 InstalledOn = 2026/9/16` |
+| `C:\Windows\System32\msvcrt.dll` | **7.0.26100.9444**（修复后是 `.8875`） |
+| 崩溃签名 | `Faulting module: msvcrt.dll (7.0.26100.9444)`、`0xc0000005`、`offset 0x62f1e` —— 与 5.1 的 `wcslen+0x4E` 同处 |
+| 波及范围 | **今天新编的 exe 崩**，同时**轻舟 9/11 与 9/13 编的 exe 也崩**（同一个 exe 在 9/13 是好用的） |
+
+**A/B 反证（本次新做，用来排除"是不是我们改了构建"）**：同一份 `server\build.ps1`，
+只把框架输入从**仓库内置目录**换回**仓库外 `E:\cangjie\qingzhou`**（`-Vendor` 参数），
+两份 exe 的崩溃**完全一致** → 与本项目代码、与"框架内置还是外置"都无关，纯环境问题。
+
+**处置与结果**：与 5.3 相同 —— **卸载 KB5124010**。**2026-09-16 当天执行，无需重启即恢复**：
+本项目 exe 立刻可跑，四套验证全绿：**单测 387 / 冒烟 360 / TLS 22 / 跨仓契约 30**。
+
+> ⚠️ 一项反直觉、值得记下的观察：卸载后 `msvcrt.dll` 的**文件版本仍然是 `7.0.26100.9444`**
+> （并没有回到修复后的 `.8875`），而崩溃已经消失 —— 再次印证 5.1 的结论
+> **崩溃不是 msvcrt 自身的字节**引起的，触发点随该 KB 的其它组件一起被撤掉。
+> **下次复发时不要用 msvcrt 版本号判断"修好没有"：直接跑一次 exe 最可靠。**
+
+> ⚠️ 这是**同一个可选预览更新第二次**打断本项目的运行时。只要它还在"可选更新"里就可能被再次装上；
+> 建议在 Windows 更新里**把它隐藏/暂停**，或固定一台不装它的机器专门做构建与验证。
 
 ## 4. 重新探针的方法
 

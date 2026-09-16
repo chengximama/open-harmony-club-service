@@ -1,12 +1,56 @@
-// 成员名录页面
+// 成员名录页面（B同学负责）
 // 按 4 个部门分组展示成员，点击卡片进入成员详情
 
-import { MemberBrief, Dept, MOCK_DEPTS, MOCK_MEMBERS, ROLE_MAP } from '../model/MemberModel';
-import { Colors, Radius, Spacing, StatusColors } from '../model/Theme';
+interface Member {
+  id: number;
+  name: string;
+  role: string;
+  deptId: number;
+  deptName: string;
+  status: string;
+  joinedAt: string;
+}
+
+interface Dept {
+  id: number;
+  name: string;
+}
+
+// ====== 假数据 ======
+const DEPTS: Dept[] = [
+  { id: 0, name: '主席团' },
+  { id: 1, name: '课题部' },
+  { id: 2, name: '运营部' },
+  { id: 3, name: '宣传部' },
+];
+
+const MEMBERS: Member[] = [
+  { id: 1, name: '王会长', role: 'president', deptId: 0, deptName: '主席团', status: 'active', joinedAt: '2026-09-01' },
+  { id: 2, name: '李副会长', role: 'vice_president', deptId: 0, deptName: '主席团', status: 'active', joinedAt: '2026-09-01' },
+  { id: 3, name: '张副会长', role: 'vice_president', deptId: 0, deptName: '主席团', status: 'active', joinedAt: '2026-09-01' },
+  { id: 4, name: '赵部长', role: 'lead', deptId: 1, deptName: '课题部', status: 'active', joinedAt: '2026-09-02' },
+  { id: 5, name: '孙副部长', role: 'vice_lead', deptId: 1, deptName: '课题部', status: 'active', joinedAt: '2026-09-02' },
+  { id: 6, name: '周小明', role: 'member', deptId: 1, deptName: '课题部', status: 'active', joinedAt: '2026-09-03' },
+  { id: 7, name: '吴小红', role: 'member', deptId: 1, deptName: '课题部', status: 'active', joinedAt: '2026-09-03' },
+  { id: 8, name: '郑部长', role: 'lead', deptId: 2, deptName: '运营部', status: 'active', joinedAt: '2026-09-02' },
+  { id: 9, name: '钱副部长', role: 'vice_lead', deptId: 2, deptName: '运营部', status: 'active', joinedAt: '2026-09-02' },
+  { id: 10, name: '冯小刚', role: 'member', deptId: 2, deptName: '运营部', status: 'active', joinedAt: '2026-09-04' },
+  { id: 11, name: '陈部长', role: 'lead', deptId: 3, deptName: '宣传部', status: 'active', joinedAt: '2026-09-02' },
+  { id: 12, name: '褚副部长', role: 'vice_lead', deptId: 3, deptName: '宣传部', status: 'active', joinedAt: '2026-09-02' },
+  { id: 13, name: '卫小美', role: 'member', deptId: 3, deptName: '宣传部', status: 'active', joinedAt: '2026-09-05' },
+];
+
+const ROLE_MAP: Record<string, string> = {
+  'president': '会长',
+  'vice_president': '副会长',
+  'lead': '部长',
+  'vice_lead': '副部长',
+  'member': '成员',
+};
 
 @Component
 struct MemberCard {
-  member: MemberBrief = { id: 0, name: '', role: 'member', dept: null, status: 'active', joined_at: '' };
+  member: Member = { id: 0, name: '', role: 'member', deptId: 0, deptName: '', status: 'active', joinedAt: '' };
   onCardClick: () => void = () => {};
 
   build() {
@@ -24,27 +68,24 @@ struct MemberCard {
         Text(this.member.name)
           .fontSize(16)
           .fontWeight(FontWeight.Medium)
-          .fontColor(Colors.textPrimary)
 
         Text(this.getRoleName())
           .fontSize(12)
-          .fontColor(Colors.textTertiary)
+          .fontColor('#999999')
           .margin({ top: 2 })
       }
       .alignItems(HorizontalAlign.Start)
-      .margin({ left: Spacing.md })
+      .margin({ left: 12 })
       .layoutWeight(1)
-
-      Text(this.member.dept?.name || '未分配')
-        .fontSize(12)
-        .fontColor(Colors.textTertiary)
     }
     .width('100%')
-    .padding(Spacing.cardInner)
-    .backgroundColor(Colors.surface)
-    .borderRadius(Radius.card)
-    .margin({ bottom: Spacing.cardGap })
-    .onClick(() => { this.onCardClick(); })
+    .padding(12)
+    .backgroundColor(Color.White)
+    .borderRadius(8)
+    .margin({ bottom: 8 })
+    .onClick(() => {
+      this.onCardClick();
+    })
   }
 
   getRoleName(): string {
@@ -53,11 +94,11 @@ struct MemberCard {
 
   getAvatarColor(): string {
     switch (this.member.role) {
-      case 'president': return StatusColors.overdue.fg;
-      case 'vice_president': return StatusColors.blocked.fg;
-      case 'lead': return Colors.primary;
-      case 'vice_lead': return StatusColors.done.fg;
-      default: return StatusColors.pending.fg;
+      case 'president': return '#E53935';
+      case 'vice_president': return '#FB8C00';
+      case 'lead': return '#1E88E5';
+      case 'vice_lead': return '#43A047';
+      default: return '#7E57C2';
     }
   }
 }
@@ -65,7 +106,7 @@ struct MemberCard {
 @Component
 struct DeptSection {
   deptName: string = '';
-  members: MemberBrief[] = [];
+  members: Member[] = [];
   onMemberClick: (memberId: number) => void = (_id: number) => {};
 
   build() {
@@ -73,16 +114,16 @@ struct DeptSection {
       Text(this.deptName)
         .fontSize(14)
         .fontWeight(FontWeight.Bold)
-        .fontColor(Colors.textPrimary)
+        .fontColor('#333333')
         .width('100%')
-        .padding({ left: 4, top: Spacing.sm, bottom: Spacing.xs })
+        .padding({ left: 4, top: 8, bottom: 4 })
 
-      ForEach(this.members, (item: MemberBrief) => {
+      ForEach(this.members, (item: Member) => {
         MemberCard({
           member: item,
           onCardClick: () => this.onMemberClick(item.id)
         })
-      }, (item: MemberBrief) => item.id.toString())
+      }, (item: Member) => item.id.toString())
     }
     .width('100%')
   }
@@ -91,28 +132,28 @@ struct DeptSection {
 @Component
 export default struct MemberListPage {
   onMemberClick: (memberId: number) => void = (_id: number) => {};
-  @State members: MemberBrief[] = MOCK_MEMBERS;
+  @State members: Member[] = MEMBERS;
 
-  getMembersByDept(deptId: number): MemberBrief[] {
-    return this.members.filter((m: MemberBrief) => m.dept?.id === deptId);
+  getMembersByDept(deptId: number): Member[] {
+    return this.members.filter((m: Member) => m.deptId === deptId);
   }
 
   build() {
     Column() {
       Row() {
-        Text('搜索成员')
+        Text('🔍  搜索成员')
           .fontSize(14)
-          .fontColor(Colors.textTertiary)
+          .fontColor('#999999')
           .width('100%')
-          .padding(Spacing.md)
-          .backgroundColor(Colors.surface)
-          .borderRadius(Radius.input)
+          .padding(12)
+          .backgroundColor('#F5F5F5')
+          .borderRadius(8)
       }
       .width('100%')
-      .padding({ left: Spacing.page, right: Spacing.page, top: Spacing.md, bottom: Spacing.sm })
+      .padding({ left: 16, right: 16, top: 12, bottom: 8 })
 
-      List({ space: Spacing.cardGap }) {
-        ForEach(MOCK_DEPTS, (dept: Dept) => {
+      List({ space: 8 }) {
+        ForEach(DEPTS, (dept: Dept) => {
           ListItem() {
             DeptSection({
               deptName: dept.name,
@@ -124,10 +165,10 @@ export default struct MemberListPage {
       }
       .width('100%')
       .layoutWeight(1)
-      .padding({ left: Spacing.page, right: Spacing.page, top: Spacing.xs, bottom: Spacing.page })
+      .padding({ left: 16, right: 16, top: 4, bottom: 16 })
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(Colors.canvas)
+    .backgroundColor('#FAFAFA')
   }
 }

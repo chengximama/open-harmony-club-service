@@ -610,7 +610,7 @@ try {
     $r = Call-Api "POST" "/api/v1/dept-invite-links" @{ dept_id = $deptPub } $presToken
     Check "创建招募链接 -> 201" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r)"
     $linkToken = [string]$r.json.data.token
-    Check "返回 token（8 位）" ($linkToken.Length -eq 8) "token=$linkToken"
+    Check "返回 token（16 字节 = 32 位十六进制，N-19）" ($linkToken.Length -eq 32) "token=$linkToken"
     Check "返回 url 含 /join/" (([string]$r.json.data.url) -like "*/join/*")
     $r = Call-Api "POST" "/api/v1/dept-invite-links" @{ dept_id = 99999 } $presToken
     Check "链接指向不存在的部门 -> 404" (($r.status -eq 404) -and ((ErrCode $r) -eq "DEPT_NOT_FOUND")) "status=$($r.status)"
@@ -1011,6 +1011,90 @@ try {
     Check "顶层被删后任务变为独立任务" ($null -eq $r.json.data.plan)
 
     # ---------- 23. 优雅关闭（仅本机） ----------
+    # ---------- 22.5 第四轮复验的回归闸门（N-15 / N-18） ----------
+    # N-15：被 4xx 拒绝的请求不能在内存与磁盘上留下"半改"状态。
+    # N-18：任务不能挂到**别的部门**的课题下。
+    # 位置必须在 23 之前 —— 那一段会把服务关停。
+    Write-Host ""
+    Write-Host "[22.5] 被拒请求不留半改状态（N-15）· 跨部门挂课题被拒（N-18）"
+
+    # N-15a：姓名合法 + 角色非法（president 只能靠移交）-> 整体 400，姓名必须没变
+    $beforeName = (Call-Api "GET" "/api/v1/members/$newId" $null $presToken).json.data.member.name
+    $r = Call-Api "PATCH" "/api/v1/members/$newId" @{ name = "N15RejectedName"; role = "president" } $presToken
+    Check "成员：合法名 + 非法角色 -> 400" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
+    $afterName = (Call-Api "GET" "/api/v1/members/$newId" $null $presToken).json.data.member.name
+    Check "成员：被拒后姓名未变（N-15）" ($afterName -eq $beforeName) "before=$beforeName after=$afterName"
+
+    # N-15b：部门改名合法 + sort 越界 -> 整体 400，名字必须没变
+    $r = Call-Api "POST" "/api/v1/depts" @{ name = "N15部门"; sort = 7 } $presToken
+    $n15Dept = $r.json.data.dept.id
+    $r = Call-Api "PATCH" "/api/v1/depts/$n15Dept" @{ name = "N15RejectedDeptName"; sort = 99999 } $presToken
+    Check "部门：合法名 + 越界 sort -> 400" (($r.status -eq 400) -and ((ErrCode $r) -eq "VALIDATION_FAILED")) "status=$($r.status) code=$(ErrCode $r)"
+    $n15Name = ((Call-Api "GET" "/api/v1/depts" $null $presToken).json.data.items | Where-Object { $_.id -eq $n15Dept }).name
+    Check "部门：被拒后名称未变（N-15）" ($n15Name -eq "N15部门") "name=$n15Name"
+
+    # N-15 的落盘面：上面被拒之后触发一次普通写，被拒的值不能出现在 db.json 里
+    $r = Call-Api "POST" "/api/v1/depts" @{ name = "N15落盘探针"; sort = 8 } $presToken
+    $probeDept = $r.json.data.dept.id
+    $r = Call-Api "DELETE" "/api/v1/depts/$probeDept" $null $presToken
+    Check "N15 落盘探针建删 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    $dbText = [System.IO.File]::ReadAllText((Join-Path $dataAbs "db.json"), [System.Text.Encoding]::UTF8)
+    Check "被拒的成员名没进 db.json（N-15）" ($dbText -notmatch "N15RejectedName")
+    Check "被拒的部门名没进 db.json（N-15）" ($dbText -notmatch "N15RejectedDeptName")
+
+    # N-18：会长自己的部门是主席团，拿它当负责人去挂"乙部门"的课题就是跨部门
+    $r = Call-Api "POST" "/api/v1/depts" @{ name = "N18乙"; sort = 12 } $presToken
+    $n18DeptB = $r.json.data.dept.id
+    $r = Call-Api "POST" "/api/v1/plans" @{ title = "N18乙部门课题"; dept_id = $n18DeptB; owner_id = $presId } $presToken
+    Check "N18 探针课题 -> 201" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r)"
+    $n18Plan = $r.json.data.plan.id
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "N18跨部门任务"; owner_id = $presId; plan_id = $n18Plan } $presToken
+    Check "创建：跨部门挂课题 -> 403 FORBIDDEN_NOT_IN_DEPT（N-18）" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_NOT_IN_DEPT")) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PATCH" "/api/v1/tasks/$taskOverdue" @{ plan_id = $n18Plan } $presToken
+    Check "修改：跨部门挂课题 -> 403 FORBIDDEN_NOT_IN_DEPT（N-18）" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_NOT_IN_DEPT")) "status=$($r.status) code=$(ErrCode $r)"
+    # 同部门挂载的正例由本文件 [20] 那批"课题下建任务"承担（部门一致，必须继续 201）；
+    # 这里只做清理，确认探针没留下垃圾。
+    $r = Call-Api "DELETE" "/api/v1/plans/$n18Plan" $null $presToken
+    Check "N18 探针课题删除 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "DELETE" "/api/v1/depts/$n18DeptB" $null $presToken
+    Check "N18 探针部门删除 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "DELETE" "/api/v1/depts/$n15Dept" $null $presToken
+    Check "N15 探针部门删除 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+
+    # ---------- 22.7 登录按 IP 节流（N-21） ----------
+    # 必须从**非回环**地址打：回环被有意豁免（见 h_auth.cj 的注释），
+    # 而这是本机唯一能造出"远程来源"的办法（没有第二台机器）。
+    Write-Host ""
+    Write-Host "[22.7] 登录按 IP 节流（N-21，从 LAN 地址打）"
+    $lanIp = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+              Where-Object { $_.IPAddress -ne '127.0.0.1' -and $_.PrefixOrigin -ne 'WellKnown' } |
+              Select-Object -First 1).IPAddress
+    if (-not $lanIp) {
+        Check "取到用于复现的非回环 IPv4" $false "取不到 LAN 地址，无法复现按 IP 节流"
+    } else {
+        $lanBase = "http://${lanIp}:$Port"
+        $codes = @()
+        for ($i = 1; $i -le 12; $i++) {
+            $b = @{ phone = ("1392000{0:D4}" -f $i); password = "definitely-wrong" } | ConvertTo-Json -Compress
+            try {
+                $rr = Invoke-WebRequest -Method POST -Uri "$lanBase/api/v1/auth/login" -UseBasicParsing `
+                      -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($b)) -TimeoutSec 25
+                $codes += [int]$rr.StatusCode
+            } catch {
+                $resp = $_.Exception.Response
+                $codes += $(if ($null -ne $resp) { [int]$resp.StatusCode } else { -1 })
+            }
+        }
+        $n429 = ($codes | Where-Object { $_ -eq 429 }).Count
+        Check "12 个不同未注册号码 -> 出现 429（按 IP 节流生效，N-21）" ($n429 -gt 0) "codes=$($codes -join ',')"
+        # 该 IP 锁定后，即便是**正确**口令也被拒；回环不受影响（下面 [24] 会从回环登录成功）
+        $b2 = @{ phone = "13800000000"; password = "newpassword1" } | ConvertTo-Json -Compress
+        $st = 0
+        try { $r2 = Invoke-WebRequest -Method POST -Uri "$lanBase/api/v1/auth/login" -UseBasicParsing -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($b2)) -TimeoutSec 25; $st = [int]$r2.StatusCode }
+        catch { $resp = $_.Exception.Response; $st = $(if ($null -ne $resp) { [int]$resp.StatusCode } else { -1 }) }
+        Check "该 IP 锁定后正确口令也 429（N-21）" ($st -eq 429) "status=$st"
+    }
+
     Write-Host ""
     Write-Host "[23] /admin/shutdown 仅本机可访问"
     $r = Call-Api "POST" "/admin/shutdown"

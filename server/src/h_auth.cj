@@ -33,6 +33,13 @@ public let REG_FAIL_LOCK_BASE: Int64 = 300
 public let REG_FAIL_LOCK_MAX: Int64 = 3600
 
 /*
+ * N-21：**同时**在跑的登录 PBKDF2 上限。N-16 之后未注册号码也要跑一次 10 万轮
+ * （实测 ~525 ms CPU），24 核下 ~46 并发即可打满整机 —— 而登录端点不需要认证。
+ * 取 8 ≈ 最多占掉 1/3 的机器，剩下的留给正常请求；超出的直接 429（不排队）。
+ */
+public let MAX_PBKDF2_INFLIGHT: Int64 = 8
+
+/*
  * 登录失败表清理（P1 M-3）。
  * 原先只增不减：每个被试过的手机号都留一条记录，锁定过期也不回收。
  * 这里把"窗口已过且锁定已解除"的记录删掉；平时（表很小）直接返回，不做无谓遍历。
@@ -66,39 +73,46 @@ func regLockSeconds(level: Int64): Int64 {
     return v
 }
 
-/* 该 IP 此刻是否处于锁定期。 */
-func regLocked(s: Store, ip: String, now: Int64): Bool {
-    match (s.reg_fail.get(ip)) {
+/* 该表里这个 IP 此刻是否处于锁定期（N-6 注册与 N-21 登录共用同一套逻辑，各用一张表）。 */
+func ipLocked(tbl: HashMap<String, RegFail>, ip: String, now: Int64): Bool {
+    match (tbl.get(ip)) {
         case Some(st) => return st.locked_until > now
         case None => return false
     }
 }
 
+func regLocked(s: Store, ip: String, now: Int64): Bool {
+    return ipLocked(s.reg_fail, ip, now)
+}
+
+func loginIpLocked(s: Store, ip: String, now: Int64): Bool {
+    return ipLocked(s.login_fail_ip, ip, now)
+}
+
 /* 节流表清理（与 pruneLoginFail 同构）：超过 500 条时回收"窗口已过且已解锁"的 IP。 */
-func pruneRegFail(s: Store, now: Int64): Unit {
-    if (s.reg_fail.size <= 500) {
+func pruneIpFail(tbl: HashMap<String, RegFail>, now: Int64): Unit {
+    if (tbl.size <= 500) {
         return
     }
     let doomed = ArrayList<String>()
-    for ((k, st) in s.reg_fail) {
+    for ((k, st) in tbl) {
         if (st.locked_until <= now && now - st.first_at > REG_FAIL_WINDOW) {
             doomed.add(k)
         }
     }
     for (k in doomed) {
-        s.reg_fail.remove(k)
+        tbl.remove(k)
     }
 }
 
-/*
- * 注册口令失败计数（P1 M-2；N-6 从全局计数改为**按 IP**）。
- * 窗口内累计到上限就锁定**该 IP**，锁定期间该 IP 的注册一律 429——
- * 其它 IP 完全不受影响，这是与旧全局锁最关键的区别。
- * 与 login_fail 同理不落盘：失败路径上写整库等于给攻击者一个放大杠杆。
- */
-func regFailBump(s: Store, ip: String): Unit {
+func pruneRegFail(s: Store, now: Int64): Unit {
+    pruneIpFail(s.reg_fail, now)
+}
+
+/* 失败计数 + 递增退避（落在指定表里）。 */
+func ipFailBump(tbl: HashMap<String, RegFail>, ip: String): Unit {
     let now = nowEpoch()
-    let st = s.reg_fail.get(ip) ?? RegFail()
+    let st = tbl.get(ip) ?? RegFail()
     if (st.first_at == 0 || now - st.first_at > REG_FAIL_WINDOW) {
         st.first_at = now
         st.count = 0
@@ -110,9 +124,55 @@ func regFailBump(s: Store, ip: String): Unit {
         st.count = 0
         st.first_at = now
     }
-    s.reg_fail[ip] = st
-    pruneRegFail(s, now)
+    tbl[ip] = st
+    pruneIpFail(tbl, now)
 }
+
+func regFailBump(s: Store, ip: String): Unit {
+    ipFailBump(s.reg_fail, ip)
+}
+
+/* 登录失败也按 IP 记一笔（N-21）。 */
+func loginIpFailBump(s: Store, ip: String): Unit {
+    ipFailBump(s.login_fail_ip, ip)
+}
+
+/*
+ * PBKDF2 并发闸门（N-21）：进入/离开。见 Store.pbkdf2_inflight 的注释。
+ * 选"满了就拒"而不是"排队"：登录是可重试的低频操作，快速失败比堆积更好。
+ */
+func pbkdf2Enter(s: Store): Bool {
+    s.pbkdf2_lock.lock()
+    try {
+        if (s.pbkdf2_inflight >= MAX_PBKDF2_INFLIGHT) {
+            return false
+        }
+        s.pbkdf2_inflight += 1
+        return true
+    } finally {
+        s.pbkdf2_lock.unlock()
+    }
+}
+
+func pbkdf2Leave(s: Store): Unit {
+    s.pbkdf2_lock.lock()
+    try {
+        if (s.pbkdf2_inflight > 0) {
+            s.pbkdf2_inflight -= 1
+        }
+    } finally {
+        s.pbkdf2_lock.unlock()
+    }
+}
+
+/*
+ * 注册口令失败计数（P1 M-2；N-6 从全局计数改为**按 IP**）。
+ * 窗口内累计到上限就锁定**该 IP**，锁定期间该 IP 的注册一律 429——
+ * 其它 IP 完全不受影响，这是与旧全局锁最关键的区别。
+ * 与 login_fail 同理不落盘：失败路径上写整库等于给攻击者一个放大杠杆。
+ *
+ * 实现已上移到 `ipFailBump`（N-21 让登录也复用同一套），这里只留说明。
+ */
 
 /* 登录/注册成功的统一响应体。 */
 func respondLogin(ctx: Context, s: Store, m: Member, token: String, expiresAt: Int64, created: Bool): Unit {
@@ -150,6 +210,8 @@ public func handleRegister(ctx: Context, s: Store): Unit {
 
     let deptHint = reqIntOr(body, "dept_id", 0)
 
+    /* ---------- ① 锁内（极短）：口令存在性 + 按 IP 限流；只把口令拷出来 ---------- */
+    var expectedCode = ""
     s.lock.lock()
     try {
         if (s.register_code.size == 0) {
@@ -173,11 +235,29 @@ public func handleRegister(ctx: Context, s: Store): Unit {
         if (regLocked(s, ip, nowEpoch())) {
             throw apiErr("TOO_MANY_ATTEMPTS")
         }
-        if (!constantTimeEq(rc, s.register_code)) {
-            regFailBump(s, ip)
-            throw apiErr("REGISTER_CODE_INVALID")
+        expectedCode = s.register_code
+    } finally {
+        s.lock.unlock()
+    }
+
+    /* ---------- ② 锁外：口令比对 + PBKDF2（动作 2：这段 CPU 不占锁） ---------- */
+    if (!constantTimeEq(rc, expectedCode)) {
+        /* 失败记账要单独加一次锁（表在内存，不落盘） */
+        s.lock.lock()
+        try {
+            regFailBump(s, clientIpOf(ctx))
+        } finally {
+            s.lock.unlock()
         }
-        s.reg_fail.remove(ip)
+        throw apiErr("REGISTER_CODE_INVALID")
+    }
+    let rec = newPasswordRecord(pw)
+
+    /* ---------- ③ 锁内：清限流 + 复核手机号未被抢注 + 建账号 + 发令牌 ---------- */
+    s.lock.lock()
+    try {
+        s.reg_fail.remove(clientIpOf(ctx))
+        /* 锁外那段时间里，同一手机号可能已被别人注册成功 —— 复核一次 */
         if (memberByPhone(s, phone).isSome()) {
             throw apiErrFields("ALREADY_EXISTS", "该手机号已注册", oneField("phone", "该手机号已注册"))
         }
@@ -186,7 +266,6 @@ public func handleRegister(ctx: Context, s: Store): Unit {
         s.next_member += 1
         m.name = name
         m.phone = phone
-        let rec = newPasswordRecord(pw)
         m.pw_salt = rec[0]
         m.pw_hash = rec[1]
         m.pw_iter = rec[2]
@@ -220,6 +299,22 @@ public func handleRegister(ctx: Context, s: Store): Unit {
  *      只留在内存：重启后清零可以接受（攻击者无法让服务重启），
  *      但绝不能每次都拿它去写整库。
  */
+/*
+ * 三阶段加锁（2026-09-15，容量基准的动作 2）。
+ *
+ * 为什么改：PBKDF2 一次 10 万轮，实测 **~400 ms**，而它原先是在**全局锁里**跑的
+ * （`s.lock.lock()` → `verifyPw` → `storeSave` → 响应）。后果是一次登录把整个服务
+ * 卡住 0.4 s，登录只能串行 ≈ 2 次/秒 —— 千人社团招新期会明显排队。
+ * 这不是存储的锅，是"锁里做 CPU 密集活"。
+ *
+ * 现在拆成三段：
+ *   ① 锁内（极短）：限流判定 + 把该手机号的口令材料**拷成标量**带出锁
+ *   ② 锁外：`verifyPw`（最贵的 CPU，不再占锁）
+ *   ③ 锁内（短）：记失败账 / 复核 `pw_hash` 未被并发改过 / 签令牌 / 落盘
+ *
+ * ⚠ 纪律：**不能把 `Member` 引用带出锁外使用**（会被并发修改）。这里只拷
+ * `pw_salt / pw_hash / pw_iter` 与 `id` 四个标量；第 ③ 段重新按 id 取成员并复核。
+ */
 public func handleLogin(ctx: Context, s: Store): Unit {
     let body = reqObj(ctx)
     let v = V()
@@ -230,32 +325,75 @@ public func handleLogin(ctx: Context, s: Store): Unit {
     }
     v.done()
 
+    /* ---------- ① 锁内：限流判定 + 取口令材料 ---------- */
+    var credSalt = ""
+    var credHash = ""
+    var credIter: Int64 = 0
+    var memberId: Int64 = 0
+    var found = false
+    /* N-21：按 IP 节流要在锁内判定、锁外记账，所以在加锁前算好这两样 */
+    let ip = clientIpOf(ctx)
+    let localIp = isLocalPeer(ctx)
     s.lock.lock()
     try {
         let now = nowEpoch()
-        var lf = s.login_fail.get(phone) ?? LoginFail()
+        /*
+         * N-21：**先看按 IP 的锁**。原来的限流只按手机号 —— 换个号码就是一个新桶，
+         * "5 次锁定"形同虚设；而 N-16 之后每个未注册号码都要烧一次 PBKDF2，
+         * 于是"换号码"从"绕过限流"升级成"稳定烧 CPU"。
+         * 回环地址不参与（localIp）：这道节流防的是**远程**耗尽 CPU，而本机调用者本来
+         * 就有更高权限，本项目的冒烟与管理脚本也都从本机打。
+         * ⚠ 所以**验证这条修复必须从非回环地址打**（见 tests/smoke.ps1 的 N-21 段）。
+         */
+        if (!localIp && loginIpLocked(s, ip, now)) {
+            throw apiErr("TOO_MANY_ATTEMPTS")
+        }
+        let lf = s.login_fail.get(phone) ?? LoginFail()
         if (lf.locked_until > now) {
             throw apiErr("TOO_MANY_ATTEMPTS")
         }
-        if (now - lf.first_at > LOGIN_FAIL_WINDOW) {
-            lf.count = 0
-            lf.first_at = now
-        }
-
-        let found = memberByPhone(s, phone)
-        var bad = false
-        var target: ?Member = None
-        match (found) {
+        match (memberByPhone(s, phone)) {
             case Some(m) =>
-                if (verifyPw(pw, m.pw_salt, m.pw_hash, m.pw_iter)) {
-                    target = Some(m)
-                } else {
-                    bad = true
-                }
-            case None => bad = true
+                credSalt = m.pw_salt
+                credHash = m.pw_hash
+                credIter = m.pw_iter
+                memberId = m.id
+                found = true
+            case None => ()
         }
+    } finally {
+        s.lock.unlock()
+    }
 
-        if (bad) {
+    /* ---------- ② 锁外：口令校验（~400 ms CPU，不占锁） ---------- */
+    /*
+     * N-16：号码不存在也照样跑一次**等价成本**的 PBKDF2（假材料，结果丢弃）。
+     * 否则"号码不存在"比"口令错误"快一个量级，登录接口就能被用来枚举手机号。
+     * 材料由纯函数 loginCreds 给出（见 auth.cj），它同时是这条修复的回归闸门。
+     */
+    if (!pbkdf2Enter(s)) {
+        /* N-21：同时在算的 PBKDF2 已达上限 —— 直接拒，**不排队**（见 MAX_PBKDF2_INFLIGHT） */
+        throw apiErr("TOO_MANY_ATTEMPTS")
+    }
+    var ok = false
+    try {
+        let creds = loginCreds(found, credSalt, credHash, credIter)
+        ok = verifyPw(pw, creds[0], creds[1], creds[2]) && found
+    } finally {
+        pbkdf2Leave(s)
+    }
+
+    /* ---------- ③ 锁内：记账 / 复核 / 签发 ---------- */
+    s.lock.lock()
+    try {
+        if (!ok) {
+            /* 手机号不存在与口令错误走同一条路：不泄露某个号码是否注册过 */
+            let now = nowEpoch()
+            var lf = s.login_fail.get(phone) ?? LoginFail()
+            if (now - lf.first_at > LOGIN_FAIL_WINDOW) {
+                lf.count = 0
+                lf.first_at = now
+            }
             lf.count += 1
             if (lf.count >= LOGIN_FAIL_LIMIT) {
                 lf.locked_until = now + LOGIN_FAIL_LOCK
@@ -264,21 +402,34 @@ public func handleLogin(ctx: Context, s: Store): Unit {
             }
             s.login_fail[phone] = lf
             pruneLoginFail(s, now)
+            /* N-21：按 IP 也记一笔（回环除外）—— 换号码绕不过这条 */
+            if (!localIp) {
+                loginIpFailBump(s, ip)
+            }
             /* 故意不落盘：见上方注释第 2 条 */
             throw apiErr("AUTH_BAD_CREDENTIALS")
         }
 
-        match (target) {
-            case Some(m) =>
-                if (m.status == "disabled") {
-                    throw apiErr("MEMBER_DISABLED")
-                }
-                s.login_fail.remove(phone)
-                let issued = issueToken(s, m.id)
-                storeSave(s)
-                respondLogin(ctx, s, m, issued[0], issued[1], false)
+        /* 锁外那段时间里账号可能被改密 / 移出 / 删除 —— 复核后才签发 */
+        let m = match (s.members.get(memberId)) {
+            case Some(x) => x
             case None => throw apiErr("AUTH_BAD_CREDENTIALS")
         }
+        if (m.pw_hash != credHash) {
+            throw apiErr("AUTH_BAD_CREDENTIALS")
+        }
+        if (m.status == "disabled") {
+            throw apiErr("MEMBER_DISABLED")
+        }
+        s.login_fail.remove(phone)
+        /*
+         * N-21：**故意不清** login_fail_ip —— 否则攻击者用一个自己知道的账号登录成功，
+         * 就能把该 IP 的失败计数清零，节流形同虚设。手机号那一桶清掉是对的
+         * （那是"猜口令"这条轴，与"烧 CPU"这条轴要分开看）。
+         */
+        let issued = issueToken(s, m.id)
+        storeSave(s)
+        respondLogin(ctx, s, m, issued[0], issued[1], false)
     } finally {
         s.lock.unlock()
     }
@@ -326,15 +477,45 @@ public func handleChangePassword(ctx: Context, s: Store): Unit {
     }
     v.done()
 
+    /*
+     * 三段式（动作 2）：验旧口令与算新口令**都是** PBKDF2（两次约 800 ms），
+     * 原先全在锁里 → 一次改密把全服卡 0.8 s。现在只把标量拷出锁。
+     */
+    var curSalt = ""
+    var curHash = ""
+    var curIter: Int64 = 0
     s.lock.lock()
     try {
-        if (!verifyPw(oldPw, m.pw_salt, m.pw_hash, m.pw_iter)) {
+        let cur = match (s.members.get(m.id)) {
+            case Some(x) => x
+            case None => throw apiErr("AUTH_REQUIRED")
+        }
+        curSalt = cur.pw_salt
+        curHash = cur.pw_hash
+        curIter = cur.pw_iter
+    } finally {
+        s.lock.unlock()
+    }
+
+    /* 锁外：**先验旧口令**，验过了才算新口令 —— 失败时只花一次 PBKDF2，不给放大杠杆 */
+    if (!verifyPw(oldPw, curSalt, curHash, curIter)) {
+        throw apiErr("AUTH_BAD_CREDENTIALS")
+    }
+    let rec = newPasswordRecord(newPw)
+
+    s.lock.lock()
+    try {
+        let cur = match (s.members.get(m.id)) {
+            case Some(x) => x
+            case None => throw apiErr("AUTH_REQUIRED")
+        }
+        /* 锁外那段时间里口令可能已被改过（例如管理员重置）—— 复核，别用旧凭据覆盖新口令 */
+        if (cur.pw_hash != curHash) {
             throw apiErr("AUTH_BAD_CREDENTIALS")
         }
-        let rec = newPasswordRecord(newPw)
-        m.pw_salt = rec[0]
-        m.pw_hash = rec[1]
-        m.pw_iter = rec[2]
+        cur.pw_salt = rec[0]
+        cur.pw_hash = rec[1]
+        cur.pw_iter = rec[2]
         revokeOtherTokens(s, m.id, tok)
         storeSave(s)
     } finally {
