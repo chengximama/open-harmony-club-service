@@ -53,7 +53,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1     # 容�
 README.md                    本文件：唯一入口，看这一个就能了解项目状态
 docs/                        所有文档（设计、验证、报告、指南）
 server/                      服务端（仓颉）
-  build.ps1                  编译（cjc + stdx + 轻舟同包编译）
+  build.cmd                  build.ps1 的包装（免记 -ExecutionPolicy Bypass；双击也行）
+  build.ps1                  编译（cjc + stdx + 轻舟同包编译；工具链自动探测）
   build-package.ps1          生成部署包 dist\club-server\（exe + 4 DLL + 证书 + 说明）
   src/                       23 个源文件，按职责分层（见下）
   tests/                     冒烟测试、TLS 验证与容量基准脚本
@@ -90,6 +91,8 @@ cd server
 
 # 1. 编译（并把 4 个依赖 DLL 复制到 build\）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+#    不想记 -ExecutionPolicy Bypass 就用包装脚本：.\build.cmd（参数相同，双击亦可）
+#    没有仓颉 SDK 的机器请直接用部署包（见 docs\local-deploy.md §4），**不需要编译**
 
 # 2. 到 exe 所在目录操作（与部署形态一致：一切按相对路径）
 cd build
@@ -129,8 +132,8 @@ cd build
 
 | 项 | 位置 / 值 |
 | --- | --- |
-| 编译器 | `D:\Cangjie\bin\cjc.exe` —— **1.1.3** (cjnative, x86_64-w64-mingw32) |
-| stdx | `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` —— **1.1.3.1** |
+| 编译器 | **1.1.3** (cjnative, x86_64-w64-mingw32)。本机装在 `D:\Cangjie\bin\cjc.exe`，但 `build.ps1` **自动探测**（显式传参 > 常见位置 > `CANGJIE_HOME` > `PATH`，且**按版本优先 1.1.x**），换机器不用改脚本 |
+| stdx | **1.1.3.1**。注意 `stdx` 与编译器是**两个包**，要分别安装；本机在 `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` |
 | 轻舟框架 | **已内置在本仓库**：`server/third_party/qingzhou`（上游 commit 记在其中的 `UPSTREAM_COMMIT`，内容由 `MANIFEST.sha256` 逐字节校验、`build.ps1` 每次构建都验）。2026-09-15 迁移 —— 原先指仓库外 `E:\cangjie\qingzhou`，换台机器就编不了、或静默编到别的版本（`docs/code-review.md` N-20）。DEF-1 已由上游 `141a735` 修复，我们的本地补丁已撤 |
 | OpenSSL 3 | **不随仓库提交**（6.5 MB 二进制）：`build.ps1` 按 **`third_party/qingzhou/deps/openssl` → `-OpenSslDir` → Git for Windows 的 `mingw64\bin`** 顺序找，并打印实际来源；详见 `server/third_party/qingzhou/deps/openssl/README.md` |
 | 仓颉运行时 | `D:\Cangjie\runtime\lib\windows_x86_64_cjnative` |

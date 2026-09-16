@@ -17,10 +17,15 @@
 #   .\build.ps1                      校验内置框架 + 编译 + 复制依赖 DLL 到 build\
 #   .\build.ps1 -NoDll               只编译（本机已装好 DLL 时更快）
 #   .\build.ps1 -SkipFrameworkCheck  跳过内置框架的内容校验（**仅**在有意改动内置框架时用）
+#
+# 换一台机器：cjc 与 stdx 的位置**不再写死**，脚本自动探测（显式传参 > 环境变量 > 常见位置 > PATH）：
+#   .\build.ps1 -CangjieHome <SDK目录> -Stdx <...\windows_x86_64_cjnative\static\stdx>
+#   或设环境变量 CANGJIE_HOME / CANGJIE_STDX
+#   （**不需要**仓库外的轻舟：框架已内置在 third_party\qingzhou）
 
 param(
-    [string]$CangjieHome = "D:\Cangjie",
-    [string]$Stdx        = "E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx",
+    [string]$CangjieHome = "",
+    [string]$Stdx        = "",
     [string]$Vendor      = "",
     [string]$OpenSslDir  = "",
     [switch]$NoDll,
@@ -35,9 +40,120 @@ $out  = Join-Path $root "build"
 if ([string]::IsNullOrEmpty($Vendor)) { $Vendor = Join-Path $root "third_party\qingzhou" }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
+# ── 工具链解析（2026-09-16：为了「换一台机器也能编」） ────────────────────
+# 原先这两个路径写死成本机的 D:\Cangjie 与 E:\cangjie\stdx\...，别人 clone 下来必然报
+# 「找不到编译器」/「找不到 stdx」。现在按下面的顺序找，并把**解法**写在报错里。
+function Resolve-CangjieHome([string]$explicit) {
+    $cands = New-Object System.Collections.ArrayList
+    if (-not [string]::IsNullOrEmpty($explicit)) { [void]$cands.Add($explicit) }
+    if ($env:CANGJIE_HOME) { [void]$cands.Add($env:CANGJIE_HOME) }
+    # 注意顺序：**常见安装位置优先于 PATH**。本机 PATH 上的 cjc 是 cjenv 的 1.0.5 shim，
+    # 若优先取它，就会与 stdx 1.1.3.1 串台（症状是 LLVM ERROR: Broken module found，见下方注释）。
+    # 所以 PATH 只作最后兜底。
+    foreach ($d in @("D:\Cangjie", "C:\Cangjie", "E:\Cangjie",
+                     (Join-Path $env:USERPROFILE "Cangjie"),
+                     (Join-Path $env:ProgramFiles "Cangjie"))) { [void]$cands.Add($d) }
+    $onPath = Get-Command cjc -ErrorAction SilentlyContinue
+    if ($null -ne $onPath) { [void]$cands.Add((Split-Path (Split-Path $onPath.Source) -Parent)) }
+    # 先把"真实存在"的候选按优先级收集起来
+    $found = New-Object System.Collections.ArrayList
+    foreach ($c in $cands) {
+        if (-not [string]::IsNullOrEmpty($c) -and (Test-Path (Join-Path $c "bin\cjc.exe"))) {
+            $rp = (Resolve-Path $c).Path
+            if (-not $found.Contains($rp)) { [void]$found.Add($rp) }
+        }
+    }
+    # 再**按版本挑**：优先本项目基线的 1.1.x。
+    # 为什么不能只看位置：cjenv 会把全局 CANGJIE_HOME 改写成它自己的 SDK（本机是 1.0.5），
+    # 而 PATH 上的 cjc 也可能是那个 shim —— 拿它去配 stdx 1.1.3.1 会串台
+    # （症状 LLVM ERROR: Broken module found，见下面钉死工具链那段注释）。
+    foreach ($c in $found) {
+        $v = (& (Join-Path $c "bin\cjc.exe") --version 2>&1 | Select-Object -First 1)
+        if ("$v" -match '1\.1\.') { return $c }
+    }
+    if ($found.Count -gt 0) { return $found[0] }
+    return ""
+}
+
+function Resolve-Stdx([string]$explicit, [string]$sdkHome) {
+    $cands = New-Object System.Collections.ArrayList
+    if (-not [string]::IsNullOrEmpty($explicit)) { [void]$cands.Add($explicit) }
+    if ($env:CANGJIE_STDX) { [void]$cands.Add($env:CANGJIE_STDX) }
+    $roots = New-Object System.Collections.ArrayList
+    if (-not [string]::IsNullOrEmpty($sdkHome)) {
+        [void]$roots.Add((Split-Path $sdkHome -Parent))
+        [void]$roots.Add($sdkHome)
+    }
+    foreach ($r in @("E:\cangjie", "D:\cangjie", "C:\cangjie", (Join-Path $env:USERPROFILE "cangjie"))) { [void]$roots.Add($r) }
+    foreach ($c in $cands) { if (Test-Path $c) { return (Resolve-Path $c).Path } }
+    foreach ($r in $roots) {
+        foreach ($sub in @("stdx\windows_x86_64_cjnative\static\stdx", "stdx\static\stdx")) {
+            $p = Join-Path $r $sub
+            if (Test-Path $p) { return (Resolve-Path $p).Path }
+        }
+    }
+    return ""
+}
+
+# 显式传参传错时**不能静默忽略**：否则用户以为自己在用指定 SDK，实际用的是探测到的另一个。
+$explicitHome = $CangjieHome
+$explicitStdx = $Stdx
+$CangjieHome = Resolve-CangjieHome $CangjieHome
+if (-not [string]::IsNullOrEmpty($explicitHome) -and
+    -not (Test-Path (Join-Path $explicitHome "bin\cjc.exe"))) {
+    Write-Warning "-CangjieHome 指定的目录里没有 bin\cjc.exe：$explicitHome（已忽略，改用自动探测结果）"
+}
+if ([string]::IsNullOrEmpty($CangjieHome)) {
+    throw ("找不到仓颉 SDK（cjc.exe）—— 这是**编译**服务端的前提。`n" +
+           "  ① 只想要能跑的服务端（不编译）：拿一份**部署包**即可 —— `n" +
+           "     server\dist\club-server\ 里的 exe + 4 个 DLL + 启动脚本，同平台直接可运行；`n" +
+           "     或在本机已有构建的机器上跑 build-package.ps1 生成后拷过去。`n" +
+           "  ② 要自己编译：装好「仓颉 SDK + stdx」两个包（本机是 cjc 1.1.3 / stdx 1.1.3.1，`n" +
+           "     版本见 README『环境事实』），然后任选其一告诉我路径：`n" +
+           "     · .\build.ps1 -CangjieHome <SDK目录> -Stdx <stdx目录>`n" +
+           "     · 设环境变量 CANGJIE_HOME 与 CANGJIE_STDX`n" +
+           "     · 把 cjc.exe 放进 PATH`n" +
+           "  下载：https://cangjie-lang.cn/download")
+}
+$Stdx = Resolve-Stdx $Stdx $CangjieHome
+if (-not [string]::IsNullOrEmpty($explicitStdx) -and -not (Test-Path $explicitStdx)) {
+    Write-Warning "-Stdx 指定的目录不存在：$explicitStdx（已忽略，改用自动探测结果）"
+}
+if ([string]::IsNullOrEmpty($Stdx)) {
+    throw ("找不到 stdx 的静态库（libstdx*.a）。`n" +
+           "  cjc 与 stdx 是**两个包**：装了编译器还要单独装 stdx（本机在 E:\cangjie\stdx\...）。`n" +
+           "  找到后：.\build.ps1 -Stdx <...\windows_x86_64_cjnative\static\stdx>，或设 `$env:CANGJIE_STDX。")
+}
+Write-Host "[build] 工具链：cjc=$CangjieHome"
+Write-Host "[build]          stdx=$Stdx"
+# 显式传了 A、实际用了 B 时必须说清楚（例如显式指了 cjenv 的 1.0.5，按版本被跳过）。
+function Test-SameDir([string]$a, [string]$b) {
+    if ([string]::IsNullOrEmpty($a) -or [string]::IsNullOrEmpty($b)) { return $true }
+    $ra = (Resolve-Path $a -ErrorAction SilentlyContinue)
+    $rb = (Resolve-Path $b -ErrorAction SilentlyContinue)
+    if ($null -eq $ra -or $null -eq $rb) { return $true }
+    return ($ra.Path -eq $rb.Path)
+}
+if (-not (Test-SameDir $explicitHome $CangjieHome)) {
+    Write-Warning "-CangjieHome 指定的是 $explicitHome，实际使用 $CangjieHome（前者版本不是 1.1.x，按基线跳过）"
+}
+if (-not (Test-SameDir $explicitStdx $Stdx)) {
+    Write-Warning "-Stdx 指定的是 $explicitStdx，实际使用 $Stdx"
+}
+
 $Cjc        = Join-Path $CangjieHome "bin\cjc.exe"
 $RuntimeDir = Join-Path $CangjieHome "runtime\lib\windows_x86_64_cjnative"
 
+$ver = (& $Cjc --version 2>&1 | Select-Object -First 1)
+Write-Host "[build]          cjc 版本：$ver"
+# 版本不对时**不要**让它编到一半才炸：cjc 与 stdx 版本串台的症状是
+#   LLVM ERROR: Broken module found … @llvm.cj.get.vtable.func、opt.exe 崩溃
+# 极易被当成编译器 bug。这里提前讲清楚，并给出解法。
+if ("$ver" -notmatch '1\.1\.') {
+    Write-Warning ("本机 cjc 是 '$ver'，而本项目基线是 1.1.3 + stdx 1.1.3.1（见 README『环境事实』）。`n" +
+                   "    cjc 与 stdx 版本不一致时，典型症状是编译中途 LLVM ERROR: Broken module found / opt 崩溃。`n" +
+                   "    处置：装 1.1.3 的 SDK 与 stdx 1.1.3.1，再用 -CangjieHome / -Stdx 显式指过去。")
+}
 if (-not (Test-Path $Cjc))  { throw "找不到编译器：$Cjc" }
 if (-not (Test-Path $Stdx)) { throw "找不到 stdx：$Stdx" }
 $VendorSrc = Join-Path $Vendor "src"
@@ -111,6 +227,20 @@ if ($app.Count -eq 0) { throw "没有找到服务端源码：$src" }
 $exe = Join-Path $out "club-server.exe"
 Write-Host "[build] 框架：轻舟 $upShort（内置 third_party\qingzhou，$($fw.Count) 个文件参与编译）"
 Write-Host "[build] 服务端 $($app.Count) 个文件 -> $exe"
+
+# 目标 exe 被上一个进程占着时，ld.lld 只丢一句 "failed to write the output file: Permission denied"，
+# 看上去像 SDK/权限问题，实际是服务端没停干净。先自查一遍，给能直接照做的提示。
+if (Test-Path $exe) {
+    try {
+        $fs = [IO.File]::Open($exe, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $fs.Close()
+    } catch {
+        throw ("编译输出被占用：$exe" + [Environment]::NewLine +
+               "  原因：还有 club-server.exe 在运行，Windows 不允许覆盖正在执行的 exe。" + [Environment]::NewLine +
+               "  处置：Get-Process club-server -ErrorAction SilentlyContinue | Stop-Process -Force" + [Environment]::NewLine +
+               "        然后重新执行 .\build.ps1")
+    }
+}
 
 & $Cjc @fw @app --import-path $Stdx -L $Stdx @libs -lcrypt32 -Woff unused -o $exe
 if ($LASTEXITCODE -ne 0) { throw "编译失败 (exit $LASTEXITCODE)" }

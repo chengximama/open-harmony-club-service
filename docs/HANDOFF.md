@@ -39,8 +39,8 @@
 
 | 项 | 位置 / 值 |
 | --- | --- |
-| 编译器 | `D:\Cangjie\bin\cjc.exe` — **1.1.3** (cjnative) |
-| stdx | `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` — **1.1.3.1** |
+| 编译器 | **1.1.3** (cjnative)。本机在 `D:\Cangjie\bin\cjc.exe`；`build.ps1` **自动探测**（显式传参 > 常见位置 > `CANGJIE_HOME` > `PATH`，**按版本优先 1.1.x**，不符会警告），换机器不用改脚本 |
+| stdx | **1.1.3.1**（与编译器是**两个包**，单独安装）。本机在 `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` |
 | 轻舟框架 | **已内置在本仓库**：`server\third_party\qingzhou`（上游 commit 在其中的 `UPSTREAM_COMMIT`；内容由 `MANIFEST.sha256` 校验，`build.ps1` 每次构建都会验）—— 2026-09-15 迁移，见 `third_party\qingzhou\PROVENANCE.md` |
 | OpenSSL 3 | **不随仓库提交**（6.5 MB 二进制）：`build.ps1` 按 **`third_party\qingzhou\deps\openssl` → `-OpenSslDir` → Git for Windows 的 `mingw64\bin`** 顺序找并打印来源（见该目录 `README.md`） |
 | 仓颉运行时 | `D:\Cangjie\runtime\lib\windows_x86_64_cjnative` |
@@ -48,7 +48,7 @@
 
 ### 本机验证过的编译命令
 
-**日常构建用 `server\build.ps1`**（它已处理好轻舟的排除项与我们的源文件）：
+**日常构建用 `server\build.ps1`**（它已处理好轻舟的排除项与我们的源文件；`server\build.cmd` 是等价包装，免记 `-ExecutionPolicy Bypass`）：
 
 ```powershell
 cd server
@@ -58,8 +58,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1   # -> build\clu
 脚本内部做的事（要手写时照此，**排除列表必须与脚本一致**）：
 
 ```powershell
-$CJC  = "D:\Cangjie\bin\cjc.exe"
-$STDX = "E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx"
+$CJC  = "D:\Cangjie\bin\cjc.exe"                              # ← 本机路径；build.ps1 会自动探测
+$STDX = "E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx"  # ← 手写命令时换成你自己的
 $FW   = "<仓库>\server\third_party\qingzhou"   # 已内置；上游 commit 见其中的 UPSTREAM_COMMIT
 $libs = (Get-ChildItem "$STDX\libstdx*.a" | ForEach-Object { "-l:$($_.Name)" })
 # 轻舟：排除自带入口/自测，以及依赖 CangDB 的 store.cj / rbac.cj（那两张改用我们的适配版）
@@ -432,6 +432,7 @@ Set-Location E:\harmonyOS\cangjie_web
 ```powershell
 cd server
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1      # 编译（并拷 4 个依赖 DLL）
+# 或 .\build.cmd（同上，且双击可跑）。**没装 SDK 的机器**直接用部署包，见下文与 local-deploy.md §4
 cd build
 .\club-server.exe init-admin 13800000000 你的密码123 dev-data       # 预置首任会长 + 4 个组织
 .\club-server.exe serve 8080 dev-data                               # HTTP

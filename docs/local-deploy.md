@@ -22,15 +22,17 @@
 ## 1. 前置体检（三条，缺一条就白折腾）
 
 ```powershell
-# ① 编译器与 stdx（本机固定位置）
-D:\Cangjie\bin\cjc.exe                                  # cjc 1.1.3
-E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx      # stdx 1.1.3.1
+# ① 仓颉 SDK + stdx：build.ps1 会自己找（显式传参 > 常见安装位置 > CANGJIE_HOME > PATH），
+#    并**按版本优先挑 1.1.x** —— 所以不要求装在 D:\Cangjie 这种固定位置。
+#    要知道它到底挑了哪套：跑一次 §2.1，看开头的 [build] 工具链： 两行。
+#    本项目基线：cjc 1.1.3 + stdx 1.1.3.1（版本不符会显著警告，见 §2.1 与 §7 坑表）
 
 # ② 那个会让所有仓颉 exe 启动即崩的 Windows 更新必须不在
 Get-CimInstance Win32_QuickFixEngineering | Where-Object HotFixID -eq 'KB5124010'
 #    有输出 → 先卸载它（完整证据见 docs/API-NOTES.md §5）；本次实测结果是「已卸载 ✓」
 
 # ③ PowerShell 5.1 默认禁止跑脚本：调用 .ps1 一律带 -ExecutionPolicy Bypass
+#    （嫌麻烦就用 server\build.cmd —— 包装脚本，已带好该参数，双击也能跑）
 ```
 
 > ⚠️ 第 ② 条**必须先过**：KB5124010 装着时服务端 exe 一启动就 `exit=-1073741819`（`0xC0000005`），
@@ -45,11 +47,15 @@ Get-CimInstance Win32_QuickFixEngineering | Where-Object HotFixID -eq 'KB5124010
 ```powershell
 cd E:\harmonyOS\cangjie_web\server
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+# 等价写法（免记 Bypass、可双击）：.\build.cmd
 ```
 
-真实输出：
+真实输出（**开头三行是工具链 —— 先看清它挑了哪套 SDK**）：
 
 ```
+[build] 工具链：cjc=D:\Cangjie
+[build]          stdx=E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx
+[build]          cjc 版本：Cangjie Compiler: 1.1.3 (cjnative)
 [build] 框架：轻舟 3ea387e（内置 third_party\qingzhou，24 个文件参与编译）
 [build] 服务端 23 个文件 -> ...\server\build\club-server.exe
 [build] 编译通过
@@ -64,6 +70,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 - **4 个 DLL 自动就位**（2 个来自仓颉 SDK、2 个 OpenSSL 由脚本按
   「内置目录 → `-OpenSslDir` → Git for Windows」解析），**不用手工拷**。
 - 只要编译、不拷 DLL：加 `-NoDll`。
+- **换一台机器不用改脚本**：`cjc` 与 `stdx` 的位置**不再写死**。探测顺序是
+  显式 `-CangjieHome` / `-Stdx` → 常见安装位置（`D:\Cangjie`、`C:\Cangjie`、`E:\Cangjie`、
+  `%USERPROFILE%\Cangjie`…）→ `CANGJIE_HOME` / `CANGJIE_STDX` → `PATH`，且**按版本优先 1.1.x**。
+- **装了 cjenv 之类版本管理器的人注意**：它会把全局 `CANGJIE_HOME` 改写成它自己的 SDK
+  （本机是 1.0.5）。挑到非 1.1.x 时脚本会先打 `WARNING` —— cjc 与 stdx 版本串台的症状是
+  编译中途 `LLVM ERROR: Broken module found`，看着像编译器 bug，其实只是环境串台。
+  显式传了错路径也会被明确告知，**不会静默忽略**。
+- **上一个服务端没停干净**：`ld.lld: error: failed to write the output file: Permission denied`
+  —— 这不是权限/SDK 问题，而是 exe 还在运行。脚本会先自查，并直接给出处置命令。
 
 ### 2.2 初始化数据库（**只对空库可执行**）
 
@@ -220,13 +235,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-package.ps1 -SkipCer
 ```
 club-server.exe  + 4 个 DLL        制品 5 个
 certs\cert.pem   certs\key.pem     证书 2
-start-http.cmd   start-https.cmd   启动脚本 2（脚本内已 cd，双击即可）
+start-http.cmd   start-https.cmd   启动脚本 2（脚本内已 cd + chcp 65001，双击即可，中文不乱码）
 README.txt       dll-versions.txt  说明 + **实际打包进去**的 DLL 版本与 sha256（便于追溯）
 ```
 
 整个目录拷到目标机即可运行 —— **同平台（Windows x64），目标机不需要装编译器**。
+
+发包给队友可以直接用压缩包：`server\dist\club-server-<日期>.zip`（约 **6.8 MB**，
+`build-package.ps1` 之后用 `Compress-Archive` 打一次即可）。因为是二进制，**不进 git**，
+只能这样发过去 —— 队友 `git clone` 是拿不到 exe 的。
 拷过去之后按 `README.txt` 走：`club-server.exe init-admin …` → 双击 `start-https.cmd`。
 
+> **给不装编译器的队友**：这个目录就是给他们用的（同平台、免编译）。只要不动 Cangjie / 轻舟源码，
+> 换掉 exe + 4 个 DLL 即可；改了服务端源码才需要 SDK 自己编（§2.1）。
+>
 > 上公网服务器还要采集 4 件事（本机替代不了）：架构是 x64 还是 ARM64 · 公网 IP 与端口可达性 ·
 > **防火墙与云安全组是两层都要放行** · 服务器上已有什么服务。详见 `deploy-windows-verify.md` §3。
 
@@ -274,6 +296,10 @@ New-NetFirewallRule -DisplayName "club-server 8080" -Direction Inbound -Protocol
 | **端口占用** | 起不来 | `netstat -ano \| findstr :8080` |
 | **客户端连不上** | 本机正常、外部不通 | 防火墙**与**云安全组是两层，都要放行 |
 | **自签证书没 SAN** | 客户端报证书名称不匹配 | 重签证书，SAN 里写客户端实际使用的地址 |
+| **cjenv 抢 `CANGJIE_HOME`** | 脚本挑了 1.0.5，编译中途 `LLVM ERROR: Broken module found` | 按版本挑 1.1.x（脚本会警告）；`-CangjieHome` 显式指定，见 §2.1 |
+| **输出 exe 被占用** | `ld.lld: failed to write the output file: Permission denied` | 不是权限问题：`Get-Process club-server \| Stop-Process -Force` 后重编 |
+| **机器上没装仓颉 SDK** | `找不到仓颉 SDK（cjc.exe）` | 装 SDK（§2.1），或直接用**部署包**（§4，免编译） |
+| **启动脚本里中文乱码** | 双击后服务端中文日志是乱码 | 启动脚本已加 `chcp 65001 >nul`；2026-09-16 之前生成的包请重新 `build-package.ps1` |
 
 ---
 
@@ -284,4 +310,5 @@ New-NetFirewallRule -DisplayName "club-server 8080" -Direction Inbound -Protocol
 | 实测时间 | 2026-09-16（本机） |
 | 结论 | §2 五步 + §4 部署包 + §3 TLS 全部通过；服务端四套测试基线 单测 **398** / 冒烟 **362** / TLS **22** / 跨仓契约 **30** |
 | 演示数据 | 本次实测在 `server\build\data` 留下演示库（会长 `13800000000` / 口令 `demo12345`）——正式用前删掉该目录重新 `init-admin` |
+| 队友视角复现 | 全新 `git clone` + 清空 `CANGJIE_HOME`/cjenv 的 PATH 后 `build.ps1` 自动挑到 `D:\Cangjie` 1.1.3 并**编译通过**；部署包解压后 `cmd /c start-http.cmd` → `/health` **200**、`init-admin` → `data\db.json` **683 字节** |
 | 未覆盖 | 公网部署（缺服务器信息）、真机/模拟器上的客户端联调（本机无设备） |
