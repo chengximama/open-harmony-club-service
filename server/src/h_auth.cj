@@ -174,13 +174,27 @@ func pbkdf2Leave(s: Store): Unit {
  * 实现已上移到 `ipFailBump`（N-21 让登录也复用同一套），这里只留说明。
  */
 
-/* 登录/注册成功的统一响应体。 */
-func respondLogin(ctx: Context, s: Store, m: Member, token: String, expiresAt: Int64, created: Bool): Unit {
+/*
+ * 登录/注册成功的统一响应体。
+ *
+ * `deptHintId`（D-16，2026-09-16）：注册时**实际采纳**的部门预填。
+ * 为什么要在响应里回显：预填的优先级有两条来源（招募链接 token / 客户端自报 dept_id），
+ * 若 token 恰好已停用，客户端自报的那个会**静默失效** —— 回显让"到底采纳了什么"
+ * 是可观察的，而不是让调用方自己猜（本项目一贯纪律：不静默忽略）。
+ * 登录不采纳预填，恒为 0 → `dept_hint: null`。
+ */
+func respondLogin(ctx: Context, s: Store, m: Member, token: String, expiresAt: Int64, created: Bool,
+                  deptHintId: Int64): Unit {
     let data = JsonObject()
     jPutStr(data, "token", token)
     jPutStr(data, "expires_at", isoLocal(expiresAt))
     jPutObj(data, "member", memberBrief(s, m))
     jPutObj(data, "permissions", permissionsOf(m))
+    if (deptHintId > 0) {
+        jPutObj(data, "dept_hint", deptBriefObj(s, deptHintId))
+    } else {
+        jPutNull(data, "dept_hint")
+    }
     if (created) {
         sendCreated(ctx, data)
     } else {
@@ -192,6 +206,12 @@ func respondLogin(ctx: Context, s: Store, m: Member, token: String, expiresAt: I
  * POST /api/v1/auth/register
  * 注册即登录，但账号是 pending、权限全 false，客户端应跳「等待管理员分配」页。
  * 请求体**不接受 role**——任何角色都必须由会长授予（api-design §2.3 注 4）。
+ *
+ * D-16（2026-09-16）：部门预填有**两条来源**，优先级如下：
+ *   ① `invite_token`（招募链接）→ 服务端自己解析，**优先**
+ *   ② `dept_id`（客户端自报）  → 仅在 token 缺失/无效/已停用时才采纳
+ * 链接仍只是"便利"：它不免除注册口令，也不赋予任何角色（api-design §3.7）。
+ * 采纳结果在响应 `data.dept_hint` 里回显，避免"客户端以为预填生效了"。
  */
 public func handleRegister(ctx: Context, s: Store): Unit {
     let body = reqObj(ctx)
@@ -208,10 +228,12 @@ public func handleRegister(ctx: Context, s: Store): Unit {
     }
     v.done()
 
-    let deptHint = reqIntOr(body, "dept_id", 0)
+    let bodyDept = reqIntOr(body, "dept_id", 0)
+    let inviteToken = reqStrOr(body, "invite_token", "").trimAscii()
 
-    /* ---------- ① 锁内（极短）：口令存在性 + 按 IP 限流；只把口令拷出来 ---------- */
+    /* ---------- ① 锁内（极短）：口令存在性 + 按 IP 限流 + 解析招募链接；只把标量拷出来 ---------- */
     var expectedCode = ""
+    var invitedDept: Int64 = 0
     s.lock.lock()
     try {
         if (s.register_code.size == 0) {
@@ -236,6 +258,8 @@ public func handleRegister(ctx: Context, s: Store): Unit {
             throw apiErr("TOO_MANY_ATTEMPTS")
         }
         expectedCode = s.register_code
+        /* D-16：链接由服务端解析（停用/不存在 → 0，自动退回客户端自报的 dept_id） */
+        invitedDept = resolveInviteDept(s, inviteToken)
     } finally {
         s.lock.unlock()
     }
@@ -272,15 +296,25 @@ public func handleRegister(ctx: Context, s: Store): Unit {
         m.status = "pending"
         m.role = ""
         m.dept_id = 0
-        if (deptHint > 0 && s.departments.contains(deptHint)) {
-            m.dept_hint = deptHint
+        /*
+         * D-16 的优先级落地：链接解析出来的部门**优先于**客户端自报的 dept_id。
+         * 两条都不可用时预填为空（不阻断注册 —— 链接只是便利，口令才是准入）。
+         */
+        var hintTaken: Int64 = 0
+        if (invitedDept > 0 && s.departments.contains(invitedDept)) {
+            hintTaken = invitedDept
+        } else if (bodyDept > 0 && s.departments.contains(bodyDept)) {
+            hintTaken = bodyDept
+        }
+        if (hintTaken > 0) {
+            m.dept_hint = hintTaken
         }
         m.joined_at = nowEpoch()
         s.members[m.id] = m
 
         let issued = issueToken(s, m.id)
         storeSave(s)
-        respondLogin(ctx, s, m, issued[0], issued[1], true)
+        respondLogin(ctx, s, m, issued[0], issued[1], true, hintTaken)
     } finally {
         s.lock.unlock()
     }
@@ -429,7 +463,8 @@ public func handleLogin(ctx: Context, s: Store): Unit {
          */
         let issued = issueToken(s, m.id)
         storeSave(s)
-        respondLogin(ctx, s, m, issued[0], issued[1], false)
+        /* 登录不采纳部门预填 → dept_hint 恒为 null */
+        respondLogin(ctx, s, m, issued[0], issued[1], false, 0)
     } finally {
         s.lock.unlock()
     }

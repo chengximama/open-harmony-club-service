@@ -319,11 +319,12 @@ can(member, action, target) -> bool
   "name": "张三",
   "password": "至少 8 位",
   "dept_id": 2,
+  "invite_token": "9f3c…（招募链接里的 token）",
   "client_token": "uuid"
 }
 ```
 
-`dept_id` 与 `client_token` 可选。
+`dept_id` 与 `client_token` 可选。`invite_token` 可选（见下方 2026-09-16 修订）。
 
 **响应 201**
 
@@ -334,10 +335,28 @@ can(member, action, target) -> bool
     "token": "…",
     "expires_at": "2026-10-13T10:00:00+08:00",
     "member": { "…MemberBrief…", "status": "pending" },
-    "permissions": { "view_scope": "none", "…其余全部 false…" }
+    "permissions": { "view_scope": "none", "…其余全部 false…" },
+    "dept_hint": { "id": 2, "name": "运营部" }
   }
 }
 ```
+
+> **2026-09-16 修订（D-16：部门预填的两条来源与优先级）**
+>
+> 部门预填现在有两条来源，**优先级**如下：
+>
+> | 顺序 | 来源 | 谁说了算 |
+> | --- | --- | --- |
+> | ① | `invite_token`（招募链接） | **服务端**用 `GET /api/v1/join/{token}` 的同一套逻辑解析，链接**启用中**才作数 |
+> | ② | `dept_id`（客户端自报） | 仅在 ① 缺失 / 无效 / 已停用时才采纳 |
+>
+> - 有了 `invite_token`，客户端**不必**自己把 token 换成 `dept_id` —— 也就不会出现
+>   "客户端报的部门和链接实际指向的部门不一致"。
+> - **链接失效不阻断注册**：链接是便利，注册口令才是准入（§3.7）。此时退回 ②，
+>   两者都不可用则预填为空。
+> - 响应里的 **`dept_hint`** 是**本次实际采纳**的预填（`null` = 没有），
+>   让"预填到底生效没有"可观察 —— 不让调用方自己猜（本项目一贯纪律）。
+>   `POST /auth/login` 的响应里该字段恒为 `null`（预填只在注册时采纳一次）。
 
 **错误**
 
@@ -418,12 +437,17 @@ can(member, action, target) -> bool
   "data": {
     "member": { "…MemberBrief…" },
     "permissions": {
-      "view_scope": "dept",
+      "view_scope": "all",
       "manage_members": false,
       "set_role": false,
       "create_plan": false,
       "create_task": false,
-      "update_any_task": false
+      "update_any_task": false,
+      "manage_depts": false,
+      "view_register_code": false,
+      "change_register_code": false,
+      "manage_invite_links": false,
+      "transfer_presidency": false
     }
   }
 }
@@ -457,12 +481,29 @@ can(member, action, target) -> bool
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `view_scope` | string | `all` / `dept` / `self` / **`none`**（`pending` 账号） |
-| `manage_members` | bool | 可增删成员、调部门 |
-| `set_role` | bool | 仅会长为 `true` |
+| `view_scope` | string | **`all`**（`active` 成员一律）/ **`none`**（`pending` 账号）。见下方 2026-09-16 修订 |
+| `manage_members` | bool | 可审批待分配、调部门、改角色（会长 / 副会长） |
+| `set_role` | bool | 可改他人角色（由 `can()` 推出：会长与副会长为 `true`） |
 | `create_plan` | bool | 可创建课题 |
 | `create_task` | bool | 可创建 / 分配任务 |
 | `update_any_task` | bool | 可改他人任务状态（成员为 `false`，只能改自己的） |
+| `manage_depts` | bool | 部门增删改 —— **仅会长** |
+| `view_register_code` | bool | 可读注册口令明文 —— 会长 / 副会长 |
+| `change_register_code` | bool | 可更换 / 轮换注册口令 —— **仅会长** |
+| `manage_invite_links` | bool | 招募链接增删启停 —— 会长 / 副会长 |
+| `transfer_presidency` | bool | 可移交会长 —— **仅会长** |
+
+> **2026-09-16 修订（按 UI 设计规格 D-1 / D-3）**
+>
+> 1. **新增后 5 个布尔**。设计规格 P10 要求管理入口「**按权限显示**」，P09 的管理页是四张分区卡
+>    （部门与组织 / 注册口令 / 招募链接 / 会长移交）。只下发 `manage_members` 时，副会长会看到
+>    「部门与组织」入口、点下去却是 403 —— 这正是"看得到点不动"。5 个布尔**全部由 `can()` 推导**，
+>    权限判定仍然只有一处。
+> 2. **`view_scope` 对 `active` 成员统一为 `all`**。读范围已按设计规格放开到全社团
+>    （见 §4.2 与 `v1-scope.md` §3.4.3 的修订），再下发 `dept` 会让客户端在任务列表渲染成
+>    「本部门范围可见」，与设计规格 P02 屏幕上的「全社团范围可见」不符。
+>    角色之间的差别体现在**动作布尔**上，不再体现在可见范围上。
+> 3. `dept` / `self` 两个旧取值**不再产生**（保留在词表里仅为兼容旧客户端）。
 
 ## 2.8 决策与待办
 
@@ -578,13 +619,21 @@ Part 3 比最初设想的大得多——因为「注册与授权解耦」之后�
 
 **权限**：全体 `active` 成员
 
-**Query**：`dept_id` / `role` / `status` / `page` / `size`（默认只返回 `active`）
+**Query**：`dept_id` / `role` / `status` / **`q`** / `page` / `size`（默认只返回 `active`）
+
+> **`q`（2026-09-16 新增，设计规格 D-2）**：按**姓名或部门名**模糊匹配（包含、大小写不敏感）。
+> 设计规格 P06 的搜索框占位符原文就是「搜索姓名或部门」。
+> ⚠️ **手机号不参与匹配** —— P06 底部明确「名录不含手机号——这是隐私最小化」，
+> 接口里既然不返回它，就不该能被检索出来（否则等于换个方式泄露）。
+> 待分配成员（`dept_id = 0`）按其 `dept_hint` 的部门名参与匹配，否则名录里搜「运营部」会漏掉他们。
 
 **响应 200**：分页的 `MemberBrief` 列表
 
 > **建议：成员名录对全体成员开放（全社团可见）。**
 > 理由：这是第 1 节要解决的**第一个问题**——「社团里有哪些人」。如果成员只能看自己部门，这个问题就没被解决。
 > 注意区分：**名录全社团可见，但任务与课题仍按部门限制**。这两件事的可见性不必一致。
+> ⚠️ 2026-09-16 起**后半句不再成立**：任务与课题的**读**也已全社团开放（见 §4.2），
+> 详见 `v1-scope.md` §3.4.3 的修订。
 
 ### GET /members/{id}
 
@@ -597,12 +646,19 @@ Part 3 比最初设想的大得多——因为「注册与授权解耦」之后�
   "ok": true,
   "data": {
     "member": { "…MemberBrief…" },
-    "stats": { "owned_tasks": 3, "open_tasks": 2, "owned_plans": 1 }
+    "stats": { "owned_tasks": 17, "open_tasks": 5, "done_tasks": 12,
+               "overdue_tasks": 1, "owned_plans": 1 }
   }
 }
 ```
 
 只给**计数**，不展开任务明细——明细属于 Part 4 的列表接口。
+
+> **`done_tasks` / `overdue_tasks`（2026-09-16 新增，设计规格 D-7）**：设计规格 P07 的身份卡是
+> 「2025-09 加入 · **未完成 5 · 逾期 1 · 已完成 12**」——三个计数都得服务端给。
+> 原先只有 `owned_tasks`（含已完成）与 `open_tasks`：「已完成」客户端还能自己减出来，
+> 「逾期」则根本推不出来，只能再打一次 `GET /tasks?owner_id=X&overdue=true` 读 `total`。
+> 现在同一次遍历里一起算完（成本为零）。
 
 ### PATCH /members/{id}
 
@@ -905,6 +961,32 @@ Part 3 比最初设想的大得多——因为「注册与授权解耦」之后�
 - **链接不免除注册口令**。设计上保持**单一门槛**：链接是便利，口令才是准入。否则就有了两套平行凭证，泄露时要想两处
 - 每个部门可以有多个链接（如"2026 秋招"和"补录"），便于分别停用与统计来源
 
+### GET /api/v1/join/{token}（招募链接的**公开 JSON 解析**，2026-09-16 新增）
+
+**权限**：公开（无需登录）
+
+**响应 200**
+
+```json
+{ "ok": true, "data": { "dept": { "id": 2, "name": "运营部" }, "enabled": true } }
+```
+
+链接不存在或已停用时，**返回同一个形状**（不引入新错误码）：
+
+```json
+{ "ok": true, "data": { "dept": null, "enabled": false } }
+```
+
+**为什么需要它（D-16）**：链接是发到群里的 `https://<host>/join/<token>`，而 HarmonyOS App
+在 v1 **不做 deep link 配置**（见下），所以 App 拿到 token 之后**没有任何免认证的途径**
+把 token 换成 `dept_id` —— 落地页只回 HTML。没有这个端点，P12 的
+「来自于招募链接的部门预填」就只能靠客户端自报部门，链路不闭环。
+
+- 客户端用它渲染预填块（「来自于招募链接的部门预填：运营部。它只是 dept_hint，审批前不生效。」），
+  注册时把同一个 `invite_token` 原样带上（§2.3），**部门由服务端解析**。
+- 只暴露部门名与启停状态：那本来就是链接持有者能看到的信息，不含口令、成员或任务数据。
+- 形状与停用接口同源（见下 L-3 口径）：客户端不必为"有没有 `data.dept`"写特例。
+
 ### GET /join/{token}（链接落地页，**不在 /api/v1 下**）
 
 **权限**：公开（无需登录）
@@ -1002,7 +1084,7 @@ Part 3 的接口权限，按如下模型。**这张表细化了 `v1-scope.md` §
 
 **这是 v1 最重要的接口。** 第 1 节已经论证过：真正让人每天打开 App 的是「我负责什么」，不是组织架构图。
 
-**权限**：全体 `active` 成员（永远只返回自己的任务）
+**权限**：全体 `active` 成员（主体永远是自己负责的任务）
 
 **响应 200**——**服务端直接分好组**：
 
@@ -1016,10 +1098,26 @@ Part 3 的接口权限，按如下模型。**这张表细化了 `v1-scope.md` §
     "due_week": [ { "…TaskBrief…" } ],
     "later":    [ { "…TaskBrief…" } ],
     "no_due":   [ { "…TaskBrief…" } ],
-    "counts": { "overdue": 2, "blocked": 1, "open_total": 7 }
+    "counts": { "overdue": 2, "blocked": 1, "open_total": 7, "borrowed_blocked": 0 }
   }
 }
 ```
+
+> **部长 / 副部长的例外（2026-09-16 新增，设计规格 D-4）**
+>
+> 设计规格 P03 的阻塞原因块里写着「需要帮助 · 宣传部 陈屿（**部长在首页即可看到这条**）」，
+> 对应 P01 首页上部长看到的那条「运营部 · 负责人 王砚」的**别人的**阻塞任务。
+> 因此：**部长 / 副部长**调本接口时，除自己负责的任务外，**额外**返回
+> 「本部门其他成员处于 `blocked` 的任务」——它们**同样进 `blocked` 组，也按同一套时间桶
+> 进入 `overdue` / `due_today` / `due_week`**（与下面"阻塞项同时出现在时间分组"一条一致），
+> 并计入 `counts.blocked` 与 `counts.open_total`。
+>
+> - `counts.borrowed_blocked` = 其中"不是自己负责、而是本部门被阻塞"的条数。
+>   部长 / 副部长之外的角色恒为 `0`（不会出现别人的任务）。
+> - 会长 / 副会长**不参与**这一条：他们要全貌走 `GET /tasks`，首页不该被全社团的阻塞项淹没。
+> - 客户端不需要额外标志位判断"这条是不是我的"：比 `owner.id` 与自己的 `id` 即可
+>   （P01 的卡片本来就把负责人渲染出来了）。
+> - ⚠️ 这是**首页聚合口径**，不是可见性放宽——读范围本身已全社团开放（见 §4.2）。
 
 **为什么由服务端分组，而不是客户端算：**
 
@@ -1035,7 +1133,18 @@ Part 3 的接口权限，按如下模型。**这张表细化了 `v1-scope.md` §
 
 ## 4.2 GET /tasks
 
-**权限**：按 `view_scope`（会长/副会长 = 全社团；部长及以下 = 本部门）
+**权限**：全体 `active` 成员（**读写不同口径**）
+
+> **2026-09-16 修订（设计规格 D-3）：读范围全社团，写范围不变。**
+>
+> 原口径是「按 `view_scope`：会长 / 副会长 = 全社团；部长及以下 = 本部门」。
+> 设计规格三处都指向全社团可读：
+> P02 任务列表副行「共 38 项 · **全社团范围可见**」且卡片本身是别的部门的任务；
+> P04 课题树用「全部」能筛出非本部门课题；P03「部长在首页即可看到这条」。
+>
+> 因此 `GET /tasks`、`GET /tasks/{id}`、`GET /plans`、`GET /plans/{id}` 对全体 `active` 成员开放。
+> **写操作没有跟着放开**：改状态 / 编辑 / 删除 / 移动仍按「负责人 / 创建人 / 部门管理员 / 会长」
+> 判定（§6.4 与 §6.1 的权限列一字未改）。这条边界是刻意的——放开读是为了"看得见"，不是为了"改得动"。
 
 **Query**
 
@@ -1108,7 +1217,8 @@ Part 3 的接口权限，按如下模型。**这张表细化了 `v1-scope.md` §
 **权限**：负责人本人 / 部门管理员 / 会长 / 副会长
 
 ```json
-{ "status": "blocked", "blocker": "等场地审批，已提交 3 天" }
+{ "status": "blocked", "blocker": "等场地审批，已提交 3 天",
+  "help_dept_id": 3, "help_member_id": 12 }
 ```
 
 | status | 说明 |
@@ -1118,6 +1228,11 @@ Part 3 的接口权限，按如下模型。**这张表细化了 `v1-scope.md` §
 | `blocked` | 阻塞 |
 | `done` | 已完成 |
 
+| 可选字段 | 说明 |
+| --- | --- |
+| `help_dept_id` | **求助部门**（设计规格 D-4）。0 / 不传 = 未指定求助对象 |
+| `help_member_id` | **求助人**（可到人）。只填人时按该成员所在部门**自动补齐** `help_dept_id` |
+
 **规则**
 
 1. **进入 `blocked` 时必须带 `blocker`**，否则 `BLOCKER_REQUIRED`（400）。
@@ -1125,6 +1240,14 @@ Part 3 的接口权限，按如下模型。**这张表细化了 `v1-scope.md` §
 2. **离开 `blocked` 时自动清空 `blocker`**（历史由 `updated_at` 体现，v1 不做完整变更历史）
 3. 进入 `done` 记 `completed_at`；从 `done` 退回其他状态时清空
 4. **允许任意状态互跳，不设状态机流程图**。社团场景下限制跳转只会添堵——真实情况是"这事其实早做完了，我忘了标"
+5. **求助对象（2026-09-16 新增，设计规格 D-4）**：对应 P03 阻塞原因块里的那一行
+   「需要帮助 · 宣传部 陈屿」。规则：
+   - **只在 `blocked` 下有意义**：非阻塞状态传了非零的 `help_*` → `VALIDATION_FAILED`（400）。
+     不静默忽略——静默忽略会让调用方以为求助已经登记上了（本项目一贯纪律）。
+   - **离开 `blocked` 时与 `blocker` 一起清空**（同一个信息块，不该留下半截状态）。
+   - `help_member_id` 必须是 `active` 成员（`pending` → `MEMBER_PENDING`，`disabled` → `MEMBER_DISABLED`）；
+     与 `help_dept_id` 同时给出且**不在同一部门** → `VALIDATION_FAILED`。
+   - 返回体里以 `needs_help: { dept, member }` 出现，没有求助对象时为 `null`（见 §4.9）。
 
 ## 4.7 DELETE /tasks/{id}
 
@@ -1212,8 +1335,36 @@ Part 3 的接口权限，按如下模型。**这张表细化了 `v1-scope.md` §
 | `plan` | object \| null | `{ "id": 5, "title": "…" }` |
 | `due_at` | string \| null | ISO 8601 |
 | `is_overdue` | bool | **服务端算好的派生量** |
+| `overdue_days` | int | **逾期天数**，服务端算（见下）。未逾期为 `0` |
 | `blocked` | bool | |
+| `blocker` | string \| null | **阻塞原因**（见下）。非阻塞时为 `null` |
+| `needs_help` | object \| null | **求助对象** `{ dept, member }`；无求助时为 `null`（见下） |
 | `updated_at` | string | **自动记录，不可由客户端设置** |
+
+> **`blocker` 进 TaskBrief（2026-09-16，队友复验 P0）**：设计规格 P01 的「阻塞中」分组卡片里
+> **直接渲染阻塞原因高亮块**（「阻塞原因（进入 blocked 必填）」+ 原因原文）。
+> 原先 `blocker` 只在 `TaskDetail` 里，首页想让这张卡显示原因就得**为每张卡再打一次详情接口**——
+> 而 P01 的原话正是「服务端已排好序，客户端只渲染、不重算」。
+> 因此 `blocker` 上移到 `TaskBrief`：`/tasks`、`/tasks/mine`、`/plans/{id}` 的任务列表都直接带原因。
+> 无泄漏：阻塞原因本来就在任务详情里，而任务读范围已是全社团（§4.2）。
+
+> **`overdue_days`（2026-09-16 新增，设计规格 D-5）**：设计规格 P01 卡片写「逾期 2 天」、
+> P03 提示条写「已逾期 2 天 · **该判断由服务端算出，客户端不重算**」——所以天数也必须由服务端下发。
+> 口径 = **本地日界的整数差**（不是 24 小时取整）：
+> `09-12 18:00` 截止、`09-14 09:00` 现在 → `2`；
+> 今天 09:00 截止、今天 18:00 现在 → `0`（即 `is_overdue = true` 且 `overdue_days = 0` 表示"今天逾期"，
+> 客户端据此显示「已逾期」而不是「逾期 0 天」）。
+> ℹ️ **不需要额外的 `server_now`**：分组（今天 / 本周 / 逾期）已由服务端算好下发，
+> 天数也由服务端给，客户端不需要用本地时钟参与任何判定。
+
+> **`needs_help`（2026-09-16 新增，设计规格 D-4）**：对应 P03 阻塞块里的
+> 「需要帮助 · 宣传部 陈屿」。形状：
+> ```json
+> "needs_help": { "dept": { "id": 3, "name": "宣传部" },
+>                 "member": { "…MemberBrief…" } }
+> ```
+> `member` 为 `null` 表示只求助到部门、不指定到人；整个 `needs_help` 为 `null` 表示没有求助对象
+> （客户端据此决定**渲不渲染**那一行）。写入方式见 §4.6。
 
 ### TaskDetail
 
@@ -1222,11 +1373,12 @@ Part 3 的接口权限，按如下模型。**这张表细化了 `v1-scope.md` §
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `desc` | string | 描述 |
-| `blocker` | string \| null | 阻塞原因 |
 | `plan_path` | array | 课题面包屑，从顶层到本级 |
 | `created_by` | MemberBrief | |
 | `created_at` | string | |
 | `completed_at` | string \| null | |
+
+> `blocker` **已上移到 `TaskBrief`**（2026-09-16，见上），不再只属于详情。
 
 > `updated_at` **必须由服务端生成**，不接受客户端传入。它是"做到什么程度"可信度的基础，
 > 一旦允许客户端写，这个字段就失去意义了。
@@ -1531,7 +1683,7 @@ progress(P) =
 3. v1 的业务规则是否都有**接口落点**（有没有写了却无人执行的规则）
 4. 权限定义在各部分之间**是否自相矛盾**
 
-## 6.1 接口总清单（39 个）
+## 6.1 接口总清单（40 个）
 
 ### 认证（5）
 
@@ -1543,7 +1695,7 @@ progress(P) =
 | GET | `/auth/me` | 已登录 | 2 |
 | PUT | `/auth/password` | 本人 | 3 |
 
-### 组织与成员（19）
+### 组织与成员（20）
 
 | 方法 | 路径 | 权限 | Part |
 | --- | --- | --- | --- |
@@ -1566,14 +1718,15 @@ progress(P) =
 | GET | `/dept-invite-links` | 会长 / 副会长 | 3 |
 | POST | `/dept-invite-links` | 会长 / 副会长 | 3 |
 | DELETE | `/dept-invite-links/{token}` | 会长 / 副会长 | 3 |
+| GET | `/join/{token}` | **公开**（App 把 token 换成 dept_id，2026-09-16 新增） | 3 |
 
 ### 任务（8）
 
 | 方法 | 路径 | 权限 | Part |
 | --- | --- | --- | --- |
 | GET | `/tasks/mine` | 本人 | 4 |
-| GET | `/tasks` | 按 view_scope | 4 |
-| GET | `/tasks/{id}` | 按 view_scope | 4 |
+| GET | `/tasks` | **全体 active（全社团可读）** | 4 |
+| GET | `/tasks/{id}` | **全体 active（全社团可读）** | 4 |
 | POST | `/tasks` | 会长 / 副会长 / 部长 / 副部长 | 4 |
 | PATCH | `/tasks/{id}` | 创建人 / 部门管理员 / 会长 / 副会长 | 4 |
 | PUT | `/tasks/{id}/status` | 负责人 / 部门管理员 / 会长 / 副会长 | 4 |
@@ -1584,8 +1737,8 @@ progress(P) =
 
 | 方法 | 路径 | 权限 | Part |
 | --- | --- | --- | --- |
-| GET | `/plans` | 按 view_scope | 5 |
-| GET | `/plans/{id}` | 按 view_scope | 5 |
+| GET | `/plans` | **全体 active（全社团可读）** | 5 |
+| GET | `/plans/{id}` | **全体 active（全社团可读）** | 5 |
 | POST | `/plans` | 会长 / 副会长 / 部长 / 副部长 | 5 |
 | PATCH | `/plans/{id}` | 负责人 / 部门管理员 / 会长 / 副会长 | 5 |
 | POST | `/plans/{id}/move` | 部门管理员 / 会长 / 副会长 | 5 |
@@ -1648,7 +1801,7 @@ progress(P) =
 | 检查项 | 结果 |
 | --- | --- |
 | 「查看成员名录 = 全社团」是否一致 | ✅ 三处一致 |
-| 「查看任务/课题 = 按 view_scope」是否一致 | ✅ |
+| 「查看任务/课题 = 按 view_scope」是否一致 | ✅（2026-09-16 起统一为**全体 active 全社团可读**；写操作口径不变） |
 | 「创建任务 = 会长/副会长/部长/副部长」 | ✅ |
 | 「更新任务状态 = 成员限自己」 | ✅ |
 | 「移交会长 = 仅会长」 | ✅ |
@@ -1705,7 +1858,7 @@ progress(P) =
 | 文档 | 版本 | 状态 |
 | --- | --- | --- |
 | `v1-scope.md` | **v0.11** | 范围基准，6.5 的两处缺口已补（v0.9/v0.10）；v0.11 为 M1 实现期间的三处修订 |
-| `api-design.md` | Part 1–6 完成 | **接口设计 39 个**，错误码/权限已与实现对齐；2026-09-13 修订部门权限与会长产生路径 |
+| `api-design.md` | Part 1–6 完成 | **接口设计 40 个**，错误码/权限已与实现对齐；2026-09-13 修订部门权限与会长产生路径 |
 | `deploy-windows-verify.md` | — | 服务端部署与验证（Windows），**待你跑步骤 0** |
 | `frontend-brief.md` | v1.0 | 前端对接说明（精简版） |
 | *对外材料（已移出仓库）* | — | `qingzhou-tls-requirement.md`（已发轻舟团队）、`qingzhou-tls-verification.md`（已验证他们交付的 TLS）—— 见上层 `cangjie-upstream\` |

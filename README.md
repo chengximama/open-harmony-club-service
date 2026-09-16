@@ -29,19 +29,22 @@
 | **轻舟升级与 CangDB 适配** | 升级轻舟到 **`3ea387e`**（上游 `141a735` 修好 DEF-1，本地补丁撤销）；新版 `store.cj` / `rbac.cj` 依赖的 **CangDB 上游仓只有 README、没有代码** → 用 `server/src/fw_rbac_store.cj`（文件存储的数据层）+ `fw_rbac.cj`（`requirePermission` 中间件）替代，`build.ps1` 排除框架原版 | ✅ 完成并验证（单测 322 / 冒烟 347 / TLS 22） |
 | **服务端容量基准与四项性能改造** | 按"接近千人"的容量问题做了可复现基准（`server/tests/bench.ps1`，真实 HTTP + 旧版本 worktree 对比），并落地四项改造：① 列表排序插入排序→**堆排序** ② **PBKDF2 移出全局锁**（三阶段加锁）③ 过期**令牌回收** ④ 整库落盘移出锁（请求链末端刷盘）。实测只有 ② 有量级收益（**4 并发登录 1574 → 867 ms**），①④ 在千人档落在噪声内、价值是最坏情况下界 —— 见 `docs/capacity-baseline.md` | ✅ 完成并验证（单测 349 / 冒烟 347 / TLS 22） |
 | **服务端第四轮复验修复** | 按 `docs/code-review.md` **第四轮**的 6 条新发现修：**N-14**（本机判定用子串匹配 `::1` → 远程 IPv6 可远程关停服务，改成按地址相等比白名单）· **N-15**（4 个 handler 被 4xx 拒绝却留下半改状态并落盘，改成两阶段赋值）· **N-16**（登录时序侧信道可枚举手机号，改成两条路径等价 PBKDF2）· **N-17**（审计 IO 移出锁）· **N-18**（任务可挂任意部门课题，补部门一致性）· **N-19**（招募 token 32 位 → 32 字节） | ✅ 完成并验证（单测 387 / 冒烟 360 / TLS 22） |
+| **按 UI 设计规格对齐服务端** | 拿《鸿蒙俱乐部-全场景UI设计规格》13 页逐条对服务端，8 条按设计稿落地（含队友复验补的 2 条）：**D-1** 权限摘要补 5 个管理布尔（由 `can()` 推导）· **D-2** 名录 `?q=` 搜索姓名或部门 · **D-3** 任务/课题**读**范围放开到全社团（写不变）· **D-4** 阻塞任务的**求助对象** `needs_help` + 部长首页带出本部门阻塞项 · **D-5** 任务**逾期天数** `overdue_days` · **D-7** 成员详情补 `done_tasks` / `overdue_tasks`。其余 8 条按决定保留原版本。逐条证据见 `docs/ui-spec-conformance-review.md` | ✅ 完成并验证（单测 456 / 冒烟 412 / TLS 22 / 契约 30） |
 | **客户端（ArkTS）** | 技术栈定为 **ArkTS**（2026-09-14）；已接入组内上传的成员模块 **3 页**（成员名录 / 待分配审批 / 管理），`hvigorw assembleHap` 实测 **BUILD SUCCESSFUL**（未签名）。**页面仍是假数据，未接任何接口** | 🟡 可构建；待签名 + 待接接口 |
 
-**接口进度 39 / 39**（认证 5 · 组织与成员 19 · 任务 8 · 课题 6 = 38 个业务接口，另加运维 `/health` 1 个）。
-> 口径说明：早期写「38 / 39」是把 `docs/api-design.md` §6.1「接口总清单（39 个）」里的 `/health` 漏算了。
-> 逐条核对后为 **39 / 39**。此外还有一个不在接口清单里的公开页面 `GET /join/{token}`（招募链接落地页）。
+**接口进度 40 / 40**（认证 5 · 组织与成员 20 · 任务 8 · 课题 6 = 39 个业务接口，另加运维 `/health` 1 个）。
+> 口径说明 1：早期写「38 / 39」是把 `docs/api-design.md` §6.1「接口总清单」里的 `/health` 漏算了。
+> 口径说明 2：2026-09-16 新增 `GET /api/v1/join/{token}`（招募链接的公开 JSON 解析，D-16）后为 **40 / 40**。
+> 此外还有一个**不在接口清单里**的公开 HTML 页面 `GET /join/{token}`（招募链接落地页，给浏览器看的）。
 
-**三套测试全部通过**（每次改动都要跑）：
+**四套测试全部通过**（每次改动都要跑）：
 
 ```powershell
 cd server
-.\build\club-server.exe test                                              # 单测 398 项
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 362 项
+.\build\club-server.exe test                                              # 单测 456 项
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 412 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1 # TLS 22 项
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-check.ps1  # 前后端契约 30 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1     # 容量基准（按需，见 docs/capacity-baseline.md）
 ```
 
@@ -115,9 +118,10 @@ cd build
 | `docs/server-guide.md` | 服务端指南：构建/运行/测试、进度、两条实现纪律 | 动服务端代码前看 |
 | **`docs/local-deploy.md`** | **本机部署一页上手**：前置体检 · 五步跑起来（编译/初始化/起服务/验证/停止）· HTTPS · 部署包 · 让客户端连上 · 数据与备份 · 坑表 | **第一次在本机跑服务端看这个** |
 | **`docs/API-NOTES.md`** | 编译期 API 事实清单 + **30 条踩坑记录** | 加新函数前先查（避让框架同名符号） |
-| `docs/api-design.md` | **接口设计的唯一权威**：39 个接口逐条定义 | 写服务端时全程对照 |
+| `docs/api-design.md` | **接口设计的唯一权威**：40 个接口逐条定义 | 写服务端时全程对照 |
 | **`docs/code-review.md`** | **代码评审报告（三轮）**：第一轮 24 条（3 P0 + 8 P1 + 13 P2）、第二轮 9 条、第三轮 4 条 —— **全部修复并独立复验**，附回退实测证据 | 想了解"哪些坑已经踩过" |
 | `docs/v1-scope.md` | 范围基准：11 页面、6 张表、19 条业务规则、权限矩阵 | 想知道"这个要不要做" |
+| **`docs/ui-spec-conformance-review.md`** | **UI 设计规格 ↔ 服务端一致性审计**：13 页逐条对照、15 条差异（含 4 条设计稿自相矛盾）+ 已对齐清单 + 处置口径 | **改服务端契约前先看这个**（尤其是"读范围全社团、写不变"这条边界） |
 | `docs/frontend-brief.md` | 前端对接精简版 | 客户端同事看 |
 | **`docs/client-build.md`** | **客户端构建与现状**：构建命令、两个环境坑（JBR / SDK 路径）、ArkTS 迁移记录、剩余 TODO | **动客户端前先看这个** |
 | **`docs/client-integration-review{,-2,-3}.md`** | **客户端接入适配检查（三轮）**：第一轮（PR #2）3 条拦路 + 10 处接口；第二轮（PR #3/#4）导航与孤立页；第三轮（PR #5/#6/#7）**构建阻塞 + 三个 Tab 占位 / 三个孤儿页** | 客户端同学接接口、改导航前先看 |

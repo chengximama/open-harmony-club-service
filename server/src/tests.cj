@@ -298,6 +298,32 @@ func testStore(t: TR): Unit {
     t.eqs("注册口令往返", l.register_code, "K3M9P2")
     t.eqi("next_member 往返", l.next_member, 2)
 
+    /*
+     * D-4（2026-09-16）：Task 新增 `help_dept_id` / `help_member_id` 之后，
+     * **旧库（没有这两个字段的 db.json）必须照常加载** —— 这是文档里那句
+     * 「旧库无需迁移」的回归闸门。这里手写一个只含老字段的最小库文件。
+     * （Directory.create 在目录已存在时照样抛异常，所以先判存在 —— 见 writeDbFile 的注释。）
+     */
+    let oldDir = "build/test-data-store-old"
+    if (!exists(oldDir)) {
+        Directory.create(oldDir, recursive: true)
+    }
+    let oldJson = "{\"next_task\":3,\"tasks\":[{\"id\":2,\"title\":\"老任务\",\"owner_id\":1," +
+        "\"status\":\"blocked\",\"blocker\":\"老的阻塞原因\",\"created_at\":1789898400}]}"
+    File.writeTo(oldDir + "/db.json", oldJson.toArray())
+    let old = storeLoad(oldDir)
+    t.eqi("旧库能加载（D-4 无需迁移）", old.tasks.size, 1)
+    match (old.tasks.get(2)) {
+        case Some(ot) =>
+            t.eqs("旧任务标题", ot.title, "老任务")
+            t.eqs("旧任务状态", ot.status, "blocked")
+            t.eqi("旧任务 help_dept_id 默认 0（D-4）", ot.help_dept_id, 0)
+            t.eqi("旧任务 help_member_id 默认 0（D-4）", ot.help_member_id, 0)
+            t.ok("旧任务无求助对象 → needs_help=null（D-4）",
+                containsAscii(taskBrief(old, ot, 1789898400).toString(), "\"needs_help\":null"))
+        case None => t.ok("旧任务存在", false)
+    }
+
     /* 备份文件：**第二次保存**时才会生成（第一次没有旧库可备份） */
     storeSaveNow(s)
     t.ok("bak 已生成（第二次保存）", exists(s.dbFile() + ".bak"))
@@ -544,9 +570,16 @@ func testPerms(t: TR): Unit {
     /* 成员 */
     t.ok("成员看名录（全社团）", can(mem, Action.ViewMembers, other))
     t.ok("成员看本部门任务", can(mem, Action.ViewTasks, own))
-    t.ok("成员看外部门任务 拒", !can(mem, Action.ViewTasks, other))
+    /*
+     * D-3（2026-09-16）：读范围按设计规格放开到全社团。
+     * 原先这里断言"成员看外部门任务 拒"——那是 v1-scope §3.4.3 的旧口径；
+     * 设计规格 P02「共 38 项 · 全社团范围可见」、P04 用「全部」筛选、P03「部长在首页即可看到这条」
+     * 三处都是全社团可读。这条断言会随回退变红，是本次改动的回归闸门。
+     */
+    t.ok("成员看外部门任务（D-3 全社团可读）", can(mem, Action.ViewTasks, other))
     t.ok("成员改自己任务状态（跨部门也行）", can(mem, Action.UpdateTaskStatus, selfTask))
-    t.ok("成员改他人任务状态 拒", !can(mem, Action.UpdateTaskStatus, own))
+    t.ok("成员改本部门他人任务状态 拒（写范围未放开）", !can(mem, Action.UpdateTaskStatus, own))
+    t.ok("成员改外部门他人任务状态 拒（D-3 只放开读）", !can(mem, Action.UpdateTaskStatus, other))
     t.ok("成员建任务 拒", !can(mem, Action.CreateTask, own))
     t.ok("成员换口令 拒", !can(mem, Action.ChangeRegisterCode, own))
     t.ok("成员移交 拒", !can(mem, Action.TransferPresidency, other))
@@ -608,13 +641,24 @@ func testViews(t: TR): Unit {
     let self = memberSelf(s, m).toString()
     t.ok("本人视图含手机号", containsAscii(self, "13900000000"))
 
-    t.eqs("lead view_scope", jsonGetStr(permissionsOf(m), "view_scope") ?? "", "dept")
+    /* D-3：读范围全社团 → active 的 view_scope 一律 all（除 pending 为 none） */
+    t.eqs("lead view_scope（D-3 全社团可读）", jsonGetStr(permissionsOf(m), "view_scope") ?? "", "all")
     t.ok("lead 不能设角色", (jsonGetBool(permissionsOf(m), "set_role") ?? true) == false)
     t.ok("lead 能建任务", (jsonGetBool(permissionsOf(m), "create_task") ?? false))
+    /* D-1：管理页四张分区卡的驱动布尔 —— 部长一个都不该有 */
+    t.ok("lead 不能管部门（D-1）", (jsonGetBool(permissionsOf(m), "manage_depts") ?? true) == false)
+    t.ok("lead 不能读口令（D-1）", (jsonGetBool(permissionsOf(m), "view_register_code") ?? true) == false)
+    t.ok("lead 不能换口令（D-1）", (jsonGetBool(permissionsOf(m), "change_register_code") ?? true) == false)
+    t.ok("lead 不能管链接（D-1）", (jsonGetBool(permissionsOf(m), "manage_invite_links") ?? true) == false)
+    t.ok("lead 不能移交（D-1）", (jsonGetBool(permissionsOf(m), "transfer_presidency") ?? true) == false)
 
     let pres = mkMember(1, "president", 1)
     t.eqs("president view_scope", jsonGetStr(permissionsOf(pres), "view_scope") ?? "", "all")
     t.ok("president 能设角色", (jsonGetBool(permissionsOf(pres), "set_role") ?? false))
+    /* D-1：会长独占项 */
+    t.ok("president 能管部门（D-1）", (jsonGetBool(permissionsOf(pres), "manage_depts") ?? false))
+    t.ok("president 能换口令（D-1）", (jsonGetBool(permissionsOf(pres), "change_register_code") ?? false))
+    t.ok("president 能移交（D-1）", (jsonGetBool(permissionsOf(pres), "transfer_presidency") ?? false))
 
     /*
      * L-1：set_role 必须与真实权限一致。副会长**能**改他人角色（只有会长本人动不了），
@@ -623,11 +667,21 @@ func testViews(t: TR): Unit {
     let vpView = mkMember(2, "vice_president", 1)
     t.ok("vice_president 能设角色（L-1）", (jsonGetBool(permissionsOf(vpView), "set_role") ?? false))
     t.ok("vice_president manage_members", (jsonGetBool(permissionsOf(vpView), "manage_members") ?? false))
+    /*
+     * D-1 的关键反例：副会长能管人，但**不能管组织、不能换口令、不能移交**。
+     * 只下发 manage_members 时，客户端会让副会长看到「部门与组织」入口然后被 403
+     * ——正是设计规格 P10「按权限显示的管理入口」要避免的场景。
+     */
+    t.ok("vice_president 能读口令（D-1）", (jsonGetBool(permissionsOf(vpView), "view_register_code") ?? false))
+    t.ok("vice_president 能管链接（D-1）", (jsonGetBool(permissionsOf(vpView), "manage_invite_links") ?? false))
+    t.ok("vice_president 不能管部门（D-1）", (jsonGetBool(permissionsOf(vpView), "manage_depts") ?? true) == false)
+    t.ok("vice_president 不能换口令（D-1）", (jsonGetBool(permissionsOf(vpView), "change_register_code") ?? true) == false)
+    t.ok("vice_president 不能移交（D-1）", (jsonGetBool(permissionsOf(vpView), "transfer_presidency") ?? true) == false)
     let viceView = mkMember(8, "vice_lead", 2)
     t.ok("vice_lead 不能设角色", (jsonGetBool(permissionsOf(viceView), "set_role") ?? true) == false)
 
     let mem = mkMember(9, "member", 2)
-    t.eqs("member view_scope", jsonGetStr(permissionsOf(mem), "view_scope") ?? "", "dept")
+    t.eqs("member view_scope（D-3 全社团可读）", jsonGetStr(permissionsOf(mem), "view_scope") ?? "", "all")
     t.ok("member 不能改他人任务", (jsonGetBool(permissionsOf(mem), "update_any_task") ?? true) == false)
 
     let pend = mkMember(10, "", 0)
@@ -751,6 +805,8 @@ func testPart3Views(t: TR): Unit {
     task.owner_id = 2
     task.status = "doing"
     task.dept_id = 2
+    /* D-7：身份卡的「逾期 1」要有来源 —— 给这条挂一个已过的截止时间 */
+    task.due_at = 1789898400 - 7200
     s.tasks[1] = task
     let task2 = Task()
     task2.id = 2
@@ -773,11 +829,52 @@ func testPart3Views(t: TR): Unit {
     plan.dept_id = 2
     s.plans[1] = plan
 
-    let detail = memberDetailView(s, s.members[2]).toString()
+    let detail = memberDetailView(s, s.members[2], 1789898400).toString()
     t.ok("owned_tasks=2（软删除不计）", containsAscii(detail, "\"owned_tasks\":2"))
     t.ok("open_tasks=1", containsAscii(detail, "\"open_tasks\":1"))
     t.ok("owned_plans=1", containsAscii(detail, "\"owned_plans\":1"))
+    /*
+     * D-7（2026-09-16）：设计规格 P07 的身份卡是「未完成 5 · 逾期 1 · 已完成 12」——
+     * 三个计数都得服务端给。「已完成」原先要靠 owned-open 自己减，
+     * 「逾期」则根本推不出来（只能再打一次任务列表）。这两条断言是回归闸门。
+     */
+    t.ok("done_tasks=1（D-7）", containsAscii(detail, "\"done_tasks\":1"))
+    t.ok("overdue_tasks=1（D-7）", containsAscii(detail, "\"overdue_tasks\":1"))
     t.ok("详情不含手机号", !containsAscii(detail, "13800000002"))
+
+    /*
+     * D-2（2026-09-16）：名录搜索 —— 匹配**姓名 OR 部门名**
+     * （设计规格 P06 搜索框占位符「搜索姓名或部门」）。
+     * 纯函数覆盖，不依赖 HTTP；手机号**不参与匹配**（P06「名录不含手机号」）。
+     */
+    t.ok("搜索：姓名命中（D-2）", memberMatchesQuery(s, s.members[3], "成员"))
+    t.ok("搜索：部门名命中（D-2）", memberMatchesQuery(s, s.members[3], "运营"))
+    t.ok("搜索：姓名与部门都不匹配 → 不命中（D-2）", !memberMatchesQuery(s, s.members[3], "宣传部"))
+    t.ok("搜索：主席团的人不被「运营」命中（D-2）", !memberMatchesQuery(s, s.members[1], "运营"))
+    t.ok("搜索：待分配按 dept_hint 命中（D-2）", memberMatchesQuery(s, s.members[5], "运营"))
+    t.ok("搜索：手机号不参与匹配（隐私，D-2）", !memberMatchesQuery(s, s.members[3], "13800000003"))
+
+    /*
+     * D-16（2026-09-16）：招募链接 → 部门预填，由**服务端**从 token 推导。
+     * 三条反例（停用 / 不存在 / 畸形）都必须给 0，否则"停用的链接还能预填部门"
+     * 会让招募链接的启停形同虚设。
+     */
+    let liveLink = DeptInviteLink()
+    liveLink.token = "live-token-32"
+    liveLink.dept_id = 2
+    liveLink.enabled = true
+    s.invite_links["live-token-32"] = liveLink
+    let deadLink = DeptInviteLink()
+    deadLink.token = "dead-token-32"
+    deadLink.dept_id = 2
+    deadLink.enabled = false
+    s.invite_links["dead-token-32"] = deadLink
+    t.eqi("D16 启用中的链接 → 解析出部门", resolveInviteDept(s, "live-token-32"), 2)
+    t.eqi("D16 已停用的链接 → 0（启停必须真的生效）", resolveInviteDept(s, "dead-token-32"), 0)
+    t.eqi("D16 不存在的 token → 0", resolveInviteDept(s, "no-such-token"), 0)
+    t.eqi("D16 空 token → 0", resolveInviteDept(s, ""), 0)
+    /* 65 字节：32 字节十六进制是 64 个字符，再补一个（String 没有 repeat，别踩） */
+    t.eqi("D16 超长 token → 0（不做无谓查表）", resolveInviteDept(s, randHex(32) + "x"), 0)
 
     /* 未完成任务：只算 owner 匹配且未完成且未删除 */
     let open = openTasksOf(s, 2)
@@ -897,7 +994,8 @@ func testTasks(t: TR): Unit {
     s.tasks[8] = t8
     s.tasks[9] = t9
 
-    let g = groupMine(s, owner, now)
+    /* deptScopeId = 0：只看自己的（会长 / 副会长 / 普通成员走这条） */
+    let g = groupMine(s, owner, now, 0)
     t.eqi("逾期组", g.overdue.size, 1)
     t.eqs("逾期组内容", g.overdue[0].title, "T1")
     t.eqi("今天组 = T2 + T6", g.due_today.size, 2)
@@ -908,11 +1006,53 @@ func testTasks(t: TR): Unit {
     t.eqi("阻塞组（与今天组并存，不互斥）", g.blocked.size, 1)
     t.eqs("阻塞组内容", g.blocked[0].title, "T6")
     t.eqi("未完成总数（不含 done/deleted/他人）", g.open_total, 6)
+    t.eqi("scope=0 时没有 borrowed", g.borrowed, 0)
+
+    /*
+     * D-4（2026-09-16）：部长 / 副部长的首页额外带「本部门成员的阻塞项」
+     * （设计规格 P03「部长在首页即可看到这条」）。t10 是**别人负责**、
+     * 本部门（dept 2）、blocked 的任务 —— 只有传了部门范围才会出现。
+     */
+    let t10 = mkTask(10, other, now + 3600, "blocked")
+    s.tasks[10] = t10
+    let gLead = groupMine(s, owner, now, 2)
+    t.eqi("部长首页：阻塞组 = 自己的 T6 + 本部门别人的 T10（D-4）", gLead.blocked.size, 2)
+    /* 按截止升序：T10 的截止（now+3600）早于 T6（now+7200），所以 T10 在前 */
+    t.eqs("部长首页：阻塞组仍按截止升序（D-4）", gLead.blocked[0].title, "T10")
+    t.eqs("部长首页：本部门别人的阻塞项也在里面（D-4）", gLead.blocked[1].title, "T6")
+    t.eqi("部长首页：borrowed 计数 = 1", gLead.borrowed, 1)
+    t.eqi("部长首页：未完成总数含 borrowed", gLead.open_total, 7)
+    t.eqi("部长首页：阻塞项同时进时间分组（T10 在今天组）", gLead.due_today.size, 3)
+    /* 反例：部门范围不匹配时，别人的阻塞项**不该**出现 */
+    let gOtherDept = groupMine(s, owner, now, 99)
+    t.eqi("部门范围不匹配 → 不含别人的阻塞项", gOtherDept.blocked.size, 1)
+    t.eqi("部门范围不匹配 → borrowed=0", gOtherDept.borrowed, 0)
+    /* 非阻塞的别人的任务无论怎样都不进首页 */
+    let t11 = mkTask(11, other, now + 3600, "doing")
+    s.tasks[11] = t11
+    let gLead2 = groupMine(s, owner, now, 2)
+    t.eqi("本部门别人的 doing 不进部长首页", gLead2.blocked.size, 2)
+    t.eqi("本部门别人的 doing 不计入 borrowed", gLead2.borrowed, 1)
 
     /* 逾期是派生量 */
     t.ok("未完成且过期 = 逾期", isTaskOverdue(t1, now))
     t.ok("已完成不算逾期", !isTaskOverdue(t7, now))
     t.ok("无截止不算逾期", !isTaskOverdue(t5, now))
+
+    /*
+     * D-5（2026-09-16）：逾期**天数**也由服务端下发
+     * （设计规格 P03「已逾期 2 天 · 该判断由服务端算出，客户端不重算」）。
+     * now = 2026-09-20 18:00，t1 的截止 = now - 3600 = 09-20 17:00 → 同日，0 天；
+     * 再压一条两天前的，验证日界差。
+     */
+    t.eqi("当天逾期 → overdue_days=0", overdueDaysOf(t1, now), 0)
+    let t12 = mkTask(12, owner, todayStart - 2 * 86400 + 3600, "doing")
+    t.eqi("两天前截止 → overdue_days=2", overdueDaysOf(t12, now), 2)
+    t.eqi("未逾期 → overdue_days=0", overdueDaysOf(t2, now), 0)
+    t.eqi("已完成 → overdue_days=0", overdueDaysOf(t7, now), 0)
+    /* 跨日但不足 24 小时的，按**日界**算 1 天（不是四舍五入成 0） */
+    let t13 = mkTask(13, owner, todayStart - 3600, "doing")
+    t.eqi("昨天 23:00 截止 → overdue_days=1", overdueDaysOf(t13, now), 1)
 
     t.ok("状态枚举合法", isTaskStatus("blocked"))
     t.ok("状态枚举非法", !isTaskStatus("doing50"))
@@ -968,7 +1108,42 @@ func testTasks(t: TR): Unit {
     let brief = taskBrief(s, t6, now).toString()
     t.ok("brief: blocked=true", containsAscii(brief, "\"blocked\":true"))
     t.ok("brief: is_overdue=false", containsAscii(brief, "\"is_overdue\":false"))
+    t.ok("brief: 含 overdue_days（D-5）", containsAscii(brief, "\"overdue_days\":0"))
+    /*
+     * P0（队友复验，2026-09-16）：阻塞原因必须进 TaskBrief。
+     * 设计规格 P01 的「阻塞中」卡片直接渲染阻塞原因高亮块；原先 blocker 只在 TaskDetail 里，
+     * 首页要显示它就得为每张卡再打一次详情接口。
+     */
+    t.ok("brief: 阻塞原因进 TaskBrief（P0 复验）", containsAscii(brief, "等场地审批"))
+    t.ok("brief: 非阻塞任务 blocker=null（P0 复验）",
+        containsAscii(taskBrief(s, t1, now).toString(), "\"blocker\":null"))
+    t.ok("brief: 无求助对象时 needs_help=null（D-4）", containsAscii(brief, "\"needs_help\":null"))
     t.ok("brief: 不含手机号", !containsAscii(brief, "\"phone\""))
+    /*
+     * D-4：求助对象 = 部门 + 人（设计规格 P03「需要帮助 · 宣传部 陈屿」）。
+     * 回退到"没有 needs_help 字段"时这三条会一起变红。
+     */
+    let helpDept = Department()
+    helpDept.id = 3
+    helpDept.name = "宣传部"
+    s.departments[3] = helpDept
+    let helper = mkMember(other, "member", 3)
+    helper.name = "陈屿"
+    s.members[other] = helper
+    t6.help_dept_id = 3
+    t6.help_member_id = other
+    let briefHelp = taskBrief(s, t6, now).toString()
+    t.ok("brief: needs_help 不是 null（D-4）", !containsAscii(briefHelp, "\"needs_help\":null"))
+    t.ok("brief: needs_help 含求助部门（D-4）", containsAscii(briefHelp, "宣传部"))
+    t.ok("brief: needs_help 含求助人（D-4）", containsAscii(briefHelp, "陈屿"))
+    /* 只到部门、不指定到人时 member 必须为 null（不是空对象） */
+    t6.help_member_id = 0
+    let briefDept = taskBrief(s, t6, now).toString()
+    t.ok("brief: 只到部门时 member=null（D-4）", containsAscii(briefDept, "\"member\":null"))
+    /* 离开 blocked 时由 handler 清空；这里钉住视图侧的语义：两者都为 0 → null */
+    t6.help_dept_id = 0
+    let briefCleared = taskBrief(s, t6, now).toString()
+    t.ok("brief: 清空后 needs_help=null（D-4）", containsAscii(briefCleared, "\"needs_help\":null"))
     let detail = taskDetail(s, t6, now).toString()
     t.ok("detail 含 blocker", containsAscii(detail, "等场地审批"))
     t.ok("detail 含 plan_path", containsAscii(detail, "plan_path"))

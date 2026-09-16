@@ -70,6 +70,18 @@ public class Task {
     public var dept_id: Int64 = 0
     public var status: String = "todo"    /* todo / doing / blocked / done */
     public var blocker: String = ""
+    /*
+     * 「需要帮助」的求助对象（D-4，2026-09-16）。
+     *
+     * 设计规格 P03 的阻塞块里有一行「需要帮助 · 宣传部 陈屿」——求助指向
+     * **某个部门**（必填其一），可以具体到**某个人**。只在 status = blocked 时有意义：
+     * 离开 blocked 时与 blocker 一起清空（同一个信息块，不该留下半截状态）。
+     *
+     * help_dept_id 允许由 help_member_id 推导（只填人时按该成员所在部门补齐），
+     * 这样「部长首页看本部门被求助项」永远只需要比一个字段。
+     */
+    public var help_dept_id: Int64 = 0   /* 0 = 未指定求助部门 */
+    public var help_member_id: Int64 = 0 /* 0 = 只到部门，不指定到人 */
     public var due_at: Int64 = 0
     public var updated_at: Int64 = 0
     public var completed_at: Int64 = 0
@@ -290,6 +302,8 @@ func taskToJson(t: Task): JsonObject {
     jPutInt(o, "dept_id", t.dept_id)
     jPutStr(o, "status", t.status)
     jPutStr(o, "blocker", t.blocker)
+    jPutInt(o, "help_dept_id", t.help_dept_id)
+    jPutInt(o, "help_member_id", t.help_member_id)
     jPutInt(o, "due_at", t.due_at)
     jPutInt(o, "updated_at", t.updated_at)
     jPutInt(o, "completed_at", t.completed_at)
@@ -310,6 +324,9 @@ func taskFromJson(o: JsonObject): Task {
     t.dept_id = reqIntOr(o, "dept_id", 0)
     t.status = reqStrOr(o, "status", "todo")
     t.blocker = reqStrOr(o, "blocker", "")
+    /* D-4：老库没有这两个字段 → reqIntOr 取默认 0，无需迁移 */
+    t.help_dept_id = reqIntOr(o, "help_dept_id", 0)
+    t.help_member_id = reqIntOr(o, "help_member_id", 0)
     t.due_at = reqIntOr(o, "due_at", 0)
     t.updated_at = reqIntOr(o, "updated_at", 0)
     t.completed_at = reqIntOr(o, "completed_at", 0)

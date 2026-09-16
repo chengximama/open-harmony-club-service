@@ -53,9 +53,38 @@ func targetOf(actor: Member, tgt: Member): Target {
 }
 
 /*
+ * D-2（2026-09-16）：名录搜索 —— 匹配**姓名 OR 部门名**，大小写不敏感。
+ * 设计规格 P06 的搜索框占位符原文就是「搜索姓名或部门」。
+ *
+ * 只搜这两个维度：手机号**不参与匹配**——P06 底部明确写「名录不含手机号——
+ * 这是隐私最小化」，接口里既然不返回，就不该能被检索出来（否则等于换了个方式泄露）。
+ * 待分配成员 dept_id 为 0，但它的部门预填（dept_hint）也该能被搜到，
+ * 否则名录里「待分配」那组搜"运营部"会漏掉它们。
+ */
+func memberMatchesQuery(s: Store, m: Member, qLower: String): Bool {
+    if (containsAscii(m.name.toAsciiLower(), qLower)) {
+        return true
+    }
+    if (m.dept_id > 0) {
+        match (s.departments.get(m.dept_id)) {
+            case Some(d) => return containsAscii(d.name.toAsciiLower(), qLower)
+            case None => ()
+        }
+    }
+    if (m.dept_hint > 0) {
+        match (s.departments.get(m.dept_hint)) {
+            case Some(d) => return containsAscii(d.name.toAsciiLower(), qLower)
+            case None => ()
+        }
+    }
+    return false
+}
+
+/*
  * GET /api/v1/members —— 成员名录
  * 全社团可见（api-design §3.2）：这是第 1 节第一个问题「社团里有哪些人」的答案。
  * 默认只返回 active；用 ?status= 查其它状态。
+ * ?q= 按**姓名或部门名**模糊匹配（D-2，对应设计规格 P06 的搜索框）。
  */
 public func handleMemberList(ctx: Context, s: Store): Unit {
     let actor = requireActive(ctx, s)
@@ -63,6 +92,7 @@ public func handleMemberList(ctx: Context, s: Store): Unit {
     let fDept = queryIntOr(ctx, "dept_id", 0)
     let fRole = ctx.queryParamOr("role", "")
     let fStatus = ctx.queryParamOr("status", "active")
+    let q = ctx.queryParamOr("q", "").trimAscii().toAsciiLower()
 
     s.lock.lock()
     try {
@@ -75,6 +105,9 @@ public func handleMemberList(ctx: Context, s: Store): Unit {
                 continue
             }
             if (fRole.size > 0 && x.role != fRole) {
+                continue
+            }
+            if (q.size > 0 && !memberMatchesQuery(s, x, q)) {
                 continue
             }
             picked.add(x)
@@ -101,7 +134,7 @@ public func handleMemberDetail(ctx: Context, s: Store): Unit {
             case Some(x) => x
             case None => throw apiErr("MEMBER_NOT_FOUND")
         }
-        sendOk(ctx, memberDetailView(s, tgt))
+        sendOk(ctx, memberDetailView(s, tgt, nowEpoch()))
     } finally {
         s.lock.unlock()
     }

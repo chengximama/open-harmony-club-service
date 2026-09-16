@@ -107,6 +107,72 @@ func freshLinkToken(s: Store): String {
     return randHex(32)
 }
 
+/*
+ * 招募链接 → 部门预填（D-16，2026-09-16）。
+ *
+ * **由服务端从 token 推导，不信任客户端自报的 dept_id** —— 这是 D-16 方案 2 的核心：
+ * 客户端只要把用户点进来的那个 token 原样带上，部门由服务端说了算。
+ * 链接不存在 / 已停用 / token 形态不对 → 0（预填为空）。
+ *
+ * 纯函数式（只读 Store 的两张表），因此可以在单测里直接覆盖"停用链接不给部门"这类反例。
+ */
+public func resolveInviteDept(s: Store, token: String): Int64 {
+    if (token.size == 0 || token.size > 64) {
+        return 0
+    }
+    match (s.invite_links.get(token)) {
+        case Some(l) =>
+            if (l.enabled) {
+                return l.dept_id
+            }
+            return 0
+        case None => return 0
+    }
+}
+
+/*
+ * GET /api/v1/join/{token} —— 招募链接的**公开 JSON 解析**（D-16 方案 1）。
+ *
+ * 为什么需要它：链接是发到群里的 `https://<host>/join/<token>`，而 HarmonyOS App
+ * 在 v1 **不做 deep link 配置**（api-design §3.7），所以 App 拿到 token 之后
+ * 没有任何免认证的途径把 token 换成一个 `dept_id` —— 落地页只回 HTML。
+ * 没有这个端点，P12 的「来自于招募链接的部门预填」就只能靠客户端自报部门，链路不闭环。
+ *
+ * 响应形状与落地页语义一致：**链接不存在与已停用返回同一个 200 形状**
+ * （`dept: null, enabled: false`），客户端据此渲染「链接已失效」，
+ * 不必为"有没有 data.dept"写特例（与 §3.7 停用接口的 L-3 口径同源）。
+ *
+ * 只暴露部门名与启停状态 —— 那本来就是链接持有者能看到的信息，不含口令、成员或任务。
+ */
+public func handleJoinResolve(ctx: Context, s: Store): Unit {
+    let token = ctx.paramOr("token", "")
+    s.lock.lock()
+    try {
+        var deptId: Int64 = 0
+        var enabled = false
+        if (token.size > 0 && token.size <= 64) {
+            match (s.invite_links.get(token)) {
+                case Some(l) =>
+                    if (l.enabled) {
+                        enabled = true
+                        deptId = l.dept_id
+                    }
+                case None => ()
+            }
+        }
+        let data = JsonObject()
+        if (deptId > 0) {
+            jPutObj(data, "dept", deptBriefObj(s, deptId))
+        } else {
+            jPutNull(data, "dept")
+        }
+        jPutBool(data, "enabled", enabled)
+        sendOk(ctx, data)
+    } finally {
+        s.lock.unlock()
+    }
+}
+
 /* GET /api/v1/dept-invite-links */
 public func handleInviteLinkList(ctx: Context, s: Store): Unit {
     let actor = requireActive(ctx, s)

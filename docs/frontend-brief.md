@@ -2,7 +2,7 @@
 
 - 面向：鸿蒙客户端 / 前端开发
 - 版本：v1.0（接口已冻结）
-- **本文是精简版。** 完整设计见 `api-design.md`（39 个接口逐条定义）；范围与业务规则见 `v1-scope.md`
+- **本文是精简版。** 完整设计见 `api-design.md`（40 个接口逐条定义）；范围与业务规则见 `v1-scope.md`
 
 ---
 
@@ -76,7 +76,7 @@
 
 ---
 
-## 4. 接口清单（39 个）
+## 4. 接口清单（40 个）
 
 ### 认证（5）
 
@@ -94,8 +94,8 @@
 | --- | --- | --- |
 | GET / POST | `/depts` | 组织列表 / 新建 |
 | PATCH / DELETE | `/depts/{id}` | 改名排序 / 删除（非空拒绝） |
-| GET | `/members` | 成员名录（**全社团可见**） |
-| GET / PATCH | `/members/{id}` | 成员详情 / 编辑 |
+| GET | `/members` | 成员名录（**全社团可见**；`?q=` 按**姓名或部门名**模糊搜索，2026-09-16 新增） |
+| GET / PATCH | `/members/{id}` | 成员详情（`stats` 含 `open_tasks` / `done_tasks` / `overdue_tasks`）/ 编辑 |
 | POST | `/members/{id}/disable` | 移出社团（有未完成任务会拒绝） |
 | GET | `/members/pending` | 待分配列表 |
 | POST | `/members/{id}/assign` | 单个分配部门+角色 |
@@ -107,6 +107,7 @@
 | POST | `/register-config/rotate` | 随机轮换口令 |
 | GET / POST | `/dept-invite-links` | 招募链接列表 / 生成 |
 | DELETE | `/dept-invite-links/{token}` | 停用链接 |
+| GET | `/join/{token}` | **公开**：把招募链接里的 token 换成 `{ dept, enabled }`（预填部门用，2026-09-16 新增） |
 
 ### 任务（8）
 
@@ -150,18 +151,44 @@
 ### Permissions（由 `GET /auth/me` 返回）
 
 ```json
-{ "view_scope": "dept", "manage_members": false, "set_role": false,
-  "create_plan": false, "create_task": false, "update_any_task": false }
+{ "view_scope": "all", "manage_members": false, "set_role": false,
+  "create_plan": false, "create_task": false, "update_any_task": false,
+  "manage_depts": false, "view_register_code": false,
+  "change_register_code": false, "manage_invite_links": false,
+  "transfer_presidency": false }
 ```
 
-`view_scope`：`all` / `dept` / `self` / **`none`**（pending 账号）
+`view_scope`：`all`（**所有 active 成员**）/ **`none`**（pending 账号）。`dept` / `self` 不再产生。
+
+后 5 个布尔是**管理页四张分区卡**的显示开关（2026-09-16 新增，对应 UI 设计规格 P09/P10）：
+
+| 字段 | 谁能看到对应入口 |
+| --- | --- |
+| `manage_depts` | 部门与组织（增删改）—— **仅会长** |
+| `view_register_code` | 注册口令**明文** —— 会长 / 副会长 |
+| `change_register_code` | 更换 / 随机轮换口令 —— **仅会长** |
+| `manage_invite_links` | 招募链接增删启停 —— 会长 / 副会长 |
+| `transfer_presidency` | 会长移交 —— **仅会长** |
 
 > ⚠️ **客户端读它只是为了画界面，绝不能用它替代服务端校验。**
+> 典型例子：副会长的 `manage_members` 是 `true`，但 `manage_depts` 是 `false` ——
+> 「部门与组织」入口必须按 `manage_depts` 隐藏，不能因为"他是管理员"就显示出来。
 
 ### TaskBrief / TaskDetail
 
-`TaskBrief`：`id` / `title` / `status` / `owner` / `dept` / `plan` / `due_at` / **`is_overdue`** / `blocked` / `updated_at`
-`TaskDetail` = `TaskBrief` + `desc` / `blocker` / `plan_path`（面包屑）/ `created_by` / `created_at` / `completed_at`
+`TaskBrief`：`id` / `title` / `status` / `owner` / `dept` / `plan` / `due_at` / **`is_overdue`** /
+**`overdue_days`** / `blocked` / **`blocker`** / **`needs_help`** / `updated_at`
+`TaskDetail` = `TaskBrief` + `desc` / `plan_path`（面包屑）/ `created_by` / `created_at` / `completed_at`
+
+- **`blocker` 现在也在 `TaskBrief` 里**（2026-09-16）：首页「阻塞中」卡片要直接渲染阻塞原因高亮块，
+  不必为每张卡再打一次详情接口。非阻塞任务为 `null`。
+
+- `overdue_days`：**逾期天数，服务端算好的**（2026-09-16 新增）。
+  `is_overdue=true` 且 `overdue_days=0` 表示"今天逾期"，此时显示「已逾期」而不是「逾期 0 天」。
+- `needs_help`：**求助对象**（2026-09-16 新增），形状 `{ "dept": {id,name}, "member": MemberBrief|null }`，
+  没有求助对象时为 `null` —— 据此决定**渲不渲染**「需要帮助 · 宣传部 陈屿」那一行。
+  写入方式：`PUT /tasks/{id}/status` 里与 `status=blocked` 一起传 `help_dept_id` / `help_member_id`
+  （只填人会自动补齐部门；离开 blocked 自动清空）。
 
 `status`：`todo` / `doing` / `blocked` / `done`（**只有 4 档**）
 
@@ -180,9 +207,33 @@
 注册成功即返回 token，但账号**没有任何权限**。客户端应跳转「等待管理员分配」页，**而不是主界面**。
 `pending` 账号可以正常登录，只是 `permissions` 全为 `false`、`view_scope` 为 `none`。
 
-### ② 「逾期」是服务端算好的，客户端不要自己算
+**招募链接的部门预填怎么走（2026-09-16 新增，补上了原先的空档）**：
 
-`TaskBrief.is_overdue` 直接使用。分组（逾期 / 今天 / 本周 / 以后 / 无截止）也由 `GET /tasks/mine` 返回，**客户端不重复实现**——否则跨设备口径会不一致。
+1. 用户拿到 `https://<host>/join/<token>` 里的 token；
+2. App 调 **`GET /api/v1/join/{token}`**（免认证）→ `{ "dept": {"id":2,"name":"运营部"}, "enabled": true }`；
+   失效 / 停用同样是 200，但 `dept` 为 `null`、`enabled` 为 `false` → 渲染「链接已失效」；
+3. 注册时把这个 **`invite_token`** 原样带上（**不用**自己换算 `dept_id`）：
+   服务端解析 token 得到部门，**优先于**你传的 `dept_id`；
+4. 响应里的 **`dept_hint`** 是本次实际采纳的预填（`null` = 没有）—— 用它渲染
+   「来自于招募链接的部门预填：运营部。它只是 dept_hint，审批前不生效。」
+
+> 链接只是便利：不免除注册口令（口令才是准入），也不赋予任何角色。
+> 链接已停用时**注册照样成功**，只是预填退回你传的 `dept_id`（都没有就为空）。
+
+### ② 「逾期」与"逾期几天"都是服务端算好的，客户端不要自己算
+
+`TaskBrief.is_overdue` 与 **`overdue_days`** 直接使用。分组（逾期 / 今天 / 本周 / 以后 / 无截止）
+也由 `GET /tasks/mine` 返回，**客户端不重复实现**——否则跨设备口径会不一致。
+
+**部长 / 副部长的首页会多出"本部门别人的阻塞项"**（2026-09-16 新增）：
+`GET /tasks/mine` 的 `blocked` 组与时间分组里，可能混有**不是你负责、但本部门被阻塞**的任务
+（设计规格 P03「部长在首页即可看到这条」）。判据是 `owner.id` 与自己的 id 是否相同；
+`counts.borrowed_blocked` 给出其中有多少条。会长 / 副会长不会有这种条目。
+
+**任务可见范围（2026-09-16 变化）**：`GET /tasks`、`GET /tasks/{id}`、`GET /plans`、`GET /plans/{id}`
+现在**全体成员都能看全社团**（设计规格 P02「全社团范围可见」）。
+⚠️ 但**改**还是按老规矩：改状态只有负责人 / 部门管理员 / 会长 / 副会长，编辑与删除还要看创建人——
+看得到不等于改得动。
 
 ### ③ 日历同步在客户端本地完成（**这是客户端的活，不是服务端**）
 

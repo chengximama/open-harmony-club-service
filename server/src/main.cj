@@ -244,6 +244,11 @@ func buildApp(s: Store, box: HandleBox): QingZhouApp {
         .delete("/api/v1/dept-invite-links/:token", { ctx: Context, _: () -> Unit =>
             handleInviteLinkDisable(ctx, s)
         })
+        /* 招募链接的公开 JSON 解析（D-16，2026-09-16）：App 用它把 token 换成 dept_id。
+         * 免认证 —— 与上面那个 HTML 落地页同源，只暴露部门名与启停状态。 */
+        .get("/api/v1/join/:token", { ctx: Context, _: () -> Unit =>
+            handleJoinResolve(ctx, s)
+        })
         /* Part 4 · 任务（8） */
         .get("/api/v1/tasks/mine", { ctx: Context, _: () -> Unit =>
             handleTasksMine(ctx, s)

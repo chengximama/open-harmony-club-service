@@ -639,9 +639,35 @@ try {
     $r = Call-Api "GET" "/join/nonexistent"
     Check "失效链接落地页 -> 200（提示已失效）" (($r.status -eq 200) -and ($r.raw -like "*失效*")) "status=$($r.status)"
 
+    # ---------- 14b. 招募链接 → App 的部门预填闭环（D-16，2026-09-16） ----------
+    # 方案 1：App 免认证把 token 换成 dept_id（原先只有 HTML 落地页，链路不闭环）
+    $r = Call-Api "GET" "/api/v1/join/$linkToken"
+    Check "D16 公开解析 token -> 200（免认证）" ($r.status -eq 200) "status=$($r.status)"
+    Check "D16 解析出部门 id" ($r.json.data.dept.id -eq $deptPub) "dept=$($r.json.data.dept | ConvertTo-Json -Compress)"
+    Check "D16 解析出部门 name（客户端要显示预填块）" ($null -ne $r.json.data.dept.name)
+    Check "D16 enabled=true" ($r.json.data.enabled -eq $true)
+    $r = Call-Api "GET" "/api/v1/join/nonexistent"
+    Check "D16 不存在的 token -> 200 + dept=null（与失效同形状，客户端不写特例）" (($r.status -eq 200) -and ($null -eq $r.json.data.dept) -and ($r.json.data.enabled -eq $false)) "status=$($r.status)"
+    # 方案 2：注册带 invite_token，部门由**服务端**从 token 推导（不再信任客户端自报的 dept_id）
+    $r = Call-Api "POST" "/api/v1/auth/register" @{ register_code = $regCode; phone = "13900000021"; name = "带token注册"; password = "tokenpw12"; invite_token = $linkToken }
+    Check "D16 带 invite_token 注册 -> 201" ($r.status -eq 201) "status=$($r.status) code=$(ErrCode $r)"
+    $tokenMemberId = $r.json.data.member.id
+    Check "D16 响应回显采纳的 dept_hint（不静默）" ($r.json.data.dept_hint.id -eq $deptPub) "hint=$($r.json.data.dept_hint | ConvertTo-Json -Compress)"
+    $r = Call-Api "GET" "/api/v1/members/pending" $null $presToken
+    $tokenHinted = $r.json.data.items | Where-Object { $_.id -eq $tokenMemberId }
+    Check "D16 待分配项带服务端推导的 dept_hint" ($tokenHinted.dept_hint.id -eq $deptPub) "hint=$($tokenHinted.dept_hint | ConvertTo-Json -Compress)"
+    # 优先级：token 说了算 —— 这里故意自报一个**别的**部门
+    $r = Call-Api "POST" "/api/v1/auth/register" @{ register_code = $regCode; phone = "13900000022"; name = "token优先"; password = "tokenpw12"; invite_token = $linkToken; dept_id = $deptOps }
+    Check "D16 token 优先于客户端自报的 dept_id" ($r.json.data.dept_hint.id -eq $deptPub) "hint=$($r.json.data.dept_hint.id) 期望=$deptPub 自报=$deptOps"
+
     $r = Call-Api "DELETE" "/api/v1/dept-invite-links/$linkToken" $null $presToken
     Check "停用链接 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
     Check "停用后 enabled=false" ($r.json.data.enabled -eq $false)
+    # D16 反例：停用后解析与"不存在"同形状；注册则退回客户端自报值（链接只是便利，不阻断注册）
+    $r = Call-Api "GET" "/api/v1/join/$linkToken"
+    Check "D16 停用后解析 -> dept=null 且 enabled=false" (($r.status -eq 200) -and ($null -eq $r.json.data.dept) -and ($r.json.data.enabled -eq $false)) "enabled=$($r.json.data.enabled) dept=$($r.json.data.dept)"
+    $r = Call-Api "POST" "/api/v1/auth/register" @{ register_code = $regCode; phone = "13900000023"; name = "失效链接回落"; password = "tokenpw12"; invite_token = $linkToken; dept_id = $deptOps }
+    Check "D16 失效 token 退回客户端自报的 dept_id" (($r.status -eq 201) -and ($r.json.data.dept_hint.id -eq $deptOps)) "status=$($r.status) hint=$($r.json.data.dept_hint.id)"
     $r = Call-Api "DELETE" "/api/v1/dept-invite-links/$linkToken" $null $presToken
     Check "重复停用幂等 -> 200" ($r.status -eq 200) "status=$($r.status)"
     $r = Call-Api "DELETE" "/api/v1/dept-invite-links/nonexistent" $null $presToken
@@ -794,10 +820,19 @@ try {
     Check "跨部门转交（会长）-> 200" ($r.status -eq 200) "status=$($r.status)"
     Check "部门标签跟随新负责人" ($r.json.data.dept.id -eq $deptPub) "dept=$($r.json.data.dept.id) 期望=$deptPub"
 
+    # D-3（2026-09-16，按 UI 设计规格）：读范围放开到全社团。
+    # 设计规格 P02 屏幕就写着「共 38 项 · 全社团范围可见」、P04 课题树用「全部」
+    # 能筛出非本部门课题。原先这里断言 total=0（旧的"本部门"口径），已作废。
     $r = Call-Api "GET" "/api/v1/tasks?dept_id=$deptPub" $null $leadToken
-    Check "部长看不到外部门任务（可见范围）" ($r.json.data.total -eq 0) "total=$($r.json.data.total)"
+    Check "部长能读外部门任务（D-3 全社团可读）" ($r.json.data.total -ge 1) "total=$($r.json.data.total)"
     $r = Call-Api "GET" "/api/v1/tasks" $null $leadToken
-    Check "部长看本部门任务列表 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "部长看任务列表 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    # 但**写**没有跟着放开：改外部门任务状态仍须被挡（D-3 只放开读）
+    $r = Call-Api "PUT" "/api/v1/tasks/$taskOverdue/status" @{ status = "doing" } $leadToken
+    Check "部长改外部门任务状态 -> 403（D-3 只放开读）" (($r.status -eq 403) -and ((ErrCode $r) -eq "FORBIDDEN_NOT_IN_DEPT")) "status=$($r.status) code=$(ErrCode $r)"
+    # 普通成员同样能读外部门任务（读范围不是"部长特权"）
+    $r = Call-Api "GET" "/api/v1/tasks/$taskOverdue" $null $memToken
+    Check "普通成员读外部门任务详情 -> 200（D-3）" ($r.status -eq 200) "status=$($r.status)"
 
     $r = Call-Api "POST" "/api/v1/tasks/lookup" @{ task_ids = @($leadTask, 99999) } $presToken
     Check "lookup -> 200" ($r.status -eq 200) "status=$($r.status)"
@@ -1133,6 +1168,99 @@ try {
     Check "重启后 pending 账号仍在（锁定已过期？此处应为 429 或 200）" (($r.status -eq 200) -or ($r.status -eq 429)) "status=$($r.status)"
     $r = Call-Api "GET" "/health"
     Check "重启后 /health 正常" ($r.status -eq 200)
+
+    # ---------- 26. UI 设计规格一致性（D-1 / D-2 / D-4 / D-5 / D-7，2026-09-16） ----------
+    # 按《鸿蒙俱乐部-全场景UI设计规格》实现的能力，每条都是"回退即变红"的闸门。
+    # 放在 [25] 之前：[25] 会把本机 IP 的注册节流锁住，之后的注册都不通。
+    Write-Host ""
+    Write-Host "[26] 设计规格一致性：权限摘要 / 名录搜索 / 需要帮助 / 逾期天数 / 成员计数"
+
+    # --- D-1：管理页四张分区卡按权限显示，需要这几个布尔（会长 / 副会长必须不同） ---
+    # 重新登录取 token：本段在 [24] 重启之后，不依赖重启前的会话
+    $r = Call-Api "POST" "/api/v1/auth/login" @{ phone = "13800000000"; password = "newpassword1" }
+    $presToken2 = [string]$r.json.data.token
+    $leadToken = Login-Token $leadPhone "leadpw123"
+    $memToken = Login-Token $memPhone $memPw
+    $r = Call-Api "GET" "/api/v1/auth/me" $null $presToken2
+    $pP = $r.json.data.permissions
+    Check "D1 会长 manage_depts=true" ($pP.manage_depts -eq $true) "manage_depts=$($pP.manage_depts)"
+    Check "D1 会长 change_register_code=true" ($pP.change_register_code -eq $true)
+    Check "D1 会长 transfer_presidency=true" ($pP.transfer_presidency -eq $true)
+    Check "D1 会长 view_scope=all（D-3 读范围全社团）" ($pP.view_scope -eq "all") "view_scope=$($pP.view_scope)"
+    $r = Call-Api "GET" "/api/v1/auth/me" $null $leadToken
+    $pL = $r.json.data.permissions
+    Check "D1 部长 manage_depts=false" ($pL.manage_depts -eq $false)
+    Check "D1 部长 view_register_code=false" ($pL.view_register_code -eq $false)
+    Check "D1 部长 view_scope=all（部长也是全社团可读）" ($pL.view_scope -eq "all") "view_scope=$($pL.view_scope)"
+
+    # --- D-2：名录搜索「姓名或部门」（设计规格 P06 的搜索框） ---
+    $r = Call-Api "GET" "/api/v1/members" $null $leadToken
+    $allTotal = $r.json.data.total
+    $r = Call-Api "GET" "/api/v1/members?q=$([uri]::EscapeDataString("运营"))" $null $leadToken
+    $byDept = $r.json.data.total
+    Check "D2 按部门名搜索 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    Check "D2 按部门名搜索命中（0 < 命中数 <= 总数）" (($byDept -gt 0) -and ($byDept -le $allTotal)) "命中=$byDept 总=$allTotal"
+    $r = Call-Api "GET" "/api/v1/members?q=$([uri]::EscapeDataString("绝不可能匹配的串"))" $null $leadToken
+    Check "D2 搜索无匹配 -> total=0" ($r.json.data.total -eq 0) "total=$($r.json.data.total)"
+    $r = Call-Api "GET" "/api/v1/members?q=$([uri]::EscapeDataString("13800000000"))" $null $leadToken
+    Check "D2 手机号不参与搜索（隐私最小化）" ($r.json.data.total -eq 0) "total=$($r.json.data.total)"
+
+    # --- D-5：逾期天数由服务端算（设计规格 P03「该判断由服务端算出，客户端不重算」） ---
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "D5 逾期天数探针"; owner_id = $memId; due_at = "2026-09-01T10:00:00+08:00" } $presToken2
+    $d5Task = $r.json.data.task.id
+    Check "D5 建探针 -> 201" ($r.status -eq 201) "status=$($r.status)"
+    Check "D5 is_overdue=true" ($r.json.data.task.is_overdue -eq $true)
+    Check "D5 接口直接下发逾期天数（不是只有布尔）" ($null -ne $r.json.data.task.overdue_days) "overdue_days=$($r.json.data.task.overdue_days)"
+    Check "D5 逾期天数 >= 1（2026-09-01 已过）" ($r.json.data.task.overdue_days -ge 1) "overdue_days=$($r.json.data.task.overdue_days)"
+
+    # --- D-4：需要帮助（求助对象 = 部门 + 人）+ 部长首页能看到本部门被阻塞项 ---
+    $r = Call-Api "PUT" "/api/v1/tasks/$d5Task/status" @{ status = "blocked"; blocker = "等宣传部出主视觉" } $presToken2
+    Check "D4 只填 blocker 也能进 blocked（needs_help=null）" (($r.status -eq 200) -and ($null -eq $r.json.data.needs_help)) "status=$($r.status) needs_help=$($r.json.data.needs_help)"
+    $r = Call-Api "PUT" "/api/v1/tasks/$d5Task/status" @{ status = "blocked"; blocker = "等宣传部出主视觉"; help_dept_id = $deptPub } $presToken2
+    Check "D4 带求助部门 -> 200" ($r.status -eq 200) "status=$($r.status) code=$(ErrCode $r)"
+    Check "D4 needs_help.dept 是所选部门" ($r.json.data.needs_help.dept.id -eq $deptPub) "dept=$($r.json.data.needs_help.dept.id)"
+    Check "D4 只到部门时 member=null" ($null -eq $r.json.data.needs_help.member)
+    $r = Call-Api "PUT" "/api/v1/tasks/$d5Task/status" @{ status = "blocked"; blocker = "等宣传部出主视觉"; help_member_id = $newId } $presToken2
+    Check "D4 只填人 -> 自动补齐部门（D-4 口径）" (($r.status -eq 200) -and ($r.json.data.needs_help.dept.id -eq $deptPub)) "status=$($r.status) dept=$($r.json.data.needs_help.dept.id)"
+    Check "D4 needs_help.member 是人视图" ($r.json.data.needs_help.member.id -eq $newId) "member=$($r.json.data.needs_help.member.id)"
+    $r = Call-Api "PUT" "/api/v1/tasks/$d5Task/status" @{ status = "blocked"; blocker = "等宣传部出主视觉"; help_dept_id = $deptPub; help_member_id = $memId } $presToken2
+    Check "D4 人与部门不一致 -> 400" ($r.status -eq 400) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PUT" "/api/v1/tasks/$d5Task/status" @{ status = "doing"; help_dept_id = $deptPub } $presToken2
+    Check "D4 非阻塞状态带求助对象 -> 400（不静默忽略）" ($r.status -eq 400) "status=$($r.status) code=$(ErrCode $r)"
+    $r = Call-Api "PUT" "/api/v1/tasks/$d5Task/status" @{ status = "blocked"; blocker = "等宣传部出主视觉"; help_member_id = $newId } $presToken2
+    $r = Call-Api "PUT" "/api/v1/tasks/$d5Task/status" @{ status = "doing" } $presToken2
+    Check "D4 离开 blocked 自动清空求助对象" (($r.status -eq 200) -and ($null -eq $r.json.data.needs_help)) "needs_help=$($r.json.data.needs_help)"
+    # 部长首页带上「本部门别人的阻塞项」（设计规格 P03「部长在首页即可看到这条」）
+    $r = Call-Api "PUT" "/api/v1/tasks/$d5Task/status" @{ status = "blocked"; blocker = "等宣传部出主视觉"; help_member_id = $newId } $presToken2
+    $r = Call-Api "GET" "/api/v1/tasks/mine" $null $leadToken
+    $borrowedInBlocked = @($r.json.data.blocked | Where-Object { $_.owner.id -ne $leadId })
+    Check "D4 部长首页出现本部门别人负责的阻塞项" ($borrowedInBlocked.Count -ge 1) "borrowed=$($borrowedInBlocked.Count)"
+    Check "D4 counts.borrowed_blocked 与之一致" ($r.json.data.counts.borrowed_blocked -eq $borrowedInBlocked.Count) "counts=$($r.json.data.counts.borrowed_blocked) 实际=$($borrowedInBlocked.Count)"
+    # P0（队友复验，2026-09-16）：首页「阻塞中」每张卡都要自带 blocker，
+    # 否则客户端要显示规格 P01 的阻塞原因高亮块，就得为每张卡再打一次详情接口。
+    $noBlocker = @($r.json.data.blocked | Where-Object { [string]::IsNullOrEmpty($_.blocker) })
+    Check "P0 首页「阻塞中」卡片全带 blocker（不必再打详情）" ($noBlocker.Count -eq 0) "缺 blocker 的卡片数=$($noBlocker.Count)"
+    Check "P0 blocker 内容正确（不是空串/占位）" (@($r.json.data.blocked | Where-Object { $_.blocker -eq "等宣传部出主视觉" }).Count -ge 1)
+    # 非阻塞任务给 null（不是空串），客户端据此决定渲不渲染那一块
+    $r = Call-Api "POST" "/api/v1/tasks" @{ title = "P0 非阻塞探针"; owner_id = $memId } $presToken2
+    $p0Task = $r.json.data.task.id
+    Check "P0 非阻塞任务 blocker=null" ($null -eq $r.json.data.task.blocker) "blocker=[$($r.json.data.task.blocker)]"
+    $r = Call-Api "DELETE" "/api/v1/tasks/$p0Task" $null $presToken2
+    Check "P0 探针清理 -> 200" ($r.status -eq 200) "status=$($r.status)"
+    # 反证：普通成员（非部长）的首页不带 borrowed
+    $r = Call-Api "GET" "/api/v1/tasks/mine" $null $memToken
+    Check "D4 普通成员首页 borrowed_blocked=0" ($r.json.data.counts.borrowed_blocked -eq 0) "counts=$($r.json.data.counts.borrowed_blocked)"
+
+    # --- D-7：成员详情身份卡三个计数（未完成 / 逾期 / 已完成）都由服务端给 ---
+    $r = Call-Api "GET" "/api/v1/members/$memId" $null $presToken2
+    Check "D7 详情有 open_tasks" ($null -ne $r.json.data.stats.open_tasks)
+    Check "D7 详情有 overdue_tasks（原先没有）" ($null -ne $r.json.data.stats.overdue_tasks) "stats=$($r.json.data.stats | ConvertTo-Json -Compress)"
+    Check "D7 详情有 done_tasks（原先没有）" ($null -ne $r.json.data.stats.done_tasks)
+    Check "D7 未完成 + 已完成 = 总数" (($r.json.data.stats.open_tasks + $r.json.data.stats.done_tasks) -eq $r.json.data.stats.owned_tasks) "open=$($r.json.data.stats.open_tasks) done=$($r.json.data.stats.done_tasks) owned=$($r.json.data.stats.owned_tasks)"
+    Check "D7 逾期数 <= 未完成数" ($r.json.data.stats.overdue_tasks -le $r.json.data.stats.open_tasks)
+    # 收尾：把 D5/D4 探针任务删掉，别把脏数据留给后面的断言
+    $r = Call-Api "DELETE" "/api/v1/tasks/$d5Task" $null $presToken2
+    Check "D5 探针清理 -> 200" ($r.status -eq 200) "status=$($r.status)"
 
     # ---------- 25. 注册口令节流（按 IP + 递增退避，N-6） ----------
     # 放在最后一段：它会把本机 IP 锁住，之后再打注册都会 429。

@@ -165,9 +165,23 @@ func roleAllows(role: String, a: Action, t: Target): Bool {
 
 /* 部门范围维度。 */
 func scopeAllows(m: Member, a: Action, t: Target): Bool {
-    /* 名录全社团可见——这是"社团里有哪些人"这个问题的答案（api-design §3.2） */
+    /*
+     * **读**范围对全体 active 成员开放（2026-09-16，按 UI 设计规格 D-3）。
+     *
+     * 名录（ViewMembers）与任务 / 课题（ViewTasks）都是「全社团可见」：
+     *   · P06 成员名录副行「共 42 位 · 全社团可见」；
+     *   · P02 任务列表副行「共 38 项 · 全社团范围可见」，卡片本身是别的部门的任务；
+     *   · P04 课题树用「全部」筛出**非本部门**的课题；
+     *   · P03「部长在首页即可看到这条」——跨部门可见。
+     * 原先只有名录放开（v1-scope §3.4.3 写「任务/课题：部长及以下本部门」），
+     * 本次按设计稿放开，两份文档已同步。
+     *
+     * ⚠ 放开的只是**读**。写（改状态 / 编辑 / 删除 / 移动 / 分配）仍走下面的
+     *   部门、创建人、负责人判定 —— 否则会推翻 P05/P07 的「处置动作按档位」模型。
+     */
     match (a) {
         case ViewMembers => return true
+        case ViewTasks => return true
         case _ => ()
     }
     if (m.role == "president" || m.role == "vice_president") {

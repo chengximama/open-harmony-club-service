@@ -4,9 +4,9 @@
 
 - 更新时间：**2026-09-15**
 - 工作区：`E:\harmonyOS\cangjie_web`
-- 设计阶段：**已完成，接口冻结**（39 / 39）
+- 设计阶段：**已完成，接口冻结**（40 / 40，2026-09-16 新增招募链接公开解析 +1）
 - **当前阶段：服务端全部完成并验证**（M1–M11，含三轮独立代码评审修复 + 轻舟升级/CangDB 适配 + 容量基准与四项性能改造 + 第四轮复验的 6 条安全/一致性修复）；**客户端技术栈定为 ArkTS，已接入组内上传的成员模块 3 页并能编译打包（未签名、未接接口）** —— 见 `client-build.md`
-- 三套测试基线：**单测 398 / 冒烟 362 / TLS 22 全绿**（跑法见 `README.md` 顶部；容量基准 `server/tests/bench.ps1` 按需跑，见 `capacity-baseline.md`）
+- 三套测试基线：**单测 456 / 冒烟 412 / TLS 22 全绿（另加前后端契约 30）**（跑法见 `README.md` 顶部；容量基准 `server/tests/bench.ps1` 按需跑，见 `capacity-baseline.md`）
 
 > §8、§9 是**设计阶段**给出的开工建议与待问问题，现已全部执行完，保留作方法论参考；
 > §11 记录服务端从 M1 到 M11 的实际进展，**数字以那里的最新一条为准**。
@@ -80,7 +80,8 @@ $src  = Get-ChildItem "E:\harmonyOS\cangjie_web\server\src\*.cj" | ForEach-Objec
 | 文档 | 用途 | 什么时候看 |
 | --- | --- | --- |
 | `v1-scope.md` | **范围基准** v0.10：11 页面、6 张表、19 条业务规则、权限矩阵 | 想知道"这个要不要做" |
-| `api-design.md` | **完整接口设计** Part 1–6，39 个接口逐条定义 | **写服务端时全程对照** |
+| **`ui-spec-conformance-review.md`** | **UI 设计规格（13 页 PDF）↔ 服务端一致性审计**：15 条差异逐条带页码原话与 `文件:行` 证据、4 条设计稿自相矛盾、已对齐清单、处置口径 | **动服务端契约前先看这个**——尤其"任务/课题**读**范围已全社团、**写**范围未动"这条边界 |
+| `api-design.md` | **完整接口设计** Part 1–6，40 个接口逐条定义 | **写服务端时全程对照** |
 | `frontend-brief.md` | **前端对接精简版**：页面清单、通用约定、错误码、**5 件必知事项** | **客户端同事先看这个** |
 | **`client-build.md`** | **客户端构建与现状**：ArkTS 构建命令、两个环境坑、迁移记录、剩余 TODO | **动客户端前先看这个** |
 | **`client-integration-review{,-2,-3}.md`** | **客户端接入适配检查（三轮，待办清单）**：PR #2 的接口与信封 · PR #3/#4 的导航与孤立页 · PR #5/#6/#7 的构建阻塞与 Tab 占位 | **客户端同学改代码前必看** |
@@ -128,7 +129,7 @@ $src  = Get-ChildItem "E:\harmonyOS\cangjie_web\server\src\*.cj" | ForEach-Objec
     具体见 `frontend-brief.md`。
 - 组织固定 4 个：主席团 · 课题部 · 运营部 · 宣传部
 
-### 4.4 接口（39 个）
+### 4.4 接口（40 个）
 
 按模块：认证 5 · 组织与成员 19 · 任务 8 · 课题 6 · 运维 1。**完整定义见 `api-design.md`。**
 
@@ -164,7 +165,7 @@ $src  = Get-ChildItem "E:\harmonyOS\cangjie_web\server\src\*.cj" | ForEach-Objec
 | 事实 | 说明 |
 | --- | --- |
 | **TLS 可用** | TLS 1.2/1.3 握手成功；TLS 1.0/1.1 **被服务端拒绝**（alert 70）；HTTPS 请求返回 200 |
-| **三套测试全绿** | 单测 **398** / 冒烟 **362** / TLS **22**（2026-09-15；跑法见 `README.md`） |
+| **三套测试全绿** | 单测 **456** / 冒烟 **412** / TLS **22**（2026-09-16；跑法见 `README.md`），另加前后端契约 **30** |
 | **容量（近千人规模）** | 1000 成员 + 1000 任务（0.51 MB 库）：列表 30 ms 级、写 30 ms 级、4 并发登录 0.9 s；3000 + 3000（1.54 MB）分别约 45 / 48 ms 与 0.98 s。单机单进程**够用**；重新设计的阈值是 `db.json > 20 MB` 或日均写数千次 —— 全部实测见 `capacity-baseline.md` |
 | **部署文件集** | **制品 5 个 / 约 18.8 MB**：`club-server.exe` + `libcangjie-runtime.dll` + `libboundscheck.dll` + `libcrypto-3-x64.dll` + `libssl-3-x64.dll`（证书 2、启动脚本 2、`README.txt`、`dll-versions.txt` 另计 —— 整个 `dist\club-server\` 共 10 个文件）；由 `server/build-package.ps1` 生成 |
 | **运行时只需 2 个 DLL** | runtime 目录有 51 个，只需 `libcangjie-runtime.dll` 与 `libboundscheck.dll` |
@@ -313,9 +314,11 @@ $src  = Get-ChildItem "E:\harmonyOS\cangjie_web\server\src\*.cj" | ForEach-Objec
 | M9 | **升级轻舟到 `3ea387e` + 适配 CangDB 缺失的 RBAC 层**：上游 `141a735` 修好 DEF-1 → 本地补丁撤销；框架新增的 `src/store.cj` / `src/rbac.cj` 依赖 CangDB（上游仓只有 README、没有代码）→ 用 `server/src/fw_rbac_store.cj`（文件存储的数据层）+ `fw_rbac.cj`（`requirePermission` 中间件、我们的错误格式）替代，`build.ps1` 排除框架原版 | ✅ **已完成并验证**（提交 `d77c500`）：撤补丁后 TLS 关卡重跑 **22 / 0 全绿**；当轮基线 **单测 322 / 冒烟 347 / TLS 22**。拿得到可用 CangDB 后，删掉两个适配文件、从排除列表去掉 `store.cj` / `rbac.cj` 即可回到上游原版 |
 | M10 | **容量基准与四项性能改造**（`docs/capacity-baseline.md`）：新增可复现基准 `server/tests/bench.ps1`（真实 HTTP，可与 `git worktree` 旧提交对比）；排序插入→堆 · PBKDF2 移出锁 · 令牌回收 · 整库落盘移出锁 | ✅ **已完成并验证**（提交 `f47088f`）：4 并发登录 **1574 → 867 ms**（串行因子 0.99 → 0.56）是唯一有量级收益的一项；排序与落盘在千人档落在噪声内，价值是**最坏情况下界**与**库变大后的锁占用** —— 文档里已如实写明。当轮基线 **单测 349 / 冒烟 347 / TLS 22 全绿**（2026-09-15） |
 | M11 | `docs/code-review.md` **第四轮复验**：6 条新发现（**N-14** 本机判定子串匹配 `::1` → 远程 IPv6 可关停服务 · **N-15** 被 4xx 拒绝却留半改状态并落盘 · **N-16** 登录时序侧信道可枚举手机号 · **N-17** 审计 IO 在锁内 · **N-18** 任务可挂任意部门课题 · **N-19** 招募 token 仅 32 位），另指出 `/admin/shutdown` 缺反例断言 | ✅ **已完成并验证**：6 条全修 + 补 3 组单测闸门与 1 段冒烟闸门。**N-16 时间表：修复前 388/382/431 ms 对 28/29/30 ms（13×），修复后 486/453/453 对 433/484/464（≈1.0×）**。当前基线 **单测 387 / 冒烟 360 / TLS 22 全绿**（2026-09-15） |
+| M12 | **按《鸿蒙俱乐部-全场景UI设计规格》对齐服务端**（13 页 PDF 逐条对照，报告见 `docs/ui-spec-conformance-review.md`）。按决定落地 8 条（含队友复验补的 2 条）：**D-1** 权限摘要补 5 个管理布尔（`manage_depts` / `view_register_code` / `change_register_code` / `manage_invite_links` / `transfer_presidency`，**全部由 `can()` 推导**）· **D-2** `GET /members?q=` 按姓名或部门名搜索（手机号不参与，隐私最小化）· **D-3** 任务/课题**读**范围放开到全社团（`view_scope` 对 active 统一 `all`；**写**范围一字未改）· **D-4** 阻塞任务的**求助对象** `needs_help`（进 blocked 时可带 `help_dept_id` / `help_member_id`，离开自动清空）+ 部长/副部长首页带出本部门阻塞项（`counts.borrowed_blocked`）· **D-5** `TaskBrief.overdue_days`（本地日界差）· **D-7** 成员详情 `stats` 补 `done_tasks` / `overdue_tasks` | ✅ **已完成并验证**：`Task` 加两个字段（旧库无需迁移，`reqIntOr` 容错）；三处旧断言按新口径更新，并补"回退即变红"闸门（单测 +45、冒烟 +35）。当前基线 **单测 456 / 冒烟 412 / TLS 22 / 契约 30 全绿**（2026-09-16）。其余 8 条差异（D-6 / D-8~D-14）**按决定保留原版本**；**D-15（首页阻塞原因）/ D-16（招募链接预填闭环，接口 39→40）**为队友复验后追加 |
 
-**接口进度 39 / 39**：认证 5 · 组织与成员 19 · 任务 8 · 课题 6（= 38 个业务接口）+ 运维 `/health`。
-（早期写「38 / 39」是把 `/health` 漏算了；另有一个不在接口清单里的公开落地页 `GET /join/{token}`。）
+**接口进度 40 / 40**：认证 5 · 组织与成员 20 · 任务 8 · 课题 6（= 39 个业务接口）+ 运维 `/health`。
+（早期写「38 / 39」是把 `/health` 漏算了；2026-09-16 新增 `GET /api/v1/join/{token}`（D-16）后为 40。
+另有一个**不在接口清单里**的公开 HTML 落地页 `GET /join/{token}`。）
 
 #### ✅ 环境故障已定位并已规避（2026-09-13 晚）
 
@@ -380,7 +383,7 @@ Set-Location E:\harmonyOS\cangjie_web
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
 | 页面 | **3 / 11** | 成员名录 · 待分配审批 · 管理；**缺首页「我的任务」** |
-| 接口 | **0 / 39** | 页面全是假数据，**没有任何网络层**（grep `http\|api/v1\|token` → 0 命中） |
+| 接口 | **0 / 40** | 页面全是假数据，**没有任何网络层**（grep `http\|api/v1\|token` → 0 命中） |
 | 构建 | ✅ 通过 | `hvigorw assembleHap` → BUILD SUCCESSFUL（清空 `build` 干净重建同样通过） |
 | 签名 | ❌ 未配 | 产物是 unsigned，**装不上设备** |
 | 真机 | 未验证 | `hdc list targets` 为空；模拟器镜像有 6.1.1 / 7.0.0 |
@@ -415,7 +418,7 @@ Set-Location E:\harmonyOS\cangjie_web
 #### E. 接口与错误码
 
 精简版看 `frontend-brief.md`（页面清单 / 通用约定 / 错误码 / **5 件必知事项**），
-完整定义看 `api-design.md`。**接口已冻结（39 / 39），要改先提出来。**
+完整定义看 `api-design.md`。**接口已冻结（40 / 40），要改先提出来。**
 
 **要能处理这几类"看起来像 bug 的 403 / 429"**（都属于服务端设计，不是缺陷）：
 
