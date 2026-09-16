@@ -32,6 +32,17 @@ package qingzhou
  *   · 原版 role_permissions 是一张 JOIN 表；本实现内部用 HashMap<roleId, Array<permId>>
  *     表达同一事实（对外 API 不暴露该表，行为一致）
  *   · close() 在原版是关库；本实现是"落盘 + 无操作"（文件存储没有连接可关）
+ *
+ * 另外两条读码时最容易误会的地方（2026-09-16 补记）
+ *   · **种子口令哈希不是我们那套**：`seed()` 里的 admin/user 用的是轻舟 `security.cj` 的
+ *     `hashPassword`（迭代 SHA-256、格式 `salt$rounds$hash`），**不是** `server/src/auth.cj`
+ *     的 `pbkdf2Sha256`（PBKDF2-HMAC-SHA256）。所以那两条种子记录**用 `verifyPw` 验不了**，
+ *     反之亦然 —— 两套口令体系并存，别交叉调用。`Member` 表走 PBKDF2，这里只服务
+ *     轻舟 RBAC 自己的 `findUserByUsername` / `hasPermission`。
+ *   · **灌种子的判据是"文件不存在"**，不是"roles 为空"（见 `init` 的注释）：
+ *     文件存在但内容为空时**保持为空**（fail closed），绝不重建种子覆盖用户数据。
+ *   · `nextUserId()` 取 `max(id) + 1`，与 AUTOINCREMENT 不同：删掉最大 id 后再建用户会**复用**该 id。
+ *     本层目前没有审计/引用它的地方，故未改；若将来被真正用起来，应改成持久化计数器。
  */
 
 import std.collection.*
@@ -86,11 +97,25 @@ public class RbacStore {
 
     public init(path: String) {
         this.path = path
-        if (exists(path)) {
+        /*
+         * 灌种子的判据是「**文件不存在**」，不是「roles 为空」（2026-09-16 修）。
+         *
+         * 原先写的是 `if (exists(path)) { load() }` 之后再 `if (roles.size == 0) { seed(); save() }`，
+         * 于是有一种会**静默覆盖真实数据**的组合：
+         *   文件存在（甚至解析成功）但 `roles` 键缺失或为空 —— 例如手工编辑过、
+         *   或将来某次改动把键名写错 —— roles.size == 0 被判成"首次打开"，
+         *   接着 seed() + save() 把种子数据写回去，**用户真实数据就没了**。
+         * 文件存在却读不出内容，正确的反应是「保持为空、交给调用方判断」（fail closed），
+         * 而不是替用户重建一份。
+         *
+         * 注意 `load()` 对**解析失败**已经是 fail-fast（抛异常拒绝启动），
+         * 这里补的是"解析成功但内容为空"这条缝。
+         */
+        let fresh = !exists(path)
+        if (!fresh) {
             load()
         }
-        /* 首次打开才灌种子数据（与原版一致：admin/admin123、user/user123） */
-        if (roles.size == 0) {
+        if (fresh) {
             seed()
             save()
         }

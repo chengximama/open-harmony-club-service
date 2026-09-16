@@ -146,6 +146,7 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 | 11 | 无 BOM 的 UTF-8 `.ps1` 按 **ANSI** 解析 | 中文注释会导致 `Missing closing '}'` 之类的**假语法错**。脚本必须存为 **UTF-8 with BOM** |
 | 12 | 执行策略默认禁止跑脚本 | `powershell -NoProfile -ExecutionPolicy Bypass -File xxx.ps1` |
 | 13 | 非 2xx 响应读不到 body | `Invoke-WebRequest` 已把流读走，`GetResponseStream()` 拿到空串。用 `$_.ErrorDetails.Message` |
+| 33 | **单测的 cwd 必须是 `server/`**（2026-09-16 踩到） | `tests.cj` 里的数据目录写的是 `build/test-data*`，所以要在 `server/` 下执行 `.\build\club-server.exe test`（README 的口径）。若在 `server/build/` 里执行，数据会被写到嵌套的 `build/build/test-data*`，**并且在残留坏数据后第二次运行直接崩在 `testStore`**。这个坑已顺手修掉（`testStore` 现在会先清派生子目录，连跑三次稳定通过），但**cwd 仍必须是 `server/`** |
 | 14 | `Start-Process -PassThru` 拿不到 `ExitCode` | 用"进程自行退出 + 日志收尾行"作为优雅关闭的证据 |
 | 15 | `$args` 是自动变量 | 函数里不要用 `$args` 做局部变量名 |
 | 16 | **`-Body` 传字符串会按 ANSI 发送** | 中文请求体到达服务端就是乱码（表现为"改名字成功了但名字没变"）。必须 `[System.Text.Encoding]::UTF8.GetBytes($json)` + `Content-Type: application/json; charset=utf-8` |

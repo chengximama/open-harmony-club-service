@@ -160,7 +160,7 @@ func testIds(t: TR): Unit {
     t.eqs("密码 32 位 ASCII 合法（上界）", passwordError(randHex(16)), "")
     t.ok("密码 7 位 → 拒（下界）", passwordError("abc1234").size > 0)
     t.ok("密码 33 位 → 拒（上界，原先没有上限）", passwordError("a" + randHex(16)).size > 0)
-    t.ok("密码含中文 → 拒（字符集；12 字节本来在长度区间内）", passwordError("密码密码密码").size > 0)
+    t.ok("密码含中文 → 拒（字符集；18 字节本来在长度区间内）", passwordError("密码密码密码").size > 0)
     t.ok("密码含空格 → 拒（不可见字符）", passwordError("abc 1234").size > 0)
     t.ok("密码含全角字符 → 拒（字符集）", passwordError("ａｂｃ12345").size > 0)
     t.eqs("密码含符号 ._/\\-! 合法", passwordError("Abc123._/\\-!"), "")
@@ -228,6 +228,21 @@ func testStore(t: TR): Unit {
     let dir = "build/test-data"
     if (exists(dir)) {
         remove(dir, recursive: true)
+    }
+    /*
+     * 派生目录也必须清（2026-09-16 修）。
+     *
+     * 下面的 M-7 / N-5 / 空 token 三块都是同一个套路：先建库 → **往 db.json 写坏数据** →
+     * 断言 storeLoad 拒绝启动。坏数据是**故意留在磁盘上**的（这块测试的产物），
+     * 于是**不重新编译就连跑两次单测，第二次会在这个目录上先 `storeLoad` 直接抛异常**，
+     * 整个测试进程崩掉 —— 报出来的还是"数据文件损坏"，看着像真 bug。
+     * 违反的正是项目自己的测试标准："isolated setup/teardown；不依赖外部状态"。
+     * （之前一直没暴露：跑测试前若执行过 `build.ps1`，它会重建 build/ 顺带清掉这些目录。）
+     */
+    for (d in ["build/test-data-m7", "build/test-data-n5", "build/test-data-linkkey"]) {
+        if (exists(d)) {
+            remove(d, recursive: true)
+        }
     }
     let s = Store(dir)
 
@@ -393,6 +408,28 @@ func testStore(t: TR): Unit {
         threw3 = true
     }
     t.ok("idem 坏记录也必须报错（N-5）", threw3)
+
+    /*
+     * 2026-09-16（读码发现的一致性缺口）：**空 token 的招募链接记录也必须报错**。
+     *
+     * 三张以字符串为主键的表里，tokens / idem 都会跳过空键（于是数组条数 ≠ map 条数，
+     * `checkLoaded` 按既定口径拒绝启动），只有 `invite_links` 原先无条件 `m[token] = x` ——
+     * 空 token 被塞进 `""` 键，两条计数相等，**一条损坏记录被静默接受**
+     * （还能被 `GET /api/v1/join/` 命中）。
+     * 这条断言就是那个缺口的闸门：改回去（取消 size > 0 判断）它立刻变红。
+     */
+    let linkDir = dir + "-linkkey"
+    let goodLink = storeLoad(linkDir)
+    storeSaveNow(goodLink) /* 先建出目录，再用坏内容覆盖 db.json */
+    let badLink = "{\"version\":1,\"invite_links\":[{\"token\":\"\",\"dept_id\":1,\"enabled\":true}]}"
+    File.writeTo(goodLink.dbFile(), badLink.toArray())
+    var threw4 = false
+    try {
+        storeLoad(linkDir)
+    } catch (e: Exception) {
+        threw4 = true
+    }
+    t.ok("空 token 的招募链接也必须报错（与 tokens/idem 同口径）", threw4)
 
     /* P1 M-3：限流状态不落盘 —— 保存后 db.json 里不应出现 login_fail */
     let lf = LoginFail()
@@ -817,6 +854,36 @@ func testPart3Views(t: TR): Unit {
     let sorted = sortedMembers(s, picked)
     t.eqs("成员排序：主席团(sort0) 最前", sorted[0].name, "会长")
     t.eqs("成员排序：未分配部门最后", sorted[sorted.size - 1].name, "新人")
+
+    /*
+     * 2026-09-16（读码发现的口径裂缝）：**未分配部门的哨兵必须大于 SORT_MAX**。
+     *
+     * 原先 `sortedMembers` 把哨兵写死成 999，而 sort 的合法上界是 10000（SORT_MAX）——
+     * 于是只要有一个部门的 sort ≥ 999，未分配成员就会排到它**前面**，
+     * 与上面那条"未分配部门最后"的断言在小数据量下看不出、一到真实数据就相反。
+     * 这里造一个 sort=1000 的部门（客户端可以显式传，合法），再加一个该部门的成员：
+     * 旧写法下 `新人`（哨兵 999）会排在他前面 → 这条断言变红。
+     */
+    let dHigh = Department()
+    dHigh.id = 9
+    dHigh.name = "排序靠后的部门"
+    dHigh.sort = 1000
+    s.departments[9] = dHigh
+    let inHigh = Member()
+    inHigh.id = 9
+    inHigh.name = "靠后部门成员"
+    inHigh.role = "member"
+    inHigh.dept_id = 9
+    inHigh.status = "active"
+    s.members[9] = inHigh
+    let picked2 = ArrayList<Member>()
+    picked2.add(s.members[5])   /* 未分配（dept 0）*/
+    picked2.add(s.members[9])   /* sort=1000 的部门 */
+    let sorted2 = sortedMembers(s, picked2)
+    t.eqs("成员排序：sort=1000 的部门排在未分配之前", sorted2[0].name, "靠后部门成员")
+    t.eqs("成员排序：未分配仍然最后（哨兵 > SORT_MAX）", sorted2[1].name, "新人")
+    s.departments.remove(9)
+    s.members.remove(9)
 
     /* 成员详情：计数摘要 */
     let task = Task()
@@ -1498,6 +1565,30 @@ func testRbacAdaptation(t: TR): Unit {
     t.eqi("删除后用户数=2", st3.listUsers().size, 2)
     st3.close()
 
+    /*
+     * 2026-09-16（读码发现的数据安全缺口）：**文件存在但内容为空时绝不能重建种子**。
+     *
+     * `init` 原先用 `roles.size == 0` 判"首次打开"，于是"文件在、但 roles 键缺失或为空"
+     * （手工编辑过、或将来键名写错）会被当成首次打开 → seed() + save() →
+     * **用户真实数据被种子覆盖**。现在判据改成"文件不存在"，此断言即其闸门。
+     */
+    let emptyDir = "test-data-rbac-empty"
+    if (exists(emptyDir)) {
+        remove(emptyDir, recursive: true)
+    }
+    Directory.create(emptyDir, recursive: true)
+    let emptyPath = "${emptyDir}/rbac.json"
+    File.writeTo(emptyPath, "{\"users\":[],\"roles\":[],\"permissions\":[],\"role_permissions\":[]}".toArray())
+    let before = String.fromUtf8(File.readFrom(emptyPath))
+    let stEmpty = RbacStore(emptyPath)
+    let after = String.fromUtf8(File.readFrom(emptyPath))
+    t.eqi("RbacStore：roles 为空的既有文件 → 不灌种子（角色数 0）", stEmpty.listRoles().size, 0)
+    t.ok("RbacStore：roles 为空的既有文件 → 内容未被覆盖", before == after)
+    stEmpty.close()
+    if (exists(emptyDir)) {
+        remove(emptyDir, recursive: true)
+    }
+
     if (exists(dir)) {
         remove(dir, recursive: true)
     }
@@ -1567,8 +1658,12 @@ func testTokenPrune(t: TR): Unit {
     }
     let s = Store(dir)
     let now: Int64 = 1789898400
-    /* 用 2286 年当"永不过期"，避免测试依赖真实时钟（issueToken 内部会取 nowEpoch） */
-    let far = 9999999999999
+    /* 用 2286 年当"永不过期"，避免测试依赖真实时钟（issueToken 内部会取 nowEpoch）。
+     * 2026-09-16 订正：原先写的是 9999999999999（13 个 9，约公元 318857 年），
+     * 与注释里的 2286 年对不上，而且超出了 .NET DateTimeOffset 的表示范围 ——
+     * 本项目的时间换算虽是自实现、跑得动，但一个"注释说 2286、实际是 31 万年"的常量
+     * 迟早会误导人。10 个 9 = 9999999999 ≈ 2286-11-21，才是注释说的那个值。 */
+    let far = 9999999999
 
     for (i in 1..=3) {
         let r = TokenRecord()
