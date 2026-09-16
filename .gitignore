@@ -2,6 +2,8 @@
 /oh_modules
 /local.properties
 /.idea
+# 编辑器个人设置（VS Code：autoSave、TS 校验开关之类，与本项目无关）
+/.vscode
 **/build
 /.hvigor
 .cxx

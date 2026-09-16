@@ -31,7 +31,7 @@
 | 平台 | Windows x64 |
 | 编译器 | cjc **1.1.3** (cjnative)，`D:\Cangjie` |
 | stdx | **1.1.3.1**，`static` 静态链接进 exe |
-| 轻舟 | `E:\cangjie\qingzhou` @ **`3ea387e`**（**不需要任何补丁**；原 DEF-1 补丁已随上游 `141a735` 撤销，见第 4 节） |
+| 轻舟 | **随仓库内置**：`server\third_party\qingzhou`（上游 `3ea387e`，见其中的 `UPSTREAM_COMMIT` / `PROVENANCE.md`；构建时由 `MANIFEST.sha256` 校验内容）。**不需要任何补丁**（原 DEF-1 补丁已随上游 `141a735` 撤销，见第 4 节） |
 | 编译产物 | `club-server.exe`（本文早期写作 `main.exe`，已更名；由 `server\build.ps1` 产出） |
 | 编译命令 | 第 4 节，**本机已实测通过** |
 

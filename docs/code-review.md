@@ -850,7 +850,7 @@ Select-String -Path server\src\h_*.cj -Pattern '(tgt|actor|m)\.(role|status|dept
 | --- | --- |
 | 复验对象 | `f47088f`（四项性能改造）及其后的未提交文档改动 |
 | 复验方式 | 重跑三套 → **最小探针编译** → 独立实例打真实 HTTP → 逐条实测到落盘 |
-| 结论 | 前三轮 13 条**未见回退**（间接确认，见 §二）；本轮新发现 **3 条待修**（1 高 / 1 中高 / 1 中）+ **3 条提示**；另指出 **1 处测试缺口** |
+| 结论 | 前三轮 13 条**未见回退**（间接确认，见 §二）；本轮新发现 **6 条**（1 高 / 1 中高 / 1 中 / 2 低 / 1 提示）—— **已全部修复**；另指出 **1 处测试缺口**（已补）。修复之后复核方**追加 N-20**（提示：构建不自包含）—— **2026-09-16 已修**（框架内置进仓库 + `MANIFEST.sha256` 内容校验，见该条「状态」） |
 | 复核方改动 | 复验期间**未改动任何产品文件**；探针与临时数据目录已全部删除，`git status` 与复验前一致（本次追加除外） |
 
 ## 一、基线（自行重跑）
@@ -881,6 +881,10 @@ Select-String -Path server\src\h_*.cj -Pattern '(tgt|actor|m)\.(role|status|dept
 > **修复方回复（2026-09-15）**：6 条**全部已修**，勾选与逐条状态见下。新增闸门后的基线是
 > **单测 387 / 冒烟 360 / TLS 22**（原 349 / 347 / 22）。N-16 的时间表、以及两处闸门
 > **覆盖不到**的边界，见文末 §六。
+>
+> **复核方补充（2026-09-15 · 在修复之后）**：修复方处理 N-14…N-19 期间，复核方因另一个问题
+> （"轻舟源码在本仓库的分布清点"，完整结论见**附录 H**）又发现 **1 条提示 N-20**。
+> 它与已修的那 6 条**无重叠，也不在本轮修复的覆盖范围内**，因此仍为 `[ ]`。
 
 - [x] N-14 `[高]` **`isLocalPeer` 用子串匹配 `"::1"` → 远程 IPv6 客户端可远程关停服务**
 - [x] N-15 `[中高]` **请求被拒（4xx）但内存已被部分修改、且会落盘**（4 个 handler 同构）
@@ -888,6 +892,7 @@ Select-String -Path server\src\h_*.cj -Pattern '(tgt|actor|m)\.(role|status|dept
 - [x] N-17 `[低]` `audit()` 在持有全局锁时做文件 IO，与动作 4 的"IO 移出锁"口径不一致
 - [x] N-18 `[低]` `handleTaskUpdate` 允许把任务挂到**任意部门**的课题下，部门边界不严
 - [x] N-19 `[提示]` 招募链接 token 仅 32 位，落地页免认证可枚举出部门名
+- [x] N-20 `[提示]` **构建不自包含**：轻舟以机器本地路径引用，且框架版本无任何校验（**追加于修复之后**；**2026-09-16 已修**：框架内置进仓库 + 内容清单校验，见其「状态」）
 
 ### N-14 `isLocalPeer` 用子串匹配 `"::1"` → 远程 IPv6 可关停服务
 
@@ -1121,6 +1126,84 @@ let ok = found && verifyPw(pw, salt, hash, iter)
 
 建议：`randHex(4)` → 至少 `randHex(16)`，与其它 token 口径统一；`freshLinkToken` 的重试上限可不动。
 
+### N-20 构建不自包含：轻舟以机器本地路径引用，且框架版本无校验
+
+**状态**：**已修（2026-09-16）** —— 选了修法里的**第 1 档（彻底自包含）**，并额外加了内容校验：
+
+- 轻舟源码**内置**到 `server/third_party/qingzhou/`：`src/` 全 29 个 `.cj`（一个不裁，便于对照上游）
+  + `LICENSE` / `README.md` / `CHANGELOG.md` / `cjpm.toml` / `cjpm.lock` + `deps/openssl/` 两个 DLL
+  （6.74 MB；不装 `.cache/build/target`、`admin-web/docs/examples/public*` 等与编译无关的目录）；
+- 版本号**只有一处**：`third_party/qingzhou/UPSTREAM_COMMIT`（`build.ps1` 每次构建打印它，
+  `README/HANDOFF` 只引用它，不再各自复述 commit —— 直接回应了本条的"只应有一处"）；
+- **比"钉 commit"更强的一层**：`MANIFEST.sha256` 逐字节锁定内置内容，`build.ps1` 每次构建校验
+  （缺失/内容变了/多出未登记的源文件 → **拒绝构建**并提示改 `server/src/fw_rbac*.cj` 或走
+  `update-manifest.ps1`）。这样"框架被本地悄悄改过"不会再是隐式依赖；
+- `build.ps1` 的 `$QingZhou` 参数换成 `$Vendor`（默认仓库内路径），DLL 也从内置目录取。
+
+**验证（都可复现）**
+
+| 验证 | 做法 | 结果 |
+| --- | --- | --- |
+| 真的自包含 | 把仓库外的 `E:\cangjie\qingzhou` **改名藏起来**再构建 | ✅ `编译通过`（不再依赖仓库外源码） |
+| 内置副本与上游一致 | 29 个 `.cj` + 2 个 DLL 逐个 `Get-FileHash` 与上游比对 | ✅ 逐字节一致 |
+| 闸门会红 | 改动内置 `src/api.cj` 一个字节后构建 | ✅ 拒绝：`内容变了 src/api.cj`（且未输出"编译通过"） |
+| 逃生口有效 | 同上 + `-SkipFrameworkCheck` | ✅ 可编过（有意更新时用） |
+| 不是"改了框架导致的差异" | 同一脚本，`-Vendor` 指回仓库外路径再编一份 | ✅ 两份 exe 行为一致（见下条"运行期"说明） |
+
+⚠️ **本条只解决了"构建输入可复现"**：验证当天本机三套测试**没能重跑** —— 因为
+`API-NOTES.md` §5 那个 Windows 更新（KB5124010）**当天 09:35 又被装上**，所有仓颉 exe 启动即崩
+（`msvcrt!wcslen+0x4E`）。这与本条改动无关（A/B 两份 exe 崩得一模一样），
+处置见 `API-NOTES.md` §5.3 / §5.5。**卸载该更新后请重跑三套测试**。
+**位置**：`server/build.ps1:15`（`$QingZhou` 默认值）、`:32`（只查存在性）、`:57-59`（直接取用源码）
+
+**怎么发现的**：修复方处理那 6 条期间，复核方被问到"轻舟的源码现在存在本仓库的哪里"。
+顺着这条线把整个仓库清点了一遍（完整结论与可比对的命令见**附录 H**），
+确认本仓库**不含任何轻舟源码**；同时也暴露出：**构建所依赖的那份"源码"完全在仓库外，且版本不受任何约束。**
+
+**问题**：`build.ps1` 按**硬编码的机器本地路径**取用框架源码，只检查"在不在"，不检查"是哪个版本"：
+
+```powershell
+$QingZhou = "E:\cangjie\qingzhou"                                      # :15 默认值
+if (-not (Test-Path $QingZhou)) { throw "找不到轻舟源码：$QingZhou" }  # :32 只查在不在
+$fw = Get-ChildItem "$QingZhou\src\*.cj" | ...                         # :57 不查是哪个版本
+```
+
+`README.md` 与 `docs/API-NOTES.md` 里写的「轻舟 `3ea387e`」**只是文字记录，脚本不校验**。三个后果叠加：
+
+1. 换一台机器（或本地对轻舟 `git pull` 一次），构建会编到**另一个版本**的框架上，而**照样 BUILD SUCCESSFUL**；
+2. 而 `server/src/fw_rbac_store.cj` 是**跟着上游文件走的适配**——它自己的注释就写着
+   "上游再改 `store.cj` 时本文件会静默过期"；
+3. 两者叠加 = 一次**静默的"框架换了、适配没跟着换"**，症状出现在运行时或行为上，而不是编译期。
+
+这正是本报告反复记录的那类失败模式：**隐式依赖只存在于代码与记忆里**
+（与 N-5 的"8 张表里唯一的例外"、N-17 的"锁内 IO 的例外"同源）。
+它不会让今天的三套测试变红，但会让"三套测试全绿"这个结论**无法在另一台机器上复现**。
+
+**为什么定级为提示，而不是缺陷**：它不改变当前这台机器的构建结果，也不引入安全或数据问题。
+但它决定了"换台机器还能不能复现出同样的服务端"——而 `README.md` 的未决事项 #1 正是**公网服务器部署**：
+**那个部署目前没有可复制的构建输入。** 在 N-14 刚刚证明过"测试全绿 ≠ 没问题"之后，这条的份量比平时重。
+
+**修法（两档，建议至少做第 2 档）**
+
+1. **彻底自包含**：把轻舟作为 git submodule / subtree 钉在 `3ea387e`，`build.ps1` 改为引用仓库内路径。
+2. **低成本兜底**：`build.ps1` 增加版本校验——读轻舟 checkout 的 HEAD，与脚本里写死的期望值比对，
+   不符就报错退出：
+
+```powershell
+# 与 README / API-NOTES 的记录保持同一处真相；改期望值前先核对 fw_rbac*.cj 是否需同步
+$ExpectedFw = "3ea387e"
+$actual = (& git -C $QingZhou rev-parse --short HEAD 2>$null)
+if ($LASTEXITCODE -ne 0 -or $actual -ne $ExpectedFw) {
+    throw "轻舟版本不符：期望 $ExpectedFw，实际 '$actual'。fw_rbac_store.cj / fw_rbac.cj 跟着上游文件走，请先核对。"
+}
+```
+
+> 注意 `$ExpectedFw` **只应有一处**（`build.ps1`），`README.md` / `API-NOTES.md` 里的那句话改成引用它 ——
+> 否则又会变成"同一个数字在三个文件里各写各的"，那正是 **N-4** 的模式。
+
+**验证方式**：把 `$ExpectedFw` 故意改成 `deadbeef`，`build.ps1` 必须**拒绝构建**；改回后必须能编过。
+与本轮其它条一样，这条也要能**因回退而变红**。
+
 ## 四、测试缺口（一条，值得单列）
 
 **`/admin/shutdown` 缺反例断言** —— N-14 正是从这里逃逸的。
@@ -1216,6 +1299,83 @@ Select-String -Path server\src\h_*.cj -Pattern '^\s*(tgt|d|t|p|cur)\.\w+\s*=' -E
 
 ```powershell
 Select-String -Path server\src\*.cj -Pattern 'peerOf|clientIpOf|containsAscii|isLocalPeer' -Encoding UTF8
+```
+
+## 附录 H · 轻舟源码在本仓库的分布清点（2026-09-15）
+
+> **2026-09-16 更新**：本附录的结论（"本仓库不含任何轻舟源码"）**已被 N-20 的修复取代** ——
+> 框架现已**内置**在 `server/third_party/qingzhou/`（29 个源文件 + LICENSE 等材料 +
+> `deps/openssl` 两个 DLL，共 6.74 MB；内容由 `MANIFEST.sha256` 校验，`build.ps1` 每次构建都验）。
+> 本附录保留作为**修复前**的证据，下面这些命令的"预期值"已不再成立。
+
+**问题**：轻舟的源码现在存在本仓库的哪里？
+
+**答案：本仓库不含任何轻舟源码。** 与之相关的只有 3 处，且都不是源代码本体：
+
+| 类型 | 位置 | 大小 | 说明 |
+| --- | --- | --- | --- |
+| **改写自轻舟的适配** | `server/src/fw_rbac_store.cj` | 14,060 B | 对应轻舟 `src/store.cj`（8,170 B）；数据层 CangDB → 文件存储 |
+| **改写自轻舟的适配** | `server/src/fw_rbac.cj` | 2,276 B | 对应轻舟 `src/rbac.cj`（1,549 B）；响应壳 `{code,message,data}` → `{ok,error}` |
+| **编译产物（非源码）** | `server/build/qingzhou.cjo` | 554,560 B | cjc 同包编译产生的包对象文件；**未被 git 跟踪**（`build/` 在 `.gitignore`） |
+
+两个最容易误判的干扰项：
+
+1. **23 个 `.cj` 全都写 `package qingzhou`。** 这是轻舟规定的用法（框架源码与业务代码同一次调用、
+   同一个包编译，`build.ps1` 就是这么做的），**不代表它们是轻舟的文件**。全部 23 个都在 `server/src/`；
+   `server/src` 之外**一个 `.cj` 都没有**。
+2. **有三个文件与轻舟同名。** 逐字节比对后内容完全不同 —— 它们是社团项目自己的代码：
+
+```
+auth.cj    本仓库 8,276 B | 轻舟 2,590 B  | 内容相同: False
+main.cj    本仓库 17,515 B | 轻舟 11,901 B | 内容相同: False
+store.cj   本仓库 47,813 B | 轻舟 8,170 B  | 内容相同: False
+```
+
+**git 历史里也从未提交过轻舟源码。** 历史上路径含 `qingzhou` 的只有两个**文档**（不是源码），
+已在 `be53c02`（`chore: 整理仓库——对外材料移出`）移出仓库：
+
+```
+docs/qingzhou-tls-requirement.md
+docs/qingzhou-tls-verification.md
+```
+
+`README.md` 记录它们现在在仓库上层的 `E:\harmonyOS\cangjie-upstream\`（仓库外）。
+
+**真正的轻舟源码在哪**：仓库外 `E:\cangjie\qingzhou\src\*.cj`，由 `build.ps1` 引用并**排除 5 个文件**：
+
+```
+main.cj, unit_tests.cj, manual_runner.cj, store.cj, rbac.cj
+```
+
+后两个正是被上表两个 `fw_*.cj` 顶替的 —— 因为上游 `store.cj` 头部写着 `import cangdb.*`，
+而 CangDB 上游仓只有 README、没有代码。**这个"仓库外路径 + 无版本校验"就是 N-20。**
+
+**清点用的命令**（下次不必重新推导）
+
+```powershell
+cd E:\harmonyOS\cangjie_web
+
+# 1) 全仓库 .cj 都在哪（预期：只有 server\src 下的 23 个）
+Get-ChildItem -Recurse -File -Filter *.cj -Force |
+  Where-Object { $_.FullName -notmatch '\\\.git\\' } |
+  ForEach-Object { $_.FullName.Replace((Get-Location).Path + '\','') }
+
+# 2) 名字含 qingzhou 的（预期：只有 server\build\qingzhou.cjo，且 git 里查不到）
+Get-ChildItem -Recurse -Force | Where-Object { $_.Name -match 'qingzhou|轻舟' }
+git ls-files | Select-String -Pattern 'qingzhou'
+
+# 3) 与轻舟同名文件逐字节比对（预期：三个都 False）
+Get-ChildItem server\src\*.cj | ForEach-Object {
+  $t = Join-Path "E:\cangjie\qingzhou\src" $_.Name
+  if (Test-Path $t) {
+    "{0} 本仓库 {1} | 轻舟 {2} | 相同: {3}" -f $_.Name, $_.Length, (Get-Item $t).Length,
+      ((Get-FileHash $_.FullName).Hash -eq (Get-FileHash $t).Hash)
+  }
+}
+
+# 4) 历史上有没有 qingzhou 相关路径（预期：只有两个已移出的文档）
+git log --all --name-only --pretty=format: |
+  Where-Object { $_ -match 'qingzhou' } | Sort-Object -Unique
 ```
 
 ---

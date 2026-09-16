@@ -147,7 +147,7 @@ git worktree remove --force ..\bench-old
 
 **为什么"响应 200 ⇒ 已落盘"这条强语义还在**（这是当初把 IO 放进锁里的理由，不能丢）：
 轻舟的 `AppHandler.handle` 是**先跑完整条中间件链（含 handler）、最后才 `ctx.commit()` 真正写 socket**
-（`qingzhou/src/compose.cj:83-101`、`context.cj:426`）。
+（`server/third_party/qingzhou/src/compose.cj:83-101`、`context.cj:426`）。
 `snapshotFlush` 挂在 router **之前**，`next()` 返回时 handler 已经解锁，而 `ctx.commit()` 还没发生：
 
 ```

@@ -129,8 +129,8 @@ cd build
 | --- | --- |
 | 编译器 | `D:\Cangjie\bin\cjc.exe` —— **1.1.3** (cjnative, x86_64-w64-mingw32) |
 | stdx | `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` —— **1.1.3.1** |
-| 轻舟源码 | `E:\cangjie\qingzhou` —— commit **`3ea387e`**（2026-09-14 升级；**DEF-1 已由上游 `141a735` 修复，我们的本地补丁已撤**） |
-| OpenSSL 3 | `E:\cangjie\qingzhou\deps\openssl\` 下两个 DLL |
+| 轻舟框架 | **已内置在本仓库**：`server/third_party/qingzhou`（上游 commit 记在其中的 `UPSTREAM_COMMIT`，内容由 `MANIFEST.sha256` 逐字节校验、`build.ps1` 每次构建都验）。2026-09-15 迁移 —— 原先指仓库外 `E:\cangjie\qingzhou`，换台机器就编不了、或静默编到别的版本（`docs/code-review.md` N-20）。DEF-1 已由上游 `141a735` 修复，我们的本地补丁已撤 |
+| OpenSSL 3 | **已内置**：`server/third_party/qingzhou/deps/openssl/` 下两个 DLL（构建时自动拷到 `build\`） |
 | 仓颉运行时 | `D:\Cangjie\runtime\lib\windows_x86_64_cjnative` |
 | openssl CLI | `D:\Program Files\Git\usr\bin\openssl.exe`（生成证书、TLS 验证用） |
 | **DevEco Studio** | **6.1.1.300**（`D:\DevEco Studio`）—— 自带 SDK **API 24 / 6.1.1.125**、hvigor 6.24.4、JBR **21**。构建客户端见 `docs/client-build.md` |

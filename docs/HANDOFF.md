@@ -41,8 +41,8 @@
 | --- | --- |
 | 编译器 | `D:\Cangjie\bin\cjc.exe` — **1.1.3** (cjnative) |
 | stdx | `E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx` — **1.1.3.1** |
-| 轻舟源码 | `E:\cangjie\qingzhou` — commit **`3ea387e`**（2026-09-14 升级；DEF-1 上游已修，本地补丁已撤） |
-| OpenSSL 3 | `E:\cangjie\qingzhou\deps\openssl\` 下两个 DLL |
+| 轻舟框架 | **已内置在本仓库**：`server\third_party\qingzhou`（上游 commit 在其中的 `UPSTREAM_COMMIT`；内容由 `MANIFEST.sha256` 校验，`build.ps1` 每次构建都会验）—— 2026-09-15 迁移，见 `third_party\qingzhou\PROVENANCE.md` |
+| OpenSSL 3 | **已内置**：`server\third_party\qingzhou\deps\openssl\` 下两个 DLL（构建时自动拷到 `build\`） |
 | 仓颉运行时 | `D:\Cangjie\runtime\lib\windows_x86_64_cjnative` |
 | **DevEco Studio** | **6.1.1.300** @ `D:\DevEco Studio`：自带 SDK **API 24 / 6.1.1.125**、hvigor **6.24.4**、JBR **21**（构建客户端必须用它的 JBR，原因见 `client-build.md`） |
 
@@ -60,7 +60,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1   # -> build\clu
 ```powershell
 $CJC  = "D:\Cangjie\bin\cjc.exe"
 $STDX = "E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx"
-$FW   = "E:\cangjie\qingzhou"
+$FW   = "<仓库>\server\third_party\qingzhou"   # 已内置；上游 commit 见其中的 UPSTREAM_COMMIT
 $libs = (Get-ChildItem "$STDX\libstdx*.a" | ForEach-Object { "-l:$($_.Name)" })
 # 轻舟：排除自带入口/自测，以及依赖 CangDB 的 store.cj / rbac.cj（那两张改用我们的适配版）
 $fw   = Get-ChildItem "$FW\src\*.cj" |
@@ -214,6 +214,7 @@ $src  = Get-ChildItem "E:\harmonyOS\cangjie_web\server\src\*.cj" | ForEach-Objec
 
 ### 第 0 步（30 分钟，先做）：验证全链路
 在 `E:\cangjie\qingzhou` 起一个最小服务 → 本机访问 → 打包 6 个文件 → 确认能跑。
+（**历史记录**：当时框架还在仓库外；2026-09-15 起已内置到 `server\third_party\qingzhou`。）
 **目的是把"编译→运行→部署"这条链路先打通**，再往里塞业务逻辑。
 
 ### 第 1 步：服务端骨架

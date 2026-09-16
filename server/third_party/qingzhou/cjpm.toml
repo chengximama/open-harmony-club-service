@@ -1,0 +1,13 @@
+[package]
+  cjc-version = "1.1.3"
+  name = "qingzhou"
+  description = "QingZhou - Koa-style web framework for Cangjie"
+  version = "0.4.0"
+  output-type = "executable"
+
+[dependencies]
+
+[target.x86_64-w64-mingw32]
+  compile-option = "-lcrypt32"
+  [target.x86_64-w64-mingw32.bin-dependencies]
+    path-option = ["E:\\cangjie\\stdx\\windows_x86_64_cjnative\\static\\stdx"]
