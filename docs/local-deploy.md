@@ -103,6 +103,12 @@ $p = Start-Process .\club-server.exe -ArgumentList @("serve","8080","data") -Pas
 
 ### 2.4 验证它真的活着
 
+> ⚠️ **别用浏览器打开 `http://127.0.0.1:8080/`** —— 根路径没有页面，会返回 **404**
+> （浏览器还会顺带请求 `/favicon.ico`，同样是 404）。**这不是故障**：服务端是 API 服务，
+> 非 API 的入口只有三个 —— `/health`（免认证，浏览器打开会看到 JSON）· `/join/{token}`
+> （招募链接落地页，免认证、HTML）· `/admin/shutdown`（仅本机）；其余全部在 `/api/v1/` 下。
+> 看到那两行 404，恰恰说明**服务端已经起来并且在记请求日志**。
+> 想在浏览器里确认"活着"，请打开 **`http://127.0.0.1:8080/health`**。
 ```powershell
 curl.exe -s http://127.0.0.1:8080/health
 # {"ok":true,"data":{"status":"ok","version":"0.1.0","time":"2026-09-16T13:20:08+08:00"}}
