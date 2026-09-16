@@ -78,9 +78,16 @@ export default struct PlanTreePage {
   @State loading: boolean = true
   @State errorMsg: string = ''
 
+  // 由外层 TabBar 注入：切换 Tab / 从子页返回时 +1，触发重新拉取
+  @Prop @Watch('onRefreshSignal') refreshSignal: number = 0
+
   private planApi: PlanApi = new PlanApi()
 
   aboutToAppear(): void {
+    this.load()
+  }
+
+  onRefreshSignal(): void {
     this.load()
   }
 

@@ -8,6 +8,7 @@ import { PlanApi } from '../api/PlanApi'
 import { MemberBrief } from '../api/AuthApi'
 import { flattenPlans } from '../util/PlanTree'
 import { genClientToken } from '../util/ClientToken'
+import { formatYmdHm } from '../util/DateFmt'
 import { Color, FontSize, Radius, Space } from '../core/Theme'
 
 @Entry
@@ -56,6 +57,29 @@ struct CreateTaskPage {
       if (p.id === this.planId) return p.title
     }
     return '独立任务'
+  }
+
+  private pickDueDate(): void {
+    const selected = this.dueAt.length > 0 ? new Date(this.dueAt) : new Date();
+    DatePickerDialog.show({
+      start: new Date('2020-01-01'),
+      end: new Date('2035-12-31'),
+      selected: selected,
+      onDateAccept: (value: Date) => {
+        this.pickDueTime(value)
+      }
+    })
+  }
+
+  private pickDueTime(date: Date): void {
+    const selected = this.dueAt.length > 0 ? new Date(this.dueAt) : new Date();
+    TimePickerDialog.show({
+      selected: selected,
+      useMilitaryTime: true,
+      onAccept: (value: TimePickerResult) => {
+        this.dueAt = formatYmdHm(date, value.hour ?? 0, value.minute ?? 0)
+      }
+    })
   }
 
   private async submit(): Promise<void> {
@@ -169,12 +193,25 @@ struct CreateTaskPage {
             .width('100%').padding({ left: Space.md, right: Space.md }).backgroundColor(Color.surface).borderRadius(Radius.card)
           }
 
-          // 截止时间（可空 = 无截止组）
-          TextInput({ placeholder: '截止时间（可空，如 2026-09-20T18:00）', text: this.dueAt })
-            .onChange((v: string) => {
-              this.dueAt = v
-            })
-            .height(44).backgroundColor(Color.surface).borderRadius(Radius.input)
+          // 截止时间（可空 = 无截止组，点击弹日期选择器）
+          Row() {
+            Text('截止时间').fontSize(FontSize.body).fontColor(Color.textPrimary).width(72)
+            Text(this.dueAt.length > 0 ? this.dueAt : '点击选择日期')
+              .fontSize(FontSize.body)
+              .fontColor(this.dueAt.length > 0 ? Color.textPrimary : Color.textTertiary)
+              .layoutWeight(1)
+            if (this.dueAt.length > 0) {
+              Text('清除').fontSize(FontSize.caption).fontColor(Color.primary)
+                .padding({ left: Space.md })
+                .onClick(() => {
+                  this.dueAt = ''
+                })
+            }
+          }
+          .width('100%').padding(Space.card).backgroundColor(Color.surface).borderRadius(Radius.card)
+          .onClick(() => {
+            this.pickDueDate()
+          })
 
           Button('提交')
             .width('100%').height(44).backgroundColor(Color.primary)

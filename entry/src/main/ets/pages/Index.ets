@@ -11,6 +11,17 @@ struct Index {
   @State currentIndex: number = 0;
   @State showDetail: boolean = false;
   @State selectedMemberId: number = 0;
+  // 任务列表刷新信号：切换 Tab / 从子页返回时 +1，子页用 @Watch 监听并重新拉取
+  @State refreshSignal: number = 0;
+  private hasShown: boolean = false;
+
+  onPageShow(): void {
+    // 从新建任务等子页返回时刷新；首次展示不额外触发（子页 aboutToAppear 已拉取）
+    if (this.hasShown) {
+      this.refreshSignal++;
+    }
+    this.hasShown = true;
+  }
 
   build() {
     if (this.showDetail) {
@@ -38,17 +49,17 @@ struct Index {
       Navigation() {
         Tabs({ barPosition: BarPosition.End, index: this.currentIndex }) {
           TabContent() {
-            MyTasksPage({ onOpenPlans: () => { this.currentIndex = 2 } })
+            MyTasksPage({ onOpenPlans: () => { this.currentIndex = 2 }, refreshSignal: this.refreshSignal })
           }
           .tabBar(this.tabBarBuilder('我的\n任务', 0))
 
           TabContent() {
-            TaskListPage()
+            TaskListPage({ refreshSignal: this.refreshSignal })
           }
           .tabBar(this.tabBarBuilder('任务', 1))
 
           TabContent() {
-            PlanTreePage()
+            PlanTreePage({ refreshSignal: this.refreshSignal })
           }
           .tabBar(this.tabBarBuilder('课题', 2))
 
@@ -70,6 +81,10 @@ struct Index {
         .barMode(BarMode.Fixed)
         .onChange((index: number) => {
           this.currentIndex = index;
+          // 切到数据 Tab（我的任务/任务/课题）时刷新，保证看到最新数据
+          if (index === 0 || index === 1 || index === 2) {
+            this.refreshSignal++;
+          }
         })
       }
       .title('社团管家')
