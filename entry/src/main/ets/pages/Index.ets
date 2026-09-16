@@ -2,7 +2,6 @@ import MemberListPage from './MemberListPage';
 import MemberDetailPage from './MemberDetailPage';
 import PendingApprovalPage from './PendingApprovalPage';
 import ManagePage from './ManagePage';
-import { Colors } from '../model/Theme';
 
 @Entry
 @Component
@@ -18,7 +17,7 @@ struct Index {
         Row() {
           Text('← 返回')
             .fontSize(16)
-            .fontColor(Colors.primary)
+            .fontColor('#1E88E5')
             .onClick(() => {
               this.showDetail = false;
             })

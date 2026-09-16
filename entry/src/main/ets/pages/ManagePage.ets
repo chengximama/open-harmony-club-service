@@ -1,26 +1,33 @@
-// 管理页面
-// 包含：部门管理、注册口令、招募链接、危险操作
+// 管理页面（B同学负责）
+// 包含：部门管理、注册口令、招募链接、会长移交等
 
-import { Dept as DeptModel, MOCK_DEPTS } from '../model/MemberModel';
-import { Colors, Radius, Spacing, StatusColors } from '../model/Theme';
+interface Dept {
+  id: number;
+  name: string;
+  memberCount: number;
+}
 
 interface InviteLink {
   id: string;
-  dept_name: string;
+  deptName: string;
   url: string;
   enabled: boolean;
-  created_at: string;
+  createdAt: string;
 }
 
 // ====== 假数据 ======
-const INVITE_LINKS: InviteLink[] = [
-  { id: 'link001', dept_name: '课题部', url: 'club.example.com/join/abc123', enabled: true, created_at: '2026-09-10' },
-  { id: 'link002', dept_name: '运营部', url: 'club.example.com/join/def456', enabled: true, created_at: '2026-09-12' },
-  { id: 'link003', dept_name: '宣传部', url: 'club.example.com/join/ghi789', enabled: false, created_at: '2026-09-08' },
+const DEPTS: Dept[] = [
+  { id: 0, name: '主席团', memberCount: 3 },
+  { id: 1, name: '课题部', memberCount: 4 },
+  { id: 2, name: '运营部', memberCount: 3 },
+  { id: 3, name: '宣传部', memberCount: 3 },
 ];
 
-// memberCount 是 UI 衍生数据，后端 Dept 没有这个字段
-const DEPT_MEMBER_COUNT: Record<number, number> = { 1: 3, 2: 4, 3: 3, 4: 3 };
+const INVITE_LINKS: InviteLink[] = [
+  { id: 'link001', deptName: '课题部', url: 'club.example.com/join/abc123', enabled: true, createdAt: '2026-09-10' },
+  { id: 'link002', deptName: '运营部', url: 'club.example.com/join/def456', enabled: true, createdAt: '2026-09-12' },
+  { id: 'link003', deptName: '宣传部', url: 'club.example.com/join/ghi789', enabled: false, createdAt: '2026-09-08' },
+];
 
 @Component
 struct SectionHeader {
@@ -33,46 +40,50 @@ struct SectionHeader {
       Text(this.title)
         .fontSize(16)
         .fontWeight(FontWeight.Bold)
-        .fontColor(Colors.textPrimary)
+        .fontColor('#333333')
 
       Blank()
 
       if (this.actionText.length > 0) {
         Text(this.actionText)
           .fontSize(14)
-          .fontColor(Colors.primary)
-          .onClick(() => { this.onAction(); })
+          .fontColor('#1E88E5')
+          .onClick(() => {
+            this.onAction();
+          })
       }
     }
     .width('100%')
-    .padding({ left: Spacing.page, right: Spacing.page, top: Spacing.xl, bottom: Spacing.sm })
+    .padding({ left: 16, right: 16, top: 20, bottom: 8 })
   }
 }
 
 // ====== 部门管理 ======
 @Component
 struct DeptManageSection {
-  @State depts: DeptModel[] = MOCK_DEPTS;
+  @State depts: Dept[] = DEPTS;
+  @State showAddDialog: boolean = false;
 
   build() {
     Column() {
       SectionHeader({
         title: '部门管理',
         actionText: '+ 新建部门',
-        onAction: () => {}
+        onAction: () => {
+          this.showAddDialog = true;
+        }
       })
 
       Column() {
-        ForEach(this.depts, (dept: DeptModel) => {
+        ForEach(this.depts, (dept: Dept) => {
           Row() {
             Column() {
               Text(dept.name)
                 .fontSize(15)
                 .fontWeight(FontWeight.Medium)
-                .fontColor(Colors.textPrimary)
-              Text(`${DEPT_MEMBER_COUNT[dept.id] || 0} 人`)
+              Text(`${dept.memberCount} 人`)
                 .fontSize(12)
-                .fontColor(Colors.textTertiary)
+                .fontColor('#999999')
                 .margin({ top: 2 })
             }
             .alignItems(HorizontalAlign.Start)
@@ -80,22 +91,22 @@ struct DeptManageSection {
 
             Text('编辑')
               .fontSize(14)
-              .fontColor(Colors.primary)
-              .margin({ right: Spacing.lg })
+              .fontColor('#1E88E5')
+              .margin({ right: 16 })
 
             Text('删除')
               .fontSize(14)
-              .fontColor(StatusColors.overdue.fg)
+              .fontColor('#E53935')
           }
           .width('100%')
-          .padding(Spacing.cardInner)
-          .backgroundColor(Colors.surface)
+          .padding(16)
+          .backgroundColor(Color.White)
           .margin({ bottom: 1 })
-        }, (dept: DeptModel) => dept.id.toString())
+        }, (dept: Dept) => dept.id.toString())
       }
-      .backgroundColor(Colors.surface)
-      .borderRadius(Radius.card)
-      .margin({ left: Spacing.page, right: Spacing.page })
+      .backgroundColor(Color.White)
+      .borderRadius(8)
+      .margin({ left: 16, right: 16 })
     }
     .width('100%')
   }
@@ -116,11 +127,11 @@ struct RegisterConfigSection {
           Column() {
             Text('当前口令')
               .fontSize(12)
-              .fontColor(Colors.textTertiary)
+              .fontColor('#999999')
             Text(this.code)
               .fontSize(20)
               .fontWeight(FontWeight.Bold)
-              .fontColor(Colors.primary)
+              .fontColor('#1E88E5')
               .margin({ top: 4 })
           }
           .alignItems(HorizontalAlign.Start)
@@ -135,13 +146,13 @@ struct RegisterConfigSection {
         .padding(16)
 
         Divider()
-          .color(Colors.divider)
+          .color('#EEEEEE')
 
         Row() {
           Button('更换口令')
             .layoutWeight(1)
-            .backgroundColor(StatusColors.todo.bg)
-            .fontColor(Colors.textSecondary)
+            .backgroundColor('#F5F5F5')
+            .fontColor('#666666')
             .margin({ right: 8 })
 
           Button('随机轮换')
@@ -186,50 +197,51 @@ struct InviteLinkSection {
         ForEach(this.links, (link: InviteLink) => {
           Column() {
             Row() {
-              Text(link.dept_name)
+              Text(link.deptName)
                 .fontSize(15)
                 .fontWeight(FontWeight.Medium)
-                .fontColor(Colors.textPrimary)
 
               Blank()
 
               Text(link.enabled ? '启用中' : '已停用')
                 .fontSize(12)
-                .fontColor(link.enabled ? StatusColors.done.fg : Colors.textTertiary)
+                .fontColor(link.enabled ? '#43A047' : '#999999')
                 .padding({ left: 8, right: 8, top: 2, bottom: 2 })
-                .backgroundColor(link.enabled ? StatusColors.done.bg : StatusColors.todo.bg)
-                .borderRadius(Radius.capsule)
+                .backgroundColor(link.enabled ? '#E8F5E9' : '#F5F5F5')
+                .borderRadius(4)
             }
             .width('100%')
 
             Text(link.url)
               .fontSize(12)
-              .fontColor(Colors.primary)
+              .fontColor('#1E88E5')
               .margin({ top: 6 })
 
             Row() {
-              Text(`创建于 ${link.created_at}`)
+              Text(`创建于 ${link.createdAt}`)
                 .fontSize(12)
-                .fontColor(Colors.textTertiary)
+                .fontColor('#999999')
 
               Blank()
 
               Text(link.enabled ? '停用' : '启用')
                 .fontSize(12)
-                .fontColor(link.enabled ? StatusColors.overdue.fg : StatusColors.done.fg)
-                .onClick(() => { this.toggleEnabled(link.id); })
+                .fontColor(link.enabled ? '#E53935' : '#43A047')
+                .onClick(() => {
+                  this.toggleEnabled(link.id);
+                })
             }
             .width('100%')
             .margin({ top: 8 })
           }
           .width('100%')
-          .padding(Spacing.cardInner)
+          .padding(16)
           .margin({ bottom: 1 })
         }, (link: InviteLink) => link.id)
       }
-      .backgroundColor(Colors.surface)
-      .borderRadius(Radius.card)
-      .margin({ left: Spacing.page, right: Spacing.page })
+      .backgroundColor(Color.White)
+      .borderRadius(8)
+      .margin({ left: 16, right: 16 })
     }
     .width('100%')
   }
@@ -252,10 +264,9 @@ struct DangerZoneSection {
             Text('移交会长')
               .fontSize(15)
               .fontWeight(FontWeight.Medium)
-              .fontColor(Colors.textPrimary)
             Text('将会长权限转让给另一位成员')
               .fontSize(12)
-              .fontColor(Colors.textTertiary)
+              .fontColor('#999999')
               .margin({ top: 2 })
           }
           .alignItems(HorizontalAlign.Start)
@@ -263,15 +274,15 @@ struct DangerZoneSection {
 
           Text('>')
             .fontSize(18)
-            .fontColor(Colors.textTertiary)
+            .fontColor('#CCCCCC')
         }
         .width('100%')
-        .padding(Spacing.cardInner)
+        .padding(16)
         .onClick(() => {
           this.showTransferConfirm = true;
         })
 
-        Divider().color(Colors.divider).margin({ left: Spacing.lg })
+        Divider().color('#EEEEEE').margin({ left: 16 })
 
         // 重置密码
         Row() {
@@ -279,10 +290,9 @@ struct DangerZoneSection {
             Text('重置成员密码')
               .fontSize(15)
               .fontWeight(FontWeight.Medium)
-              .fontColor(Colors.textPrimary)
             Text('为成员生成一次性临时密码')
               .fontSize(12)
-              .fontColor(Colors.textTertiary)
+              .fontColor('#999999')
               .margin({ top: 2 })
           }
           .alignItems(HorizontalAlign.Start)
@@ -290,17 +300,17 @@ struct DangerZoneSection {
 
           Text('>')
             .fontSize(18)
-            .fontColor(Colors.textTertiary)
+            .fontColor('#CCCCCC')
         }
         .width('100%')
-        .padding(Spacing.cardInner)
+        .padding(16)
         .onClick(() => {
           this.showResetPasswordConfirm = true;
         })
       }
-      .backgroundColor(Colors.surface)
-      .borderRadius(Radius.card)
-      .margin({ left: Spacing.page, right: Spacing.page })
+      .backgroundColor(Color.White)
+      .borderRadius(8)
+      .margin({ left: 16, right: 16 })
     }
     .width('100%')
   }
@@ -332,8 +342,7 @@ export default struct ManagePage {
             Text('部门管理（独立页）')
               .fontSize(16)
               .fontWeight(FontWeight.Bold)
-              .fontColor(Colors.textPrimary)
-              .margin({ top: Spacing.xl })
+              .margin({ top: 20 })
           }
           .width('100%')
           .height('100%')
@@ -346,8 +355,7 @@ export default struct ManagePage {
             Text('成员管理（独立页）')
               .fontSize(16)
               .fontWeight(FontWeight.Bold)
-              .fontColor(Colors.textPrimary)
-              .margin({ top: Spacing.xl })
+              .margin({ top: 20 })
           }
           .width('100%')
           .height('100%')
@@ -363,6 +371,6 @@ export default struct ManagePage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(Colors.canvas)
+    .backgroundColor('#FAFAFA')
   }
 }
