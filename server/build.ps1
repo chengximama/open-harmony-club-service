@@ -19,11 +19,14 @@
 #   .\build.ps1 -NoDll               只编译（本机已装好 DLL 时更快）
 #   .\build.ps1 -SkipFrameworkCheck  跳过内置框架的内容校验（**仅**在有意改动内置框架时用）
 #
-# -Target admin（2026-09-16 新增）编译的是轻舟自带的**后台管理界面**：
-#   源码 = 框架 src（这次保留上游 rbac.cj）＋ third_party\qingzhou\examples\admin.cj
-#        ＋ server\src\fw_rbac_store.cj（**唯一**替换点：把 CangDB 数据层换成 JSON 文件存储）
-#   产物 = build\admin\admin.exe ＋ admin-web\（前端，上游已预构建）＋ admin.env
-#   它是个**独立小程序**，与本项目的 club-server 各编各的（不共享入口、不共享令牌体系）。
+# -Target admin（2026-09-16 新增）编译的是**运维台**：后台管理界面 + 「社团管理」运维页：
+#   源码 = 框架 src（保留上游 rbac.cj）＋ server\src\ops\*.cj（我们自己的入口与只读视图）
+#        ＋ server\src\{store,audit,timex,strx}.cj（社团库只读 + 时间/字符串工具）
+#        ＋ server\src\fw_rbac_store.cj（把 CangDB 数据层换成 JSON 文件存储）
+#   产物 = build\admin\admin.exe ＋ admin-web\（前端，取 server\admin-web）＋ admin.env
+#   它是个**独立小程序**，与本项目的 club-server 各编各的（不共享入口、不共享令牌体系）；
+#   运维页**读**社团库文件、**写**交给 club-server 的真实 API（见 docs\HANDOFF.md §2）。
+#   上游 examples\admin.cj / admin-web 仍留在快照里，但**只作对照**、不参与这条构建。
 #
 # 换一台机器：cjc 与 stdx 的位置**不再写死**，脚本自动探测（显式传参 > 环境变量 > 常见位置 > PATH）：
 #   .\build.ps1 -CangjieHome <SDK目录> -Stdx <...\windows_x86_64_cjnative\static\stdx>
@@ -235,14 +238,27 @@ if ($Target -eq "admin") {
     $fw = Get-ChildItem "$VendorSrc\*.cj" |
           Where-Object { $_.Name -notin @('main.cj', 'unit_tests.cj', 'manual_runner.cj', 'store.cj') } |
           ForEach-Object { $_.FullName }
-    $adminMain = Join-Path $Vendor "examples\admin.cj"
-    if (-not (Test-Path $adminMain)) { throw "找不到轻舟后台示例：$adminMain（内置快照里应有 examples\admin.cj）" }
-    $app = @((Join-Path $src "fw_rbac_store.cj"), $adminMain)
+    # 运维台的源码 = 我们自己的入口 + 社团库（只读）+ 它需要的三个自包含工具文件。
+    # 为什么是"挑文件"而不是"整个 src"：server/src 里的 h_*.cj / main.cj / jsonw.cj 等
+    # 是 club-server 的东西，带进来会与框架同包撞名、也会白白膨胀这个 exe。
+    $app = @(
+        (Join-Path $src "store.cj"),          # 社团数据模型 + 原子落盘（运维台只读它）
+        (Join-Path $src "audit.cj"),          # 审计日志写入口（store.cj 的 flushPending 调它）
+        (Join-Path $src "timex.cj"),          # epoch → ISO8601(+08:00)，与服务端口径一致
+        (Join-Path $src "strx.cj"),           # isBlank / containsAscii 等字节级工具
+        (Join-Path $src "fw_rbac_store.cj"),  # 后台 RBAC 数据层（JSON 文件替代 CangDB）
+        (Join-Path $src "ops\club_json.cj"),  # jsonw.cj 里 6 个工具的自包含替身
+        (Join-Path $src "ops\club_view.cj"),  # 社团库只读视图（概览/名录/部门/任务/课题/链接/审计）
+        (Join-Path $src "ops\admin_main.cj")  # 入口：上游那套 + /api/club/** + 状态码修正
+    )
+    foreach ($f in $app) {
+        if (-not (Test-Path $f)) { throw "找不到运维台源码：$f" }
+    }
     $outDir = Join-Path $out "admin"
     $exe = Join-Path $outDir "admin.exe"
     if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
     Write-Host "[build] 框架：轻舟 $upShort（内置 third_party\qingzhou，$($fw.Count) 个文件参与编译）"
-    Write-Host "[build] 后台：examples\admin.cj + 我们的 fw_rbac_store.cj（JSON 数据层替代 CangDB） -> $exe"
+    Write-Host "[build] 运维台 $($app.Count) 个文件（src\ops\* + 社团库只读） -> $exe"
 } else {
     $fw = Get-ChildItem "$VendorSrc\*.cj" |
           Where-Object { $_.Name -notin @('main.cj', 'unit_tests.cj', 'manual_runner.cj', 'store.cj', 'rbac.cj') } |
@@ -279,14 +295,20 @@ Write-Host "[build] 编译通过"
 # loadConfigFile("./admin.env")），所以产物目录必须是**自包含**的：exe + admin-web + admin.env。
 # 这与本项目"cwd 必须是 exe 所在目录"的既有约定一致（README 六条坑之一）。
 if ($Target -eq "admin") {
-    $webSrc = Join-Path $Vendor "admin-web"
+    # 前端取**我们自己**的 server\admin-web（在上游版本上加了「社团管理」运维页），
+    # 上游那份快照（third_party\qingzhou\admin-web）保持逐字节原样、只作对照。
+    # dist 是随仓库提交的预构建产物 —— 部署机与运维机都不需要 Node/npm。
+    $webSrc = Join-Path $root "admin-web"
     $webDst = Join-Path $outDir "admin-web"
     if (-not (Test-Path (Join-Path $webSrc "dist\index.html"))) {
-        throw "内置的 admin-web\dist 不存在或不完整：$webSrc\dist（上游快照里应有预构建产物）"
+        throw ("找不到前端产物：$webSrc\dist\index.html`n" +
+               "  改了 server\admin-web\src 之后要重新构建前端（需要 Node）：`n" +
+               "    cd server\admin-web ; npm install ; npm run build`n" +
+               "  只用现成产物的话，确认 dist\ 已随仓库检出。")
     }
     if (Test-Path $webDst) { Remove-Item $webDst -Recurse -Force }
     Copy-Item $webSrc $webDst -Recurse
-    Write-Host "[build] 前端已就位：admin-web\dist（上游预构建，无需 npm）"
+    Write-Host "[build] 前端已就位：server\admin-web\dist（含「社团管理」运维页）"
 
     # admin.env 若已存在就**不动**（用户可能改过端口/密钥）；否则从内置模板生成一份"本地 JSON 存储"版
     $envFile = Join-Path $outDir "admin.env"
@@ -313,7 +335,17 @@ if ($Target -eq "admin") {
             "ttl=$ttl",
             "",
             "admin_user=admin",
-            "admin_pass=admin123"
+            "admin_pass=admin123",
+            "",
+            "# ── 「社团管理」运维页（/club）──",
+            "# 社团库目录（相对 exe 所在目录）。默认 ../data = club-server 从 build\ 启动时的默认数据目录。",
+            "# 若 club-server 用的是别的目录（或绝对路径），改这里。运维页**只读**它。",
+            "club_data=../data",
+            "",
+            "# club-server 的地址：club_api 供运维台自己探测 /health（服务端侧），",
+            "# club_port 供浏览器拼地址（http://<运维页的 host>:<club_port>），两者可不同。",
+            "club_api=http://127.0.0.1:8080",
+            "club_port=8080"
         )
         [System.IO.File]::WriteAllLines($envFile, $lines, [System.Text.UTF8Encoding]::new($false))
         Write-Host "[build] 已生成 build\admin\admin.env（JSON 数据层；secret 已随机）"

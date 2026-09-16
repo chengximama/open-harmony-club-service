@@ -94,9 +94,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-package.ps1
 | **M11 第四轮复验修复** | `docs/code-review.md` 第四轮 6 条：**N-14** 本机判定改按地址相等（原为子串匹配 `::1`，可被远程 IPv6 关停服务）· **N-15** 四个 handler 改两阶段赋值（被 4xx 拒绝不再留半改状态）· **N-16** 登录两条路径等价 PBKDF2（堵住时序枚举手机号）· **N-17** 审计 IO 移出锁 · **N-18** 任务与课题必须同部门 · **N-19** 招募 token 32 字节 | ✅ **已完成并验证**：新增单测闸门 `testLoopbackPeer` / `testLoginCreds` / `testAuditDeferred` 与冒烟 §22.5。**当轮基线 387 / 360 / 22 全绿**（2026-09-15） |
 | **M12 按 UI 设计规格对齐** | 《鸿蒙俱乐部-全场景UI设计规格》13 页逐条对照（报告 `docs/ui-spec-conformance-review.md`），按决定落地 8 条：**D-1** 权限摘要 5 个管理布尔 · **D-2** 名录 `?q=` 搜索 · **D-3** 任务/课题**读**范围放开到全社团（**写**不变）· **D-4** 阻塞任务求助对象 `needs_help` · **D-5** `overdue_days` · **D-7** 成员详情补 `done_tasks`/`overdue_tasks` · **D-15** 首页阻塞原因 · **D-16** 招募链接预填闭环（接口 39→40）。**D-6** 密码口径定稿 **8–32 字节 + 只允许数字/英文/符号** | ✅ **已完成并验证**：**当前基线 471 / 421 / 22 / 契约 30 全绿**（2026-09-16） |
 | **M13 轻舟升级 + 自带后台** | 内置框架升到 **`e072980`**（= 上游 HEAD；`src/` 29 → **36** 个文件，新增 `jwt` / `ratelimit` / `securityheaders` / `websocket` / `httpclient` / `hybrid` / `circuit`）；新增 **`build.ps1 -Target admin`** → `build\admin\admin.exe`（上游 `examples\admin.cj` + 预构建 `admin-web\dist`，**部署机不需要 Node/npm**），数据层复用 `fw_rbac_store.cj` **落到本地 JSON 文件**；新增 `tests/admin-check.ps1` 端到端把关 | ✅ **已完成并验证**：**五套全绿 471 / 421 / 22 / 契约 30 / 后台 29**（2026-09-16）。附带查清上游"业务码在 body 的 `code`、成功响应也可能带 HTTP 404"这一特性（`API-NOTES` 坑 34，**不改内置框架**） |
+| **M14 「社团管理」运维页** | 后台加一页 `/club`：入口换成我们自己的 `server/src/ops/admin_main.cj`（上游那套路由 + `/api/club/**` + 链尾 `statusNormalizer()` 修状态码）；`club_view.cj` 提供社团库**只读**白名单视图（概览/名录/部门/任务/课题/招募链接/审计）；`club_json.cj` 让 `store.cj` 能单独编进这条构建。**读**直读库文件、**写**由浏览器带会长令牌直连 club-server 真实 API；前端另起 `server/admin-web`（上游版本 + `Club.vue`） | ✅ **已完成并验证**：**运维页端到端 42 / 0**（`tests/ops-check.ps1`）。顺带修了 `POST /admin/shutdown` 回执被吞的既有缺陷（实测 8 次里 6 次空 body）——见 `API-NOTES` 坑 36 |
 
 **接口进度：40 / 40**（认证 5 + 组织与成员 20 + 任务 8 + 课题 6 = 39 个业务接口，另加运维 `/health`）。
 另有一个不在接口清单里的公开页面 `GET /join/{token}`（招募链接落地页，无需登录）。
+> 后台/运维页的接口（`/api/login`、`/api/club/**` 等）**不属于**上面这 40 个业务接口，
+> 它们是运维工具自己的面，见 `server/src/ops/`。
 
 ---
 
@@ -131,10 +134,16 @@ server/
     fw_rbac_store.cj      轻舟 RBAC 数据层的本地适配（文件存储；替代依赖 CangDB 的上游版）
     fw_rbac.cj            轻舟 requirePermission 中间件的本地适配（改用我们的错误格式）
     tests.cj              单测（club-server.exe test）
+  src/ops/                运维台（build.ps1 -Target admin）专用；**不参与服务端构建**（取的是 src/*.cj，不递归）
+    admin_main.cj         运维台入口：上游后台路由 + /api/club/** + 状态码修正
+    club_view.cj          社团库只读视图（概览/名录/部门/任务/课题/链接/审计；白名单字段，不含口令材料）
+    club_json.cj          jsonw.cj 里 6 个工具的自包含替身（让 store.cj 能单独编进运维台）
+  admin-web/              运维台前端（Vue 3 源码 + 预构建 dist；比上游多了 views/Club.vue）
   tests/smoke.ps1         冒烟测试（打真实 HTTP）
   tests/tls-check.ps1     TLS 验证（curl + openssl，避开 PS 5.1 自签证书的怪癖）
   tests/client-contract-check.ps1  前后端契约回归（客户端声明的每条路径/方法，服务端都认得）
-  tests/admin-check.ps1   轻舟自带后台的端到端（JSON 数据层：登录/RBAC/增删/落盘/优雅关闭）
+  tests/admin-check.ps1   后台自身端到端（RBAC + JSON 数据层：登录/增删/落盘/优雅关闭）
+  tests/ops-check.ps1     「社团管理」运维页端到端（读库文件 + 直连 club-server 的写路径 + 审计 + 备份）
   tests/bench.ps1         容量基准（真实 HTTP；可对旧提交编译的 exe 做前后对比）
 ```
 
@@ -159,6 +168,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-chec
 
 # 轻舟后台端到端（29 项；先 build.ps1 -Target admin）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\admin-check.ps1
+
+# 「社团管理」运维页端到端（42 项；会自己起 club-server(18081) 与运维台(3099)，不动你的 admin.env）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\ops-check.ps1
 
 # 容量基准（按需，不属于关卡）：单发耗时 + 4 并发墙钟；
 # 用 -Exe 指向旧提交编译出的 exe，即可做同脚本、同数据形状的前后对比（见文件头注释）

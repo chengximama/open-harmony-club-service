@@ -42,11 +42,16 @@
 | 默认（`club-server`，我们的俱乐部服务端） | `main.cj` | 框架自带 `main()`，入口由我们的 `server/src/main.cj` 提供 |
 | | `unit_tests.cj` / `manual_runner.cj` | 框架自测，与本项目单测冲突 |
 | | `store.cj` / `rbac.cj` | 上游这两张文件 `import cangdb.*`，而 CangDB 仓库只有 README、没有代码 → 改用我们的适配版 `server/src/fw_rbac_store.cj`（数据层=文件存储）+ `fw_rbac.cj`（`requirePermission`，我们的错误格式） |
-| `-Target admin`（轻舟自带后台） | `main.cj` / `unit_tests.cj` / `manual_runner.cj` | 同上 |
-| | `store.cj` | 只有它 `import cangdb.*`；入口是上游 `examples/admin.cj`，数据层换成 **`server/src/fw_rbac_store.cj`（JSON 文件）** |
-| | （**保留** `rbac.cj`） | 后台示例用的是框架自带的响应格式，`rbac.cj` 正好配套 |
+| `-Target admin`（运维台） | `main.cj` / `unit_tests.cj` / `manual_runner.cj` | 同上 |
+| | `store.cj` | 只有它 `import cangdb.*`；入口是**我们自己的** `server/src/ops/admin_main.cj`（基线是上游 `examples/admin.cj`），数据层换成 **`server/src/fw_rbac_store.cj`（JSON 文件）** |
+| | （**保留** `rbac.cj`） | 后台那套路由用的是框架自带的响应格式，`rbac.cj` 正好配套 |
 
-## 后台（admin）这份构建：怎么跑
+> **注意（2026-09-16）**：`examples/admin.cj` 与 `admin-web/` 现在**只作对照**，不再参与构建 ——
+> 运维台的入口与前端分别是 `server/src/ops/*.cj` 与 `server/admin-web/`（在那两者基础上加了
+> 「社团管理」运维页，并修掉上游"成功响应也可能带 404"的状态码问题）。
+> 保留上游这两份是为了**随时能对照**：改我们的版本时先看上游原本怎么写。
+
+## 运维台（`-Target admin`）这份构建：怎么跑
 
 ```powershell
 cd server
@@ -55,26 +60,27 @@ cd build\admin
 .\admin.exe                      # 浏览器打开 http://127.0.0.1:3000/
 ```
 
-- 产物目录**自包含**：`admin.exe` + `admin-web\dist` + `admin.env`（+ 4 个运行时 DLL）。
-  上游 `examples/admin.cj` 是按 **cwd** 找资源和配置的（`serveWithOpts("./admin-web/dist")`、
-  `loadConfigFile("./admin.env")`），所以**必须在 `build\admin` 里启动**。
+- 产物目录**自包含**：`admin.exe` + `admin-web\dist`（来自 `server/admin-web`）+ `admin.env`（+ 4 个运行时 DLL）。
+  入口与前端都按 **cwd** 找资源和配置（`serveWithOpts("./admin-web/dist")`、`loadConfigFile("./admin.env")`），
+  所以**必须在 `build\admin` 里启动**。
 - `admin.env` 首次构建时生成（随机 64 位十六进制 `secret`），**已存在就不覆盖**；
-  端口 3000、数据文件 `admin-data/rbac.json`、token 有效期 7200 秒。
+  端口 3000、数据文件 `admin-data/rbac.json`、token 有效期 7200 秒；
+  另有三项给运维页：`club_data`（社团库目录，默认 `../data`）、`club_api` + `club_port`（club-server 地址）。
 - 种子账号：`admin / admin123`（角色 1）、`user / user123`（角色 2）。
   ⚠ **这两条属于轻舟 RBAC 那套口令**（`security.cj` 的 `hashPassword`，迭代 SHA-256，存在
   `rbac.json` 里），与本项目 `club-server` 的会长/成员账号（`auth.cj` 的 PBKDF2-HMAC-SHA256，
   存在 `data/db.json` 里）**不是一套**：两边账号不能互用，`verifyPw` 也验不了这里的哈希。
-- 数据层是 **JSON 文件**（沧海 CangDB 尚未公开）：`server/src/fw_rbac_store.cj`，
+- 后台自身的数据层是 **JSON 文件**（沧海 CangDB 尚未公开）：`server/src/fw_rbac_store.cj`，
   内存 `Store` + 写时原子落盘（先写 `.tmp` 再 `rename`），**200 ⇒ 已落盘**。
-- 端到端验证：`server/tests/admin-check.ps1`（**29 / 0**），覆盖静态托管、JWT 登录、
-  鉴权/RBAC、用户增删写路径、JSON 落盘、优雅关闭。
+- 端到端验证：`server/tests/admin-check.ps1`（后台自身 **29 / 0**）与
+  `server/tests/ops-check.ps1`（运维页含写路径 **42 / 0**）。
 
-> **一个上游特性要知道**：上游统一响应壳把业务码放在 **body 的 `code` 字段**（0=成功），
+> **一个上游特性（我们已在自己的入口修掉）**：上游统一响应壳把业务码放在 **body 的 `code` 字段**（0=成功），
 > HTTP 状态不承载业务语义；而且 `passOnNotFound` 的路由在 miss 时会先把 `ctx.status` 置成 404，
 > 后续匹配上的处理器用 `respondOk/respondErr` 时并不重设 status —— 于是**成功响应也可能带 404**。
-> 前端 `admin-web` 只 `fetch(...).json()` 后看 `code`，所以界面一切正常；用 curl 看就要看 body。
-> 这是上游 `e072980` 本身的行为（已逐字节比对 `src/api.cj` / `src/router.cj` / `src/auth.cj`），
-> **我们没有改框架来"修"它**。详见 `docs/API-NOTES.md`「坑 34」。
+> 这是上游 `e072980` 本身的行为（已逐字节比对 `src/api.cj` / `src/router.cj` / `src/auth.cj`）。
+> 我们的入口 `server/src/ops/admin_main.cj` 加了一个链尾 `statusNormalizer()` 按 `code` 回写状态码，
+> **内置框架一行未改**；上游 `examples/admin.cj` 那份示例仍保持原样。详见 `docs/API-NOTES.md`「坑 34」。
 
 ## 怎么用（一般不用管）
 

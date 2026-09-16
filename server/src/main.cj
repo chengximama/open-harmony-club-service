@@ -16,6 +16,7 @@ package qingzhou
 import std.collection.*
 import std.convert.*
 import std.fs.*
+import std.time.*
 import stdx.encoding.json.*
 
 
@@ -153,6 +154,14 @@ func handleShutdown(ctx: Context, box: HandleBox): Unit {
      * 交给后台线程，请求正常返回后再关。 */
     match (box.handle) {
         case Some(h) => spawn {
+            /*
+             * 先等 1 秒再关：`shutdown()` 里的 `server.close()` 会停止 accept 并收尾，
+             * 但它**不等本请求的响应写出去**。实测（2026-09-16，8 次里 6 次）客户端会拿到
+             * `HTTP 200` + **空 body** —— 本端点是 Windows 上唯一的关停入口，
+             * 回执照样丢失就很难判断"到底关没关"。宁可晚 1 秒关，也要让回执可靠。
+             * 回归闸门：tests/ops-check.ps1 断言关停响应体是 ok:true。
+             */
+            sleep(Duration.second * 1)
             h.shutdown()
         }
         case None => ()

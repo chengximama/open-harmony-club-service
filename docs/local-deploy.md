@@ -200,28 +200,34 @@ App 里对应「**待分配审批**」页（会长/副会长可见），两步�
 
 ---
 
-### 2.7 可选：顺手起一个轻舟自带的后台管理界面
+### 2.7 可选：后台管理界面 + 「社团管理」运维页
 
-轻舟快照里带了一套**现成的后台**（Vue 前端 + `examples\admin.cj`），前端产物已随仓库提交，
-**不需要 Node/npm**；它的数据层也被路由到**本地 JSON 文件**（沧海 CangDB 尚未公开）：
+后台这份有两个页面：上游那套（仪表盘 / 用户管理，管**后台自己的账号**）和我们加的
+**「社团管理」运维页 `/club`**（管**社团的真实数据**）。前端产物已随仓库提交，**不需要 Node/npm**：
 
 ```powershell
 cd E:\harmonyOS\cangjie_web\server
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target admin   # -> build\admin\admin.exe
 cd build\admin
-.\admin.exe                                                                     # http://127.0.0.1:3000/
-# 另开一个窗口跑端到端验证（29 项）：
+.\admin.exe        # 后台 http://127.0.0.1:3000/   运维页 http://127.0.0.1:3000/club
+# 另开一个窗口跑端到端验证：后台自身 29 项 / 运维页（含写路径）42 项
 powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\admin-check.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1
 ```
 
-- 种子账号 `admin / admin123`（角色 1）、`user / user123`（角色 2）；
+- 后台账号 `admin / admin123`（角色 1）、`user / user123`（角色 2）；
   端口 / 密钥 / 令牌时长在 `admin.env`（首次构建生成随机 `secret`，之后不覆盖）。
-- 数据落在 `build\admin\admin-data\rbac.json`（原子写：先 `.tmp` 再 rename，无残留）。
-- **`cwd` 必须是 `build\admin`**（上游按相对路径读 `admin.env` 与 `admin-web\dist`）。
-- ⚠️ 上游把业务码放在 **body 的 `code`**（0=成功），HTTP 状态不承载业务语义；
-  `passOnNotFound` 路由 miss 时会污染 `ctx.status` → **成功响应也可能带 404**。
-  前端只看 `code`，界面一切正常；用 curl 看时请读 body。详见 `API-NOTES.md`「坑 34」。
-- 这套后台与我们的 `club-server` **互不影响**（不同端口、不同数据文件、不同 exe）。
+- 后台自己的数据落在 `build\admin\admin-data\rbac.json`（原子写：先 `.tmp` 再 rename）。
+- 运维页 `/club` **只放给角色 1**（`user` 拿到 403）。它**读**社团库文件
+  （`admin.env` 的 `club_data`，默认 `../data` —— 即从 `build\` 启动 club-server 时的数据目录），
+  所以 **club-server 没起也能看**；**写**（分配/停用/重置口令/移交会长/轮换口令/优雅停服）
+  由浏览器带**会长令牌直连 club-server 的真实 API** —— 也就是页面里要用会长手机号+口令登录一次。
+  这样 club-server 始终是唯一写入者，权限与业务规则仍由它把关。
+- 只读视图是白名单：运维接口里**不含任何口令材料**（`pw_salt` / `pw_hash` / `pw_iter`）。
+- **`cwd` 必须是 `build\admin`**（按相对路径读 `admin.env` 与 `admin-web\dist`）。
+- 这套后台与 `club-server` **互不影响**（不同端口、不同数据文件、不同 exe），可以同时跑。
+- 已修掉上游那个"成功响应也可能带 404"的状态码问题（在我们的入口里按 body 的 `code` 回写状态，
+  内置框架未动）—— 见 `API-NOTES.md`「坑 34」；关停回执丢失的竞态见「坑 36」。
 
 ## 3. HTTPS（手机端正式使用要走这条）
 
