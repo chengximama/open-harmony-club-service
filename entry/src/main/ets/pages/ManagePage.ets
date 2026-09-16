@@ -1078,6 +1078,7 @@ struct DangerZoneSection {
   }
 }
 
+@Entry
 @Component
 export default struct ManagePage {
   @State currentTab: number = 0;
