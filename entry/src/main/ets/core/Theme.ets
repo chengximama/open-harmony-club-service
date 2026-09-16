@@ -14,6 +14,9 @@ export interface ColorTokens {
   surface: string;
   primary: string;
   primarySoft: string;
+  onPrimary: string;       // 在 primary 上的前景色（白）
+  onSurface: string;        // 在 surface 上的前景色（深色，等同 textPrimary）
+  overlay: string;          // 模态浮层半透明遮罩（50% 黑）
   divider: string;
   textPrimary: string;
   textSecondary: string;
@@ -25,6 +28,9 @@ export const Color: ColorTokens = {
   surface: '#FFFFFF',       // 卡片
   primary: '#1F6FEB',       // 主色
   primarySoft: '#E8F1FE',   // 主色浅底
+  onPrimary: '#FFFFFF',    // 在 primary 上的白
+  onSurface: '#1B1F24',    // 在 surface 上的深色（= textPrimary）
+  overlay: '#80000000',     // 模态遮罩 50% 黑
   divider: '#E6E9EE',       // 分隔线
   textPrimary: '#1B1F24',   // 一级文字
   textSecondary: '#5A6472', // 二级文字
