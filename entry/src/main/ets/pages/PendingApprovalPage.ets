@@ -2,8 +2,11 @@
 // 展示 pending 状态的成员，支持多选批量分配部门+角色
 // 含：dept_hint 招募来源展示、批量分配结果逐条展示（succeeded/failed）
 // 工程化：Theme token 化、bindContentCover 化
+// 已接真接口：MemberApi.pending() / MemberApi.assignBatch() / DeptApi.list()
 
 import type { DeptBrief } from '../api/AuthApi';
+import { MemberApi, PendingMemberView, AssignBatchResponse, BatchFailItem } from '../api/MemberApi';
+import { DeptApi, DeptView } from '../api/DeptApi';
 import { Color, StatusColor, Space, Radius, FontSize, Shadow } from '../core/Theme';
 
 // 带 UI 选择状态的待分配成员（独立 interface，不用 extends，ArkTS 兼容）
@@ -26,10 +29,6 @@ interface RoleOption {
   label: string;
 }
 
-interface SelectOption {
-  value: string;
-}
-
 // 批量分配结果条目（逐条展示）
 interface AssignResultItem {
   id: number;
@@ -40,14 +39,7 @@ interface AssignResultItem {
   errorMsg: string;     // 失败时显示错误信息
 }
 
-// ─── 假数据（接 API 后改为 MemberApi.pending() 加载）───
-const DEPTS: Dept[] = [
-  { id: 0, name: '主席团' },
-  { id: 1, name: '课题部' },
-  { id: 2, name: '运营部' },
-  { id: 3, name: '宣传部' },
-];
-
+// ─── 角色选项（静态 UI 数据）───
 const ROLE_OPTIONS: RoleOption[] = [
   { key: 'member', label: '成员' },
   { key: 'vice_lead', label: '副部长' },
@@ -56,27 +48,23 @@ const ROLE_OPTIONS: RoleOption[] = [
   { key: 'president', label: '会长' },
 ];
 
-
-function deptSelectOptions(): SelectOption[] {
-  return DEPTS.map((item: Dept): SelectOption => {
-    const option: SelectOption = { value: item.name };
-    return option;
-  });
+// 批量分配失败的错误码 → 文案（与后端 errors.cj 对齐）
+function batchFailMsg(code: string): string {
+  if (code === 'FORBIDDEN_ROLE') return '当前角色无权执行此操作';
+  if (code === 'FORBIDDEN_LAST_PRESIDENT') return '系统必须始终保留至少一位会长';
+  if (code === 'FORBIDDEN_NOT_IN_DEPT') return '不能操作其他部门';
+  if (code === 'MEMBER_NOT_FOUND') return '成员不存在';
+  if (code === 'MEMBER_DISABLED') return '该成员已退出社团';
+  return '分配失败';
 }
 
-function roleSelectOptions(): SelectOption[] {
-  return ROLE_OPTIONS.map((item: RoleOption): SelectOption => {
-    const option: SelectOption = { value: item.label };
-    return option;
-  });
+// 在失败列表里按 id 找错误码
+function findFailCode(failed: BatchFailItem[], id: number): string {
+  for (let i = 0; i < failed.length; i++) {
+    if (failed[i].id === id) return failed[i].code;
+  }
+  return '';
 }
-const PENDING_MEMBERS: PendingMemberUI[] = [
-  { id: 101, name: '新同学A', deptHint: { id: 1, name: '课题部' }, registeredAt: '2026-09-14 10:30', selected: false },
-  { id: 102, name: '新同学B', deptHint: null, registeredAt: '2026-09-14 11:00', selected: false },
-  { id: 103, name: '新同学C', deptHint: { id: 2, name: '运营部' }, registeredAt: '2026-09-14 14:20', selected: false },
-  { id: 104, name: '新同学D', deptHint: { id: 3, name: '宣传部' }, registeredAt: '2026-09-14 15:45', selected: false },
-  { id: 105, name: '新同学E', deptHint: null, registeredAt: '2026-09-14 16:10', selected: false },
-];
 
 @Component
 struct PendingMemberCard {
@@ -152,6 +140,7 @@ struct AssignBottomBar {
 // 批量分配弹窗：由 bindContentCover 挂载，每次打开都是新实例，选择态自动重置为默认值
 @Component
 struct AssignDialog {
+  depts: Dept[] = [];
   onConfirm: (deptIndex: number, roleIndex: number) => void = (_d: number, _r: number) => {};
   onCancel: () => void = () => {};
   @State selectedDeptIndex: number = 0;
@@ -172,9 +161,9 @@ struct AssignDialog {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(deptSelectOptions())
+        Select(this.depts.map((d: Dept): SelectOption => ({ value: d.name })))
           .selected(this.selectedDeptIndex)
-          .value(DEPTS[this.selectedDeptIndex].name)
+          .value(this.depts.length > 0 ? this.depts[this.selectedDeptIndex].name : '')
           .onSelect((index: number) => { this.selectedDeptIndex = index; })
           .width('100%')
           .margin({ bottom: Space.lg })
@@ -185,7 +174,7 @@ struct AssignDialog {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(roleSelectOptions())
+        Select(ROLE_OPTIONS.map((r: RoleOption): SelectOption => ({ value: r.label })))
           .selected(this.selectedRoleIndex)
           .value(ROLE_OPTIONS[this.selectedRoleIndex].label)
           .onSelect((index: number) => { this.selectedRoleIndex = index; })
@@ -303,10 +292,51 @@ struct AssignResultDialog {
 
 @Component
 export default struct PendingApprovalPage {
-  @State members: PendingMemberUI[] = PENDING_MEMBERS;
+  @State members: PendingMemberUI[] = [];
+  @State depts: Dept[] = [];
+  @State loading: boolean = true;
+  @State errorMsg: string = '';
   @State showAssignDialog: boolean = false;
   @State showAssignResult: boolean = false;
   @State assignResults: AssignResultItem[] = [];
+  private memberApi: MemberApi = new MemberApi();
+  private deptApi: DeptApi = new DeptApi();
+
+  aboutToAppear(): void {
+    this.loadData();
+  }
+
+  async loadData(): Promise<void> {
+    this.loading = true;
+    this.errorMsg = '';
+    await this.loadDepts();
+    await this.loadPending();
+    this.loading = false;
+  }
+
+  async loadDepts(): Promise<void> {
+    const resp = await this.deptApi.list();
+    if (resp.ok && resp.data) {
+      this.depts = resp.data.items.map((d: DeptView): Dept => ({ id: d.id, name: d.name }));
+    } else {
+      this.errorMsg = resp.error?.message ?? '加载部门失败';
+    }
+  }
+
+  async loadPending(): Promise<void> {
+    const resp = await this.memberApi.pending();
+    if (resp.ok && resp.data) {
+      this.members = resp.data.items.map((v: PendingMemberView): PendingMemberUI => ({
+        id: v.id,
+        name: v.name,
+        deptHint: v.dept_hint,
+        registeredAt: v.registered_at ?? '',
+        selected: false,
+      }));
+    } else {
+      this.errorMsg = resp.error?.message ?? '加载待审批成员失败';
+    }
+  }
 
   toggleSelect(id: number): void {
     const idx = this.members.findIndex((m: PendingMemberUI): boolean => m.id === id);
@@ -326,43 +356,61 @@ export default struct PendingApprovalPage {
     this.members = [...this.members];
   }
 
-  // 执行批量分配，构造逐条结果，展示结果弹窗
-  doAssign(deptIndex: number, roleIndex: number): void {
-    const dept: Dept = DEPTS[deptIndex];
+  // 执行批量分配：调真实接口，按后端 succeeded/failed 构造逐条结果
+  async doAssign(deptIndex: number, roleIndex: number): Promise<void> {
+    if (this.depts.length === 0) return;
+    const dept: Dept = this.depts[deptIndex];
     const role: RoleOption = ROLE_OPTIONS[roleIndex];
     const selected: PendingMemberUI[] = this.members.filter((m: PendingMemberUI): boolean => m.selected);
+    const memberIds: number[] = selected.map((m: PendingMemberUI): number => m.id);
 
-    // TODO: 接入 MemberApi.assignBatch({ dept_id: dept.id, role: role.key, member_ids: ... })
-    //       后端返回 AssignBatchResponse { succeeded: number[], failed: BatchFailItem[] }
-    //       根据响应构造 results：succeeded 里的 id → ok=true；failed 里的 → ok=false，按 code 映射错误信息
-    // mock：本地构造结果（模拟部分失败 —— deptHint 为 null 的成员失败，演示"逐条结果"展示）
-    const results: AssignResultItem[] = selected.map((m: PendingMemberUI): AssignResultItem => {
-      const ok: boolean = m.deptHint !== null;
-      const item: AssignResultItem = {
-        id: m.id,
-        name: m.name,
-        ok: ok,
-        roleName: role.label,
-        deptName: dept.name,
-        errorMsg: ok ? '' : '未指定招募来源，需人工分配',
-      };
-      return item;
+    const resp = await this.memberApi.assignBatch({
+      dept_id: dept.id,
+      role: role.key,
+      member_ids: memberIds,
     });
 
-    this.assignResults = results;
-    this.showAssignDialog = false;
-    this.showAssignResult = true;
+    if (resp.ok && resp.data) {
+      const data: AssignBatchResponse = resp.data;
+      const succeededIds: number[] = data.succeeded;
+      const results: AssignResultItem[] = selected.map((m: PendingMemberUI): AssignResultItem => {
+        const ok: boolean = succeededIds.includes(m.id);
+        return {
+          id: m.id,
+          name: m.name,
+          ok: ok,
+          roleName: role.label,
+          deptName: dept.name,
+          errorMsg: ok ? '' : batchFailMsg(findFailCode(data.failed, m.id)),
+        };
+      });
 
-    // 从列表移除成功的成员（mock；真接入后用后端返回的 succeeded 数组判断）
-    const succeededIds: number[] = results
-      .filter((r: AssignResultItem): boolean => r.ok)
-      .map((r: AssignResultItem): number => r.id);
-    this.members = this.members.filter((m: PendingMemberUI): boolean => !succeededIds.includes(m.id));
+      this.assignResults = results;
+      this.showAssignDialog = false;
+      this.showAssignResult = true;
+      // 从列表移除分配成功的成员
+      this.members = this.members.filter((m: PendingMemberUI): boolean => !succeededIds.includes(m.id));
+    } else {
+      // 整批失败（网络/权限等）：全部标为失败
+      const errMsg: string = resp.error?.message ?? '分配失败';
+      const results: AssignResultItem[] = selected.map((m: PendingMemberUI): AssignResultItem => ({
+        id: m.id,
+        name: m.name,
+        ok: false,
+        roleName: role.label,
+        deptName: dept.name,
+        errorMsg: errMsg,
+      }));
+      this.assignResults = results;
+      this.showAssignDialog = false;
+      this.showAssignResult = true;
+    }
   }
 
   @Builder
   assignDialogBuilder() {
     AssignDialog({
+      depts: this.depts,
       onConfirm: (deptIndex: number, roleIndex: number): void => {
         this.doAssign(deptIndex, roleIndex);
       },
@@ -402,7 +450,32 @@ export default struct PendingApprovalPage {
       .width('100%')
       .padding({ left: Space.page, right: Space.page, top: Space.md, bottom: Space.sm })
 
-      if (this.members.length === 0) {
+      if (this.loading) {
+        Column() {
+          LoadingProgress().width(32).height(32).color(Color.primary)
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .justifyContent(FlexAlign.Center)
+      } else if (this.errorMsg.length > 0) {
+        Column() {
+          Text(this.errorMsg)
+            .fontSize(FontSize.body)
+            .fontColor(StatusColor.overdue.fg)
+            .textAlign(TextAlign.Center)
+
+          Button('重试')
+            .type(ButtonType.Capsule)
+            .backgroundColor(Color.primary)
+            .fontColor(Color.onPrimary)
+            .margin({ top: Space.md })
+            .onClick(() => { this.loadData(); })
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+      } else if (this.members.length === 0) {
         Column() {
           Text('🎉')
             .fontSize(48)

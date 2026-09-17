@@ -30,11 +30,12 @@ export interface UserPermissions {
   create_plan: boolean;
   create_task: boolean;
   update_any_task: boolean;
-  manage_depts?: boolean;
-  view_register_code?: boolean;
-  change_register_code?: boolean;
-  manage_invite_links?: boolean;
-  transfer_presidency?: boolean;
+  // 管理页四张分区卡的显示开关（2026-09-16，D-1；仅用于画界面，不能替代服务端校验）
+  manage_depts?: boolean;         // 部门增删改 —— 仅会长
+  view_register_code?: boolean;   // 注册口令明文 —— 会长 / 副会长
+  change_register_code?: boolean; // 更换 / 轮换口令 —— 仅会长
+  manage_invite_links?: boolean;  // 招募链接增删启停 —— 会长 / 副会长
+  transfer_presidency?: boolean;  // 会长移交 —— 仅会长
 }
 
 export interface LoginRequest {

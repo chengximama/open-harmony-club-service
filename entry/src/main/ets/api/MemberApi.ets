@@ -66,7 +66,7 @@ export interface TransferPresidencyResponse {
   previous: MemberBrief;
 }
 
-/** POST /api/v1/members/{id}/reset-password 响应 */
+/** 重置密码响应 —— 一次性临时密码（仅本次返回可见，需立即转告目标成员） */
 export interface ResetPasswordResponse {
   temporary_password: string;
 }
@@ -163,12 +163,17 @@ export class MemberApi {
     return this.client.patch<MemberBrief>(`/members/${id}`, data);
   }
 
+  /** POST /api/v1/members/{id}/disable — 移出社团（账号保留，日后可恢复） */
+  async disable(id: number): Promise<ApiResponse<MemberBrief>> {
+    return this.client.post<MemberBrief>(`/members/${id}/disable`);
+  }
+
   /** POST /api/v1/members/{id}/transfer-presidency — 会长移交 */
   async transferPresidency(id: number, data?: TransferPresidencyRequest): Promise<ApiResponse<TransferPresidencyResponse>> {
     return this.client.post<TransferPresidencyResponse>(`/members/${id}/transfer-presidency`, data);
   }
 
-  /** POST /api/v1/members/{id}/reset-password — 生成一次性临时密码 */
+  /** POST /api/v1/members/{id}/reset-password — 重置密码（签发一次性临时密码） */
   async resetPassword(id: number): Promise<ApiResponse<ResetPasswordResponse>> {
     return this.client.post<ResetPasswordResponse>(`/members/${id}/reset-password`);
   }
