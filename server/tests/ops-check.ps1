@@ -231,6 +231,43 @@ try {
     $r = Club "GET" "/api/v1/auth/me" $null $ctoken
     Check "该令牌在 club-server 侧确实是 ops 身份" (($r.Status -eq 200) -and ($r.Body -match '"role"\s*:\s*"ops"')) "body=$($r.Body)"
 
+    # ---------- 4b) 用**运维账号**直接登录运维台（2026-09-17 新增） ----------
+    # 登录框不再预填 admin/admin123（那对公开默认值 N-29 起已作废），也不再只认后台账号：
+    # 手机号 + 运维口令即可登进来，登进来之后写路径用的就是这同一个账号。
+    $r = Hit "POST" "/api/login" (ConvertTo-Json @{ username = $opsPhone; password = $opsPw } -Compress) $null $null
+    Check "运维账号可登录运维台（手机号 + 运维口令）-> code=0" ((BizCode $r) -eq 0) "status=$($r.Status) body=$($r.Body)"
+    $opsToken = $null
+    if ($r.Body -match '"token"\s*:\s*"([^"]+)"') { $opsToken = $Matches[1] }
+    Check "拿到运维身份的会话令牌" ($null -ne $opsToken -and $opsToken.Length -gt 40)
+
+    $r = Hit "GET" "/api/me" $null $opsToken $null
+    Check "该会话 /api/me 身份 = ops（role=ops 且 can_ops=true）" `
+        (($r.Status -eq 200) -and ($r.Body -match '"role"\s*:\s*"ops"') -and ($r.Body -match '"can_ops"\s*:\s*true')) "status=$($r.Status) body=$($r.Body)"
+    Check "/api/me 标出这是运维账号登录（is_ops_account，前端据此藏掉后台管理入口）" `
+        ($r.Body -match '"is_ops_account"\s*:\s*true') "body=$($r.Body)"
+    Check "运维身份的用户名就是登录用的手机号" ($r.Body -match [regex]::Escape($opsPhone)) "body=$($r.Body)"
+
+    $r = Hit "GET" "/api/club/overview" $null $opsToken $null
+    Check "运维身份可读写运维接口（overview -> HTTP 200）" ($r.Status -eq 200) "status=$($r.Status) body=$($r.Body)"
+
+    # 后台管理接口（用户 / 角色 / 权限）必须仍然只对 admin 開放：运维身份在那里没有条目
+    $r = Hit "GET" "/api/users" $null $opsToken $null
+    Check "运维身份进不了后台用户管理（不是 200）" (($r.Status -eq 401) -or ($r.Status -eq 403)) "status=$($r.Status) body=$($r.Body)"
+
+    # 两类失败必须在**登录这一步**就分清楚，且都不能放行
+    $r = Hit "POST" "/api/login" (ConvertTo-Json @{ username = $opsPhone; password = "WrongPass2026" } -Compress) $null $null
+    Check "运维口令错 -> HTTP 401（不是 500、更不是放行）" (($r.Status -eq 401) -and ((BizCode $r) -eq 401)) "status=$($r.Status) body=$($r.Body)"
+    Check "口令错的提示给出处置方向（提到 init-ops / club-server，而不是干巴巴一句 invalid）" `
+        ($r.Body -match 'init-ops|club-server') "body=$($r.Body)"
+
+    $r = Hit "POST" "/api/login" (ConvertTo-Json @{ username = $presPhone; password = $presPw } -Compress) $null $null
+    Check "会长账号**不能**登录运维台（运维不该由会长执行）-> HTTP 403" (($r.Status -eq 403) -and ((BizCode $r) -eq 403)) "status=$($r.Status) body=$($r.Body)"
+    Check "403 的提示说明只接受 init-ops 建的运维账号" ($r.Body -match '运维账号') "body=$($r.Body)"
+
+    # 后备账号仍要能登 —— 新路径不能把老路径挤掉
+    $r = Hit "POST" "/api/login" (ConvertTo-Json @{ username = "admin"; password = $adminPw } -Compress) $null $null
+    Check "后台账号 admin 仍可登录（老路径未被挤掉）" ((BizCode $r) -eq 0) "status=$($r.Status) body=$($r.Body)"
+
     # ---------- 5) 写路径（全部以运维身份） ----------
     $r = Hit "OPTIONS" "$clubBase/api/v1/members/2/assign" $null $null "http://127.0.0.1:$opsPort" $true
     Check "club-server CORS 预检 -> 204（浏览器直连的前提）" ($r.Status -eq 204) "status=$($r.Status)"

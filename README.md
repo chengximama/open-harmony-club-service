@@ -28,8 +28,8 @@
 | **服务端代码评审（第三轮）** | `docs/code-review.md` 第三轮复验：第二轮 9 条**全部确认修复**；新发现 4 条（**N-10** `assign`/`assign-batch` 漏在同权保护之外 · N-11 文档限定词 · N-12 裸 IPv6 退化 · N-13 分布式尝试）—— **已全部处理**。N-10 的两个面（降级同权者、用 `assign` 推翻会长对同权者的移出决定）都已堵住 | ✅ 完成并验证 |
 | **轻舟升级与 CangDB 适配** | 升级轻舟到 **`e072980`**（= 上游 HEAD；上游 `141a735` 修好 DEF-1，本地补丁撤销）；新版 `store.cj` / `rbac.cj` 依赖的 **CangDB 上游仓只有 README、没有代码** → 用 `server/src/fw_rbac_store.cj`（文件存储的数据层）+ `fw_rbac.cj`（`requirePermission` 中间件）替代，`build.ps1` 排除框架原版 | ✅ 完成并验证（单测 471 / 冒烟 421 / TLS 22 / 契约 30） |
 | **轻舟后台管理界面（新增）** | 随 `e072980` 快照带进上游的**后台管理界面**，并新增 `build.ps1 -Target admin` → `build\admin\admin.exe`（自包含：exe + 前端 + `admin.env`）。它的数据层**路由到本地 JSON 文件**（复用 `fw_rbac_store.cj`，沧海 CangDB 未公开）。端到端验证 `server/tests/admin-check.ps1` | ✅ 完成并验证（后台端到端 **29 / 0**） |
-| **「社团管理」运维页（新增）** | 后台里加一页 `/club`：**读**直接读社团库文件（`server/src/ops/*`，club-server 不在跑也能看），**写**由后台以**专用运维账号**（club-server 的 `role = ops`）的身份调用 club-server 真实 API（分配/停用/重置口令/换注册口令/部门增删/优雅停服），另带概览、任务/课题/招募链接查询、**审计日志**与**一键备份**。入口是我们自己的 `src/ops/admin_main.cj`（上游 `examples/admin.cj` 只作对照、逐字节原样）；顺手修掉上游"成功响应也可能带 404"的状态码问题。端到端验证 `server/tests/ops-check.ps1` | ✅ 完成并验证（运维页端到端 **52 / 0**） |
-| **运维身份独立于会长（新增）** | 运维**不该由会长执行**：新增内置身份 **`ops`**（权限 = 会长去掉「移交会长」，**不可由 API 分配**，只能 `club-server init-ops <手机号> <口令>` 创建、`retire-ops` 停用）。运维人员只登录后台（`admin/admin123`），后台代持运维账号去调 club-server → **审计里 actor 是运维**，与会长做的操作分得清清楚楚。顺带补齐部门新增/改名的审计（原先只有删除记了） | ✅ 完成并验证（单测 490 / 冒烟 422 全绿） |
+| **「社团管理」运维页（新增）** | 后台里加一页 `/club`：**读**直接读社团库文件（`server/src/ops/*`，club-server 不在跑也能看），**写**由后台以**专用运维账号**（club-server 的 `role = ops`）的身份调用 club-server 真实 API（分配/停用/重置口令/换注册口令/部门增删/优雅停服），另带概览、任务/课题/招募链接查询、**审计日志**与**一键备份**。入口是我们自己的 `src/ops/admin_main.cj`（上游 `examples/admin.cj` 只作对照、逐字节原样）；顺手修掉上游"成功响应也可能带 404"的状态码问题。端到端验证 `server/tests/ops-check.ps1` | ✅ 完成并验证（运维页端到端 **64 / 0**） |
+| **运维身份独立于会长（新增）** | 运维**不该由会长执行**：新增内置身份 **`ops`**（权限 = 会长去掉「移交会长」，**不可由 API 分配**，只能 `club-server init-ops <手机号> <口令>` 创建、`retire-ops` 停用）。运维人员只登录后台（口令由 `admin.exe` 首次启动随机生成），后台代持运维账号去调 club-server → **审计里 actor 是运维**，与会长做的操作分得清清楚楚。顺带补齐部门新增/改名的审计（原先只有删除记了） | ✅ 完成并验证（单测 490 / 冒烟 422 全绿） |
 | **服务端容量基准与四项性能改造** | 按"接近千人"的容量问题做了可复现基准（`server/tests/bench.ps1`，真实 HTTP + 旧版本 worktree 对比），并落地四项改造：① 列表排序插入排序→**堆排序** ② **PBKDF2 移出全局锁**（三阶段加锁）③ 过期**令牌回收** ④ 整库落盘移出锁（请求链末端刷盘）。实测只有 ② 有量级收益（**4 并发登录 1574 → 867 ms**），①④ 在千人档落在噪声内、价值是最坏情况下界 —— 见 `docs/capacity-baseline.md` | ✅ 完成并验证（单测 349 / 冒烟 347 / TLS 22） |
 | **服务端第四轮复验修复** | 按 `docs/code-review.md` **第四轮**的 6 条新发现修：**N-14**（本机判定用子串匹配 `::1` → 远程 IPv6 可远程关停服务，改成按地址相等比白名单）· **N-15**（4 个 handler 被 4xx 拒绝却留下半改状态并落盘，改成两阶段赋值）· **N-16**（登录时序侧信道可枚举手机号，改成两条路径等价 PBKDF2）· **N-17**（审计 IO 移出锁）· **N-18**（任务可挂任意部门课题，补部门一致性）· **N-19**（招募 token 32 位 → 32 字节） | ✅ 完成并验证（单测 387 / 冒烟 360 / TLS 22） |
 | **按 UI 设计规格对齐服务端** | 拿《鸿蒙俱乐部-全场景UI设计规格》13 页逐条对服务端，8 条按设计稿落地（含队友复验补的 2 条）：**D-1** 权限摘要补 5 个管理布尔（由 `can()` 推导）· **D-2** 名录 `?q=` 搜索姓名或部门 · **D-3** 任务/课题**读**范围放开到全社团（写不变）· **D-4** 阻塞任务的**求助对象** `needs_help` + 部长首页带出本部门阻塞项 · **D-5** 任务**逾期天数** `overdue_days` · **D-7** 成员详情补 `done_tasks` / `overdue_tasks`。另**定稿密码口径**（D-6：8–32 字节 + 只允许数字/英文/符号，有意偏离设计稿的 6 位下限）；其余按决定保留原版本。逐条证据见 `docs/ui-spec-conformance-review.md` | ✅ 完成并验证（单测 471 / 冒烟 421 / TLS 22 / 契约 30） |
@@ -48,6 +48,7 @@ cd server
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 427 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1 # TLS 22 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-check.ps1  # 前后端契约 30 项
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\init-name-check.ps1        # init-admin 的会长姓名选项 40 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1     # 容量基准（按需，见 docs/capacity-baseline.md）
 ```
 
@@ -56,17 +57,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1     # 容�
 > 所以**项数可能在 427 上下浮动一两条，判据是 `FAIL 0`，不是那个总数**。
 > （本机无网卡时实测连跑两次都是 **PASS 427 / FAIL 0**。）
 
-**后台 / 运维页另有两套端到端**（改了 `build.ps1 -Target admin`、`fw_rbac_store.cj`、`src/ops/*`、轻舟快照或前端后都要跑）：
+**后台 / 运维页另有几套**（改了 `build.ps1 -Target admin`、`fw_rbac_store.cj`、`src/ops/*`、轻舟快照或前端后都要跑）：
 
 ```powershell
 cd server
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target admin   # 编运维台（会带上 server\admin-web\dist）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\admin-check.ps1     # 后台自身（RBAC + JSON 数据层）29 项
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\ops-check.ps1       # 「社团管理」运维页 52 项（含运维账号的写路径）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\ops-check.ps1       # 「社团管理」运维页 64 项（含运维账号登录 / 写路径）
+node .\tests\web-logic-check.mjs                                                 # 前端逻辑 17 项（401 不该整页跳转，见 code-review N-32）
 ```
 
 > 改了前端源码（`server\admin-web\src`）要重建 `dist`（需要 Node）：
 > `cd server\admin-web ; npm install ; npm run build` —— 部署机不需要 Node，`dist` 随仓库提交。
+> 本机没装 npm 时可直接用仓库里已有的 vite：`node node_modules\vite\bin\vite.js build`。
+> ⚠️ 运维台**关闭了 ETag**（`admin_main.cj` 的 `staticOpts.enableETag = false`）：轻舟的 ETag 只按
+> 文件字节大小生成，而 vite 重建后 `index.html` 字节数不变（只有 hash 文件名变）→ 浏览器会拿到
+> 304 卡在旧 HTML 上、而它引用的旧 JS 已被删除 → **白屏**。见 code-review N-33。
 
 ---
 
@@ -134,6 +140,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 # 2. 到 exe 所在目录操作（与部署形态一致：一切按相对路径）
 cd build
 .\club-server.exe init-admin 13800000000 ClubPass2026 data   # 预置首任会长 + 4 个组织
+#    会长姓名（不给则默认「会长」）：ASCII 用 --name LiSi；
+#    **中文必须走文件**（中文当命令行参数会让程序在 main 之前就崩，见 docs\API-NOTES.md 坑 11）：
+#    [IO.File]::WriteAllText("$PWD\n.txt","张三",[Text.UTF8Encoding]::new($false))
+#    .\club-server.exe init-admin 13800000000 ClubPass2026 data --name-file n.txt
 .\club-server.exe serve 8080 data                           # HTTP 起服务
 # 或者 HTTPS（先用 openssl 生成带 SAN 的证书，见 docs\server-guide.md）
 .\club-server.exe serve-tls 8443 data ..\certs\cert.pem ..\certs\key.pem
@@ -155,26 +165,34 @@ cd build\admin
 .\admin.exe        # http://127.0.0.1:3000/  （运维页：http://127.0.0.1:3000/club）
 ```
 
-- 种子账号 `admin / admin123`（角色 1）、`user / user123`（角色 2）；端口/密钥/令牌时长在
-  `build\admin\admin.env`（首次构建生成，随机 64 位 `secret`，之后不覆盖）。
+- 后台账号 `admin`（角色 1）、`user`（角色 2）；**口令首次启动（建库）时随机生成**（各 16 个
+  十六进制字符），控制台**打印一次**并写入 `build\admin\admin.env` 的 `admin_pass` / `user_pass`，
+  之后不再回显 —— 想自己指定就把这两行取消注释填值（**别用 `admin123` 这类公开默认值**，
+  2026-09-17 前它就是默认值，见 `code-review.md` N-29）。端口/密钥/令牌时长也在
+  `build\admin\admin.env`（首次构建生成随机 64 位 `secret`，之后不覆盖）。
   ⚠ 这两条是**轻舟 RBAC 那套口令**（存在 `rbac.json`），与 `club-server` 的会长/成员账号
   （PBKDF2，存在 `data\db.json`）**不是一套**，两边不能互用。
 - **后台自身的数据层是本地 JSON 文件**（`build\admin\admin-data\rbac.json`）：沧海 CangDB 尚未公开，
   所以复用我们的 `server/src/fw_rbac_store.cj` —— 内存 `Store` + 写时原子落盘（先 `.tmp` 再 `rename`）。
-- 运维页 `/club` 只放给**后台的 admin 角色**（后端 `/api/club/**` 同口径，`user` 角色拿到 403）。
+- 运维页 `/club` 放给**后台的 admin 角色**，或**直接用运维账号登录进来的身份**
+  （后端 `/api/club/**` 同口径；后台的 `user` 角色拿到 403）。
   它**读**社团库文件（`admin.env` 的 `club_data`，默认 `../data`），club-server 不在跑也能看；
-  **写**在 club-server 侧的身份是**专用运维账号**（`role = ops`）—— 运维人员**只登录后台一次**
-  （`admin/admin123`），页面上不出现任何社团账号的口令：
+  **写**在 club-server 侧的身份是**专用运维账号**（`role = ops`）—— 所以运维人员
+  **不需要知道任何会长口令**，页面上也不出现任何社团账号的口令：
   1. 先在 club-server 建运维账号（一次性）：`club-server init-ops <手机号> <口令> [数据目录]`
      → 权限 = **除「移交会长」外与会长同权**；退役用 `club-server retire-ops <手机号>`。
      它**不可由 API 分配**（否则会长能造出权限略高于自己的账号），只能这样建。
-  2. 把手机号/口令填进 `admin.env` 的 `club_user` / `club_pass`（留空 = 运维页只能看不能改，页面会提示）。
-  3. 运维页启动时由后台用它换一个令牌（内存缓存 6 小时）交给页面，页面直连 club-server 做写操作。
+  2. **直接用这个手机号 + 口令登录运维台**（2026-09-17 起登录框两种凭据都认）——
+     不用改任何配置文件，写操作就是该账号的身份。
+     也可以改用「后台代持」：把手机号/口令填进 `admin.env` 的 `club_user` / `club_pass`
+     （留空 = 运维页只能看不能改，页面会提示），但**改完必须重启 `admin.exe`**。
+  3. 页面直连 club-server 做写操作（令牌由后台代持，内存缓存 6 小时）。
   → 于是 club-server 的**审计里 actor 是"运维"**，与会长做的操作分得清清楚楚（职责分离）。
+     会长 / 成员账号登运维台会被 **403**（运维不该由会长执行）。
 - 运维页能做的写操作：分配/改派、停用、重置口令（含**会长的**口令）、换注册口令、
   **部门增删改**、优雅停服 club-server；**移交会长是会长专属，运维不参与**（按钮会明确提示）。
   另带概览、任务/课题/招募链接、**审计日志**（解析 `audit.log`）与**一键备份**。
-- 验证：`tests\admin-check.ps1`（**29 / 0**，后台自身）+ `tests\ops-check.ps1`（**52 / 0**，运维页含写路径）。
+- 验证：`tests\admin-check.ps1`（**29 / 0**，后台自身）+ `tests\ops-check.ps1`（**64 / 0**，运维页含运维账号登录与写路径）。
 - **上游那个状态码特性已在我们自己的入口修掉**：上游 `respondOk/respondErr` 只写 body 的 `code`，
   而 `passOnNotFound` 路由 miss 时会先把 `ctx.status` 置成 404 → "成功响应带 404"。
   我们的 `src/ops/admin_main.cj` 加了一个链尾 `statusNormalizer()` 按 `code` 回写状态码
@@ -189,7 +207,7 @@ cd build\admin
 | --- | --- | --- |
 | **`docs/HANDOFF.md`** | **交接说明**：项目现状、已冻结设计、验证过的技术事实、未决事项 | **接手项目先看这个** |
 | `docs/server-guide.md` | 服务端指南：构建/运行/测试、进度、两条实现纪律 | 动服务端代码前看 |
-| **`docs/local-deploy.md`** | **本机部署一页上手**：前置体检 · 五步跑起来（编译/初始化/起服务/验证/停止）· HTTPS · 部署包 · 让客户端连上 · 数据与备份 · 坑表 | **第一次在本机跑服务端看这个** |
+| **`docs/local-deploy.md`** | **本机部署一页上手**：前置体检 · **部署顺序**（编译 → 一次性初始化〔会长 + 运维账号〕 → 起服务 → 验证 → 停止 → 注册 → 可选运维台）· HTTPS · 部署包 · 让客户端连上 · 数据与备份 · 坑表 | **第一次在本机跑服务端看这个** |
 | **`docs/API-NOTES.md`** | 编译期 API 事实清单 + **38 条踩坑记录**（含"轻舟成功响应也可能带 HTTP 404"「坑 34」、"关停端点回执可能丢失"「坑 36」、"仓颉枚举不能用 `==`"「坑 38」） | 加新函数前先查（避让框架同名符号） |
 | `docs/api-design.md` | **接口设计的唯一权威**：40 个接口逐条定义 | 写服务端时全程对照 |
 | **`docs/code-review.md`** | **代码评审报告（六轮）**：一 24 条 · 二 9 条 · 三 4 条（N-1…N-13）· 四 6 条 + N-20 · 五 4 条（N-21 登录 CPU 放大 / N-22 构建脚本陷阱…）· 六 3 条（**N-29 运维台默认口令** / N-30 测试环境依赖…）—— 前五轮已修并复验，**第六轮见文末** | 想了解"哪些坑已经踩过、为什么这样写" |

@@ -10,7 +10,7 @@ package qingzhou
  *   1) 原样保留上游那套（登录 / me / dashboard / users / roles / perms / health /
  *      /admin/shutdown + 静态托管 SPA），因为上游预构建的 admin-web 前端就按这套接口写。
  *   2) 加一组「/api/club/…」运维接口：直接读社团库文件（只读），
- *      一切**写**操作由前端带会长令牌直接打 club-server 的真实 API（见下）。
+ *      一切**写**操作由前端带**运维账号**的令牌直接打 club-server 的真实 API（见下）。
  *   3) 修掉上游那处 HTTP 状态码问题：上游 `respondOk/respondErr` 只写 body 的 code，
  *      而 `passOnNotFound` 的路由 miss 时会先把 ctx.status 置成 404，于是"成功响应带 404"。
  *      现在入口是我们的代码，加一个链尾的 statusNormalizer() 按 body.code 回写状态码。
@@ -22,10 +22,11 @@ package qingzhou
  *   部门一致性（N-18）等约束。所以：
  *     读 = 运维台直接读文件（club-server 不在跑也能用，且读的是原子落盘的完整文件）
  *     写 = 前端 fetch club-server 的「/api/v1/…」（CORS 已开、方法与 Authorization 头都在白名单里），
- *          用会长手机号+口令现场登录拿令牌，令牌只存在浏览器 localStorage
- *  运维台自己的 RBAC 只负责"谁能打开这个页面"（默认仅角色 1 = admin）。
+ *          用**运维账号**换到的令牌（后台代持，见 /api/club/session），令牌只存在浏览器 localStorage
+ *  运维台自己的 RBAC 只负责"谁能打开这个页面"：后台的 admin 角色，或者**直接用 club-server
+ *  的运维账号登录**（2026-09-17 起，见下方"运维身份"整段）。
  *
- * 编译：build.ps1 -Target admin（框架 32 个文件 + 我们这 6 个：store / timex / strx /
+ * 编译：build.ps1 -Target admin（框架 32 个文件 + 我们这 8 个：store / audit / timex / strx /
  *       fw_rbac_store / ops/club_json / ops/club_view / ops/admin_main）
  * 运行：cd build\admin ; .\admin.exe   ->  http://127.0.0.1:3000/（运维页 /club）
  */
@@ -33,6 +34,7 @@ package qingzhou
 import std.collection.*
 import std.convert.*
 import std.fs.*
+import std.sync.*
 import std.time.*
 import stdx.encoding.json.*
 
@@ -73,6 +75,194 @@ class ClubSession {
 
 /* 缓存有效期（秒）：club-server 的令牌本身是 30 天，这里只是别把登录做得太频繁。 */
 let OPS_SESSION_TTL: Int64 = 6 * 3600
+
+/* ===================== 运维身份：运维账号直接登录运维台（2026-09-17） =====================
+ *
+ * 登录框现在接受**两种**凭据：
+ *   ① 后台自己的账号（轻舟 RBAC：admin / user）—— 管后台自身，与上游一致；
+ *   ② club-server 的**运维账号**（`role = ops`，由 `club-server init-ops` 创建）——
+ *      也就是把手机号与运维口令直接填进登录框。
+ *
+ * 为什么加这条（原先的设计是"运维人员必须先拿到另一个后台口令，再把运维账号手填进
+ * admin.env 的 club_user/club_pass"）：两套凭据、两道手工配置，而运维人员真正拥有的
+ * 只有 init-ops 建的那一个。实测里这一步正是最容易被跳过、跳过之后现象最迷惑人的地方
+ * （登录恒 401，而运维页名录读文件、照样看得见那个账号），见 local-deploy §2.2 / §2.7。
+ *
+ * 身份怎么表达：JWT 主体写成 **`ops:<手机号>`**，与后台自己的数字 userId 天然区分开。
+ *   · 不必新增角色、也不必迁移 rbac.json；
+ *   · framework 的 requirePermission 把非数字主体判成 userId = -1 → 后台管理接口
+ *     （用户 / 角色 / 权限）对运维身份**自然关闭**，无需额外写闸门；
+ *   · 运维接口的闸门在 requireClubOps() 里显式放行这一形态。
+ *
+ * 口令**由 club-server 校验**（不在这里离线核对 db.json）。理由：写路径本来就走
+ * club-server，两边用同一个权威才不会出现"登录成功了但写操作说凭据被拒"这种分裂状态；
+ * 而且 club-server 只在启动时读一次库，"刚 init-ops 但没重启"这类问题能在登录这一步
+ * 就被诊断出来（见 opsLoginDiagnosis）。
+ */
+let OPS_SUBJECT_PREFIX: String = "ops:"
+
+func opsSubjectOf(phone: String): String {
+    return OPS_SUBJECT_PREFIX + phone
+}
+
+/* 是运维身份则返回其中的手机号；后台自己的数字主体返回 None。 */
+func opsPhoneOfSubject(subject: String): ?String {
+    if (subject.size > OPS_SUBJECT_PREFIX.size &&
+        subject[0..OPS_SUBJECT_PREFIX.size] == OPS_SUBJECT_PREFIX) {
+        return Some(subject[OPS_SUBJECT_PREFIX.size..])
+    }
+    return None
+}
+
+/*
+ * 运维账号登录的按 IP 节流表。
+ *
+ * 为什么必须有：登录框会把"非后台账号"的输入**转发**给 club-server 校验，而那边每次
+ * 校验都是 10 万次 PBKDF2 —— 于是运维台多了一条"未认证就能让 club-server 烧 CPU"的路径
+ * （与 N-21 同一类问题）。更要紧的是 **club-server 的登录节流是按 IP 记的，而所有转发
+ * 都来自运维台这一个 IP**：局域网里有人刷运维台登录，就可能把社团服务端的登录桶刷满，
+ * 把真正的运维人员一起锁在门外。
+ *
+ * 所以这里在**转发之前**按客户端 IP 先拦一道，阈值取 club-server 的一半
+ * （那边是 15 分钟 10 次，见 h_auth.cj 的 LOGIN_FAIL_LIMIT=5/两个桶），
+ * 保证**单个来源**打不满 club-server 的桶。递增退避与清理策略与 h_auth.cj 同构。
+ */
+let OPS_LOGIN_WINDOW: Int64 = 900         /* 统计窗口（秒） */
+let OPS_LOGIN_FAIL_LIMIT: Int64 = 5       /* 窗口内失败次数达到它就锁 */
+let OPS_LOGIN_LOCK: Int64 = 900           /* 锁定时长（秒） */
+
+class OpsLoginFail {
+    public var count: Int64 = 0
+    public var first_at: Int64 = 0
+    public var locked_until: Int64 = 0
+    public init() {}
+}
+
+class OpsLoginGuard {
+    private let mu = Mutex()
+    private var tbl: HashMap<String, OpsLoginFail> = HashMap<String, OpsLoginFail>()
+
+    public init() {}
+
+    public func locked(ip: String): Bool {
+        mu.lock()
+        var out = false
+        try {
+            let now = nowEpoch()
+            match (tbl.get(ip)) {
+                case Some(st) => out = st.locked_until > now
+                case None => out = false
+            }
+        } finally {
+            mu.unlock()
+        }
+        return out
+    }
+
+    /* ok = true 表示这次尝试"凭据确实有效"，成功即清空该 IP 的记录。 */
+    public func note(ip: String, ok: Bool): Unit {
+        /* 空键 = 回环等不参与节流的来源（见 opsLoginViaClub 里的说明） */
+        if (ip.size == 0) {
+            return
+        }
+        mu.lock()
+        try {
+            let now = nowEpoch()
+            if (ok) {
+                tbl.remove(ip)
+            } else {
+                let st = tbl.get(ip) ?? OpsLoginFail()
+                if (st.first_at == 0 || now - st.first_at > OPS_LOGIN_WINDOW) {
+                    st.first_at = now
+                    st.count = 0
+                }
+                st.count += 1
+                if (st.count >= OPS_LOGIN_FAIL_LIMIT) {
+                    st.locked_until = now + OPS_LOGIN_LOCK
+                    st.count = 0
+                    st.first_at = now
+                }
+                tbl[ip] = st
+                if (tbl.size > 500) {
+                    let doomed = ArrayList<String>()
+                    for ((k, v) in tbl) {
+                        if (v.locked_until <= now && now - v.first_at > OPS_LOGIN_WINDOW) {
+                            doomed.add(k)
+                        }
+                    }
+                    for (k in doomed) {
+                        tbl.remove(k)
+                    }
+                }
+            }
+        } finally {
+            mu.unlock()
+        }
+    }
+}
+
+/* 进程内单例：登录路由是闭包，用全局量比多穿一层参数清楚。 */
+let opsLoginGuard = OpsLoginGuard()
+
+/*
+ * 从 ctx.remoteAddr()（"ip:port" / "[v6]:port" / 裸 IPv6）里剥出地址，只当作**节流键**用。
+ * 因此这里不需要 N-14 那种严格判定：即使切错也只是几个来源共用同一个桶（偏保守，不是绕过）。
+ */
+func opsClientIp(ctx: Context): String {
+    let raw = ctx.remoteAddr()
+    let a = raw.toArray()
+    let n = a.size
+    if (n == 0) {
+        return ""
+    }
+    if (a[0] == 91) {   /* '[' → [v6]:port */
+        var i: Int64 = 1
+        while (i < n) {
+            if (a[i] == 93) {   /* ']' */
+                return String.fromUtf8(a[1..i])
+            }
+            i += 1
+        }
+        return raw
+    }
+    var colons: Int64 = 0
+    var last: Int64 = -1
+    var j: Int64 = 0
+    while (j < n) {
+        if (a[j] == 58) {   /* ':' */
+            colons += 1
+            last = j
+        }
+        j += 1
+    }
+    if (colons == 1) {
+        return String.fromUtf8(a[0..last])
+    }
+    return raw
+}
+
+/*
+ * 运维账号登录失败时的**分类诊断**（与 clubSessionEnsure 同一套口径）：
+ * "连不上 club-server" 与 "凭据不对" 处置完全不同，答错方向比不答更费时间。
+ */
+func opsLoginDiagnosis(ops: OpsConfig, phone: String): String {
+    match (httpGetText(opsJoin(ops.apiBase, "health"))) {
+        case Some(_) =>
+            return "登录失败：手机号 ${phone} 或口令不对。" +
+                "若这是刚用 init-ops 建的账号，注意 club-server **只在启动时读一次库** —— " +
+                "必须在建完账号**之后**再启动它（边跑边改不生效，见 local-deploy §2.2 ②）"
+        case None =>
+            if (startsWithAscii(ops.apiBase.toAsciiLower(), "https://")) {
+                return "登录失败：连不上 HTTPS 的 club-server（${ops.apiBase}）。" +
+                    "运维台的出站客户端没有 TLS 配置，自签证书也过不了校验 —— " +
+                    "请让 club-server 另以**明文 HTTP** 起一个本机端口，并把 club_api 指向它。"
+            }
+            return "登录失败：连不上 club-server（${ops.apiBase}）。" +
+                "运维账号的口令由 club-server 校验，所以它必须在跑 —— " +
+                "先在 server\\build 下跑 `club-server serve 8080 data`，再回来登录。" +
+                "（club-server 没起时，仍可用后台自己的账号 admin/user 登录，运维页只能看不能改。）"
+    }
+}
 
 /* ===================== 响应壳（与上游 admin 前端约定一致：{code,message,data}） ===================== */
 
@@ -246,10 +436,113 @@ func clubSessionEnsure(cfg: OpsConfig, sess: ClubSession, force: Bool): Unit {
         case None =>
             /* 区分"连不上"与"凭据不对" —— 两类问题的处置完全不同 */
             match (httpGetText(opsJoin(cfg.apiBase, "health"))) {
-                case Some(_) => sess.err = "运维账号凭据被拒绝：club_user=${cfg.clubUser}（口令错？账号被 retire-ops 停用？）"
-                case None => sess.err = "连不上 club-server：${cfg.apiBase}（没起？地址/端口在 admin.env 里改）"
+                case Some(_) => sess.err = "运维账号凭据被拒绝：club_user=${cfg.clubUser}（口令错？账号刚 init-ops 但 club-server 没重启？被 retire-ops 停用？）"
+                case None =>
+                    /*
+                     * 2026-09-17：https:// 必须单独说清楚，否则会把人带到完全错误的方向。
+                     *
+                     * 框架的 httpPostJson / httpGetText 用的是默认 ClientBuilder，**没有 TLS 配置**
+                     * （httpclient.cj 的文件头就写着"需要 TLS 请直接用 stdx.net.http.Client"），
+                     * 而 club-server 用的又是自签证书 —— 两者叠加必然连不上。
+                     * 实测：club_api=https://127.0.0.1:8443 时落到这里，但服务其实**好好起着**，
+                     * 原先那句"没起？"是错的诊断。
+                     */
+                    if (startsWithAscii(cfg.apiBase.toAsciiLower(), "https://")) {
+                        sess.err = "运维台连不上 HTTPS 的 club-server：${cfg.apiBase}。" +
+                            "出站客户端没有 TLS 配置，自签证书也过不了校验 —— " +
+                            "请让 club-server 另以**明文 HTTP** 起一个本机端口（如 serve 8080），" +
+                            "把 club_api 指向它，并用防火墙限制该端口的来源。"
+                    } else {
+                        sess.err = "连不上 club-server：${cfg.apiBase}（没起？地址/端口在 admin.env 里改）"
+                    }
             }
     }
+}
+
+/*
+ * ② 运维账号登录：把手机号 + 口令转发给 club-server 校验（它才是口令的权威）。
+ *
+ * 通过且 `role = ops` → 签发主体为 **`ops:<手机号>`** 的 JWT，并把**这次输入的凭据留在
+ * 内存里**（ops.clubUser / ops.clubPass），于是 /api/club/session 当场就能换到令牌 ——
+ * 不必再手工往 admin.env 填 club_user / club_pass。
+ * admin.env 里若配了凭据，则作为"没用运维账号登录时"的回退，行为与之前完全一致（向后兼容）。
+ *
+ * 凭据只在本进程内存里，不落盘、不回显；进程重启后需要重新登录一次
+ * （admin.env 里配了的话则不受影响）。
+ */
+func opsLoginViaClub(ctx: Context, phone: String, password: String,
+                     ops: OpsConfig, clubSess: ClubSession, secret: String, ttl: Int64): Unit {
+    /*
+     * 回环不参与节流（与 club-server 的 loginIpLocked 同口径）：本机调用者本来就有更高权限，
+     * 而且本项目的测试脚本都从本机打 —— 否则跑几轮测试就把自己锁 15 分钟。
+     * 实现上把回环折成空串，再由 OpsLoginGuard.note 忽略空键 / locked 对空键恒 false。
+     */
+    let ip0 = opsClientIp(ctx)
+    let isLoopback = (ip0 == "127.0.0.1" || ip0 == "::1" ||
+        ip0 == "0:0:0:0:0:0:0:1" || ip0 == "::ffff:127.0.0.1")
+    let ip = if (isLoopback) { "" } else { ip0 }
+    if (opsLoginGuard.locked(ip)) {
+        opsErr(ctx, 429, 429, "尝试过于频繁：该来源已被临时锁定" +
+            "（约 15 分钟；重启运维台立即清零）")
+        return
+    }
+    let url = opsJoin(ops.apiBase, "api/v1/auth/login")
+    let body = JsonObject()
+    jPutStr(body, "phone", phone)
+    jPutStr(body, "password", password)
+    var token = ""
+    var name = ""
+    var role = ""
+    var mphone = ""
+    match (httpPostJson(url, body.toString())) {
+        case Some(text) =>
+            try {
+                let root = JsonValue.fromStr(text).asObject()
+                match (jsonGetObject(root, "data")) {
+                    case Some(d) =>
+                        token = jsonGetStr(d, "token") ?? ""
+                        match (jsonGetObject(d, "member")) {
+                            case Some(m) =>
+                                name = jsonGetStr(m, "name") ?? ""
+                                role = jsonGetStr(m, "role") ?? ""
+                                mphone = jsonGetStr(m, "phone") ?? ""
+                            case None => ()
+                        }
+                    case None => ()
+                }
+            } catch (e: Exception) {
+                token = ""
+            }
+        case None => ()
+    }
+    if (token.size == 0) {
+        opsLoginGuard.note(ip, false)
+        opsErr(ctx, 401, 401, opsLoginDiagnosis(ops, phone))
+        return
+    }
+    if (role != "ops") {
+        /* 口令是对的、只是这一档身份不对 —— 不算暴力破解，清掉该 IP 的失败记录。 */
+        opsLoginGuard.note(ip, true)
+        opsErr(ctx, 403, 403, "该账号的角色是「${clubRoleLabel(role)}」，不是运维账号。" +
+            "运维台只接受 `club-server init-ops` 建的运维账号（运维不该由会长执行）；" +
+            "会长 / 成员账号请在 App 里登录。")
+        return
+    }
+    opsLoginGuard.note(ip, true)
+    /* 这次输入的运维凭据留给运维会话用（仅内存），于是不必再手改 admin.env */
+    ops.clubUser = phone
+    ops.clubPass = password
+    clubSess.token = token
+    clubSess.at = nowEpoch()
+    clubSess.name = name
+    clubSess.role = role
+    /* 登录响应里的 member 是简报、可能不含手机号，以登录时输入的手机号为准 */
+    clubSess.phone = if (mphone.size > 0) { mphone } else { phone }
+    clubSess.err = ""
+    println("[ops] 运维账号 ${phone} 已登录运维台（后续写操作以它的身份发出）")
+    let o = JsonObject()
+    jPutStr(o, "token", issueTokenTtl(opsSubjectOf(phone), secret, ttl))
+    opsOk(ctx, o)
 }
 
 /*
@@ -274,9 +567,12 @@ func withClub(ctx: Context, dataDir: String, f: (Store) -> JsonValue): Unit {
 /* ===================== 运维台自己的权限闸门 ===================== */
 
 /*
- * 「/api/club/…」只放给 admin 角色（roleId == 1）。
+ * 「/api/club/…」放给两种身份：
+ *   · 后台的 admin 角色（roleId == 1）—— 上游那套；
+ *   · **运维账号登录**的身份（JWT 主体 `ops:<手机号>`，2026-09-17 起）—— 它本来就是
+ *     这个页面的主人，用 init-ops 建的账号直接登进来时走这一支。
  * 上游的 requirePermission 是按"路径 → 权限码"配的，运维接口不在它的表里，
- * 所以这里按角色判定；登录态已由 authRequired 保证（userId 在 ctx.state）。
+ * 所以这里按角色 / 主体形态判定；登录态已由 authRequired 保证（主体在 ctx.state）。
  */
 func requireClubOps(store: RbacStore): Middleware {
     return { ctx: Context, next: () -> Unit =>
@@ -285,6 +581,12 @@ func requireClubOps(store: RbacStore): Middleware {
         if (!isClub) {
             next()
             return
+        }
+        match (opsPhoneOfSubject(ctx.getStateOr("userId", ""))) {
+            case Some(_) =>
+                next()
+                return
+            case None => ()
         }
         var uid: Int64 = 0
         try {
@@ -297,7 +599,7 @@ func requireClubOps(store: RbacStore): Middleware {
                 if (u.roleId == 1) {
                     next()
                 } else {
-                    opsErr(ctx, 403, 403, "forbidden: 运维页仅限 admin 角色")
+                    opsErr(ctx, 403, 403, "forbidden: 运维页仅限 admin 角色或运维账号")
                 }
             case None =>
                 opsErr(ctx, 401, 401, "unauthorized")
@@ -364,6 +666,12 @@ main(): Int64 {
     /* ---------- 公开路由：登录，签发标准 JWT（带 exp） ---------- */
     let publicRouter = Router()
     publicRouter.passOnNotFound = true
+    /*
+     * 登录：两种凭据都接受（见文件上方"运维身份"整段说明）。
+     *   ① 后台自己的账号（轻舟 RBAC）—— 与上游一致；
+     *   ② 不是后台账号时，当作 club-server 的**运维账号**（手机号）转发过去校验。
+     * ① 与 ② 的失败信息分开写，避免把"用户名打错了"和"club-server 没起"混成一句。
+     */
     publicRouter.post("/api/login", { ctx: Context, _: () -> Unit =>
         let username = bodyStrOr(ctx, "username", "")
         let password = bodyStrOr(ctx, "password", "")
@@ -379,7 +687,7 @@ main(): Int64 {
                     opsErr(ctx, 401, 401, "invalid credentials")
                 }
             case None =>
-                opsErr(ctx, 401, 401, "invalid credentials")
+                opsLoginViaClub(ctx, username, password, ops, clubSess, secret, ttl)
         }
     })
 
@@ -387,7 +695,30 @@ main(): Int64 {
     let authRouter = Router()
     authRouter.passOnNotFound = true
     authRouter.get("/api/me", { ctx: Context, _: () -> Unit =>
-        let userId = Int64.parse(ctx.getStateOr("userId", "0"))
+        let subject = ctx.getStateOr("userId", "")
+        /*
+         * 运维账号登录：身份不在后台的 rbac.json 里，所以 id 恒为 0。
+         * can_ops = true 让前端放行运维页；后台管理接口（用户 / 角色 / 权限）由 framework 的
+         * requirePermission 按数字 userId 判定 —— 运维身份拿不到权限，因此仍是 admin 专属。
+         */
+        match (opsPhoneOfSubject(subject)) {
+            case Some(phone) =>
+                let oo = JsonObject()
+                jPutInt(oo, "id", 0)
+                jPutStr(oo, "username", phone)
+                jPutStr(oo, "role", "ops")
+                jPutBool(oo, "can_ops", true)
+                jPutBool(oo, "is_ops_account", true)
+                opsOk(ctx, oo)
+                return
+            case None => ()
+        }
+        var userId: Int64 = 0
+        try {
+            userId = Int64.parse(subject)
+        } catch (e: Exception) {
+            userId = 0
+        }
         match (store.findUserById(userId)) {
             case Some(u) =>
                 let o = JsonObject()
@@ -651,6 +982,19 @@ main(): Int64 {
     let staticOpts = StaticOptions()
     staticOpts.spaFallback = true
     staticOpts.enableCache = false   /* 运维台改前端要立即生效，不缓存 */
+    /*
+     * 2026-09-17：**必须关掉 ETag**，否则重建前端后浏览器会卡在旧页面上（实测白屏）。
+     *
+     * 框架的 ETag 是"**仅按字节大小**"生成的强校验器（static.cj 的 makeETag(size) → `"<size>"`，
+     * 文件头第 32 行写明），而 vite 重建时 index.html 里变的只有两个 8 位 hash 文件名 ——
+     * **字节数一模一样**（实测重建前后都是 399 字节，`git cat-file -s` 两版相同）。
+     * 于是 ETag 完全相同：浏览器带着 If-None-Match 回来直接拿到 **304**，继续用旧的
+     * index.html，而它引用的 index-<旧hash>.js 已被 vite 删掉 → **JS 404 → 一片空白**。
+     * （Last-Modified 那一路本身是对的，但它排在前面且因 mtime 已变而不匹配，
+     *   于是落到 ETag 这一路命中 304，正好把这个坑踩满。）
+     * 运维台只在本机/运维网内使用，每次重下发 ~115 KB 的 JS 完全可以接受 —— 正确性优先。
+     */
+    staticOpts.enableETag = false
 
     let app = QingZhouApp()
         .use(securityHeaders())
@@ -682,9 +1026,13 @@ main(): Int64 {
     println("  社团库 ${ops.dataDir}　club-server ${ops.apiBase}")
     if (ops.clubUser.size > 0) {
         println("  运维身份 ${ops.clubUser}（club-server 的 role = ops：除移交会长外与会长同权）")
+        println("    （也可以直接用运维账号登录本后台，那样就不必在这里配 club_user / club_pass）")
     } else {
-        println("  ⚠ 未配置运维账号（admin.env 的 club_user / club_pass）→ 运维页只能看、不能改")
-        println("    先在 club-server 跑：club-server init-ops <手机号> <口令> <数据目录>")
+        println("  运维页的写操作需要一个运维账号（club-server 的 role = ops）。")
+        println("    最简单的做法：直接用运维账号登录本后台（手机号 + init-ops 的口令）。")
+        println("    也可以把手机号/口令填进 admin.env 的 club_user / club_pass（两种都行）。")
+        println("    还没有运维账号就先建一个（**在 club-server 未运行时**执行）：")
+        println("      cd server\\build ; .\\club-server.exe init-ops <手机号> <口令> data")
     }
     /*
      * N-29（2026-09-17）：两处必须显式可见的东西 —— 口令来源、以及**实际监听地址**。

@@ -307,8 +307,15 @@ if ($Target -eq "admin") {
                "  只用现成产物的话，确认 dist\ 已随仓库检出。")
     }
     if (Test-Path $webDst) { Remove-Item $webDst -Recurse -Force }
-    Copy-Item $webSrc $webDst -Recurse
-    Write-Host "[build] 前端已就位：server\admin-web\dist（含「社团管理」运维页）"
+    # ⚠ **只拷 dist**（2026-09-17 修）。原先写的是 `Copy-Item $webSrc $webDst -Recurse`，
+    # 会把整个 server\admin-web 搬过去 —— 包含 **node_modules（npm install 之后约 39 MB / 777 个文件）**、
+    # src\、package-lock.json。而运行时只需要 `./admin-web/dist`（见上面 serveWithOpts 那段），
+    # 于是每次构建白拷几十 MB，产物目录也跟着膨胀。
+    # 只拷 dist 之后：产物依然自包含（exe + admin-web\dist + admin.env），体积回到 ~120 KB。
+    $webDist = Join-Path $webSrc "dist"
+    New-Item -ItemType Directory -Force -Path $webDst | Out-Null
+    Copy-Item $webDist $webDst -Recurse
+    Write-Host "[build] 前端已就位：admin-web\dist（只拷 dist；含「社团管理」运维页）"
 
     # admin.env 若已存在就**不动**（用户可能改过端口/密钥）；否则从内置模板生成一份"本地 JSON 存储"版
     $envFile = Join-Path $outDir "admin.env"
@@ -325,7 +332,7 @@ if ($Target -eq "admin") {
             "",
             "port=$port",
             "",
-            "# 数据文件（相对 exe 所在目录；首次启动自动建库 + 灌种子账号 admin/admin123、user/user123）",
+            "# 数据文件（相对 exe 所在目录；首次启动自动建库；种子账号口令见下方 admin_pass / user_pass 说明）",
             "db=$db",
             "",
             "# JWT 签名密钥：本文件生成时已随机 64 位十六进制。**生产环境请换成自己的强随机值**",

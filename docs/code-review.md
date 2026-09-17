@@ -2072,3 +2072,110 @@ foreach ($f in @("server\build.ps1","server\tests\smoke.ps1","server\tests\admin
     "{0,-32} BOM={1}" -f $f, ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)
 }
 ```
+
+---
+
+# 第七轮 · 运维台前端缺陷（2026-09-17 · 用户实测报告，**非静态检查发现**）
+
+> 这一轮与前六轮性质不同：**不是查代码查出来的，是用户照着 `local-deploy.md` 一步步跑时撞出来的**。
+> 两条都在前端（`server/admin-web/src`），后端无论怎么测都抓不到 —— 单列一轮，是因为它们的现象
+> 特别容易被误判成「登录失效」或「服务没起来」，从而不去查真正的根因。
+
+## 一、基线
+
+改动前（工作区 `a7e9b1c`）：单测 490 / 冒烟 427 / TLS 22 / 契约 30 / 后台 29 / 运维页 64 **全绿**。
+也就是说**这两条缺陷全部逃过了已有测试** —— 因为它们只在浏览器里发生。
+
+## 二、N-32 `[严重]` 两类 401 被混为一谈：登录后闪退回登录页；错误提示与已填内容被整页重载冲掉
+
+**现象**（用户原话）：
+1. 「点击登录后，管理页面出现一瞬间就又回退到登录页面，无法正常操作」；
+2. 「如果密码/账号错误，错误提示也只有一瞬间，随后会立即清空已填入信息」。
+
+**位置**：`server/admin-web/src/api.js`（旧第 8-14 行）
+
+```js
+if (json.code !== 0) {
+  if (json.code === 401) {
+    localStorage.removeItem('qz_token')
+    window.location.href = '/login'      // ← 整页跳转
+  }
+  throw new Error(json.message || 'request failed')
+}
+```
+
+**根因**：401 有两种完全不同的含义，这段代码把它们当成同一件事：
+
+| | 含义 | 正确处理 |
+| --- | --- | --- |
+| ① | 没登录 / 令牌过期 | 回登录页 |
+| ② | **已登录，但这条接口不归你** | 只是没权限，**不该动页面** |
+
+用运维账号登录时必然走到 ②：`Dashboard.vue:14` 写的是
+`try { perms.value = await api.perms() } catch (_) {}` —— 作者本意就是"拿不到就忽略"，
+但 `api.js` 在 `catch` 生效**之前**就把整页跳走了，那个 catch 永远轮不到。
+
+验证链（运维账号登录）：`POST /api/login` 200 拿到 `ops:` 令牌 → `router.push('/')` →
+`GET /api/dashboard` **200（页面渲染出来 = 用户看到的"一瞬间"）** → `GET /api/perms` **401**
+（它要 `perm:list`，而运维身份在后台 `rbac.json` 里没有条目，框架 `requirePermission` 判
+`userId = -1`）→ 整页跳回 `/login`。
+
+现象 2 同一根因：`/api/login` 的 401 也走这条路，**整页重载**把输入框和错误提示一起冲掉了。
+
+**修复**：按"这条接口是不是任何登录身份都该能用"分流 —— 登录接口自己的 401 是"口令错"、
+后台管理接口（`/api/users|roles|perms`）上的 401 是"没这个权限"，两者都**只抛不跳**，
+交给调用方展示；只有其它接口上的 401 才算会话失效（且此时若连令牌都没有，必定回登录页）。
+另外 `Dashboard.vue` 先看身份再决定要不要探 `/api/perms`，没必要白打一发。
+
+**闸门**：新增 `server/tests/web-logic-check.mjs`（Node 直接驱动 `api.js`，假
+fetch / localStorage / window），17 条断言。**已做 A/B 验证**：把 `api.js` 那一行退回旧逻辑后
+**恰好 4 条变红**（登录 401 跳转 / 后台接口 401 跳转 / 令牌被误清 / 不该发生的跳转发生了），
+修复后 17/0。
+
+## 三、N-33 `[严重]` 框架 ETag 只按字节大小生成 → 重建前端后浏览器 304 卡在旧 HTML，页面白屏
+
+**现象**：「进入 127.0.0.1:3000 后显示一片空白，无任何可操作界面」，但**直接访问 `/club` 正常**。
+
+**位置**：`server/src/ops/admin_main.cj` 的静态托管选项 ＋ 轻舟 `src/static.cj:32/207`
+
+**根因**：轻舟的 ETag 是"**仅按文件字节大小**"生成的强校验器（文件头第 32 行写明）：
+
+```cangjie
+let etag = if (capturedOpts.enableETag) { makeETag(sendBytes.size) } else { "" }
+```
+
+而 vite 重建时 `index.html` 里变的只有两个 8 位 hash 文件名 —— **字节数完全不变**。
+实测（`git cat-file -s` 取 blob 精确大小）：
+
+```
+2efaaea（重建前）: 399 字节
+a7e9b1c（重建后）: 399 字节     ← 两次重建、hash 不同，长度一模一样
+```
+
+于是 ETag 都是 `"399"`：浏览器带 `If-None-Match: "399"` 回来直接拿到 **304 Not Modified**，
+继续用缓存的旧 `index.html`，而它引用的 `index-<旧hash>.js` 已被 vite 删除
+→ **JS 404 → 一片空白**。
+
+（`Last-Modified` 那一路本身是对的，但它排在 ETag 之前、因 mtime 已变而**不匹配**，
+于是落到 ETag 这一路命中 304 —— 正好把这个坑踩满。`/club` 是新 URL、浏览器里没有缓存条目，
+所以正常，这就是"首页白、子页好"的原因。）
+
+**修复**：运维台**关闭 ETag**（`staticOpts.enableETag = false`）。它只在本机/运维网内使用，
+每次重下发 ~115 KB 的 JS 完全可以接受，正确性优先。（**框架本身不动** —— 它在
+`third_party/qingzhou` 里受 `MANIFEST.sha256` 逐字节锁定。）
+
+**闸门**：用条件请求直接复现，修复前 304 / 修复后必须 200 且返回当前 HTML：
+
+```
+[1] plain GET /                      -> HTTP 200   ETag=(none)
+[2] GET / with If-None-Match: "399"  -> HTTP 200   returned HTML == current on disk ? True
+[3] GET /assets/index-CVNZ9mVj.js    -> HTTP 200   118246 bytes
+```
+
+## 四、本轮未覆盖
+
+- **没有真浏览器自动化**（本机无 playwright / puppeteer）。N-32 的闸门是用 Node 直接驱动
+  `api.js` 覆盖逻辑分支，**不是端到端点击**；组件渲染结果仍未自动化。
+- N-33 是「条件请求直接复现 ＋ 常规缓存行为推断」，**没有做**"真实浏览器缓存 + vite 重建"
+  的完整复演（复演需要能控制浏览器缓存；当时只能从 `/club` 正常、`/` 白屏这一对照反推）。
+- 运维台的 `role=user` 分支（后台普通用户）这次没人走到，未复验。
