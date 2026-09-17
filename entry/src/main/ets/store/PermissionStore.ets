@@ -1,4 +1,4 @@
-﻿import type { MemberBrief, MemberSelf, UserPermissions } from '../api/AuthApi';
+import type { MemberBrief, MemberSelf, UserPermissions } from '../api/AuthApi';
 
 export interface UpdateData {
   user: MemberSelf;
@@ -74,7 +74,7 @@ export function can(current: MemberSelf | null, action: PermissionAction, target
   if (permissions === null || !hasBasePermission(permissions, action)) {
     return false;
   }
-  if (action === 'CreateTask' || action === 'CreatePlan' || action === 'UpdateAnyTask' ||
+  if (action === 'ManageMembers' || action === 'CreateTask' || action === 'CreatePlan' || action === 'UpdateAnyTask' ||
     action === 'ManageDepts' || action === 'ViewRegisterCode' || action === 'ChangeRegisterCode' ||
     action === 'ManageInviteLinks') {
     return true;

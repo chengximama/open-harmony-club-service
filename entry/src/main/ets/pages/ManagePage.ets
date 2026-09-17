@@ -10,12 +10,13 @@ import type { MemberBrief } from '../api/AuthApi';
 import { MemberApi } from '../api/MemberApi';
 import { DeptApi, DeptView, InviteLinkView } from '../api/DeptApi';
 import { PermissionStore } from '../store/PermissionStore';
-import { Color, StatusColor, Space, Radius, FontSize, Shadow } from '../core/Theme';
+import { Color, StatusColor, Space, Radius, FontSize } from '../core/Theme';
 import { pasteboard } from '@kit.BasicServicesKit';
 
 interface Dept {
   id: number;
   name: string;
+  sort: number;
   memberCount: number;   // UI 衍生数据，来自 DeptView.member_count
 }
 
@@ -36,7 +37,7 @@ interface MemberOption {
 // ─── 类型映射（后端视图 → 页面本地 UI 类型）───
 
 function deptViewToDept(d: DeptView): Dept {
-  return { id: d.id, name: d.name, memberCount: d.member_count };
+  return { id: d.id, name: d.name, sort: d.sort, memberCount: d.member_count };
 }
 
 function linkViewToInviteLink(l: InviteLinkView): InviteLink {
@@ -146,6 +147,10 @@ struct DeptManageSection {
   // 输入值
   @State newDeptName: string = '';
   @State editDeptName: string = '';
+  @State showSortDialog: boolean = false;
+  @State sortingDeptId: number = 0;
+  @State sortingDeptName: string = '';
+  @State sortValue: string = '';
   private deptApi: DeptApi = new DeptApi();
 
   aboutToAppear(): void {
@@ -211,6 +216,47 @@ struct DeptManageSection {
       this.showDeleteConfirm = false;
       AlertDialog.show({
         title: '删除失败',
+        message: resp.error?.message ?? '请重试',
+        primaryButton: { value: '知道了', action: () => {} }
+      });
+    }
+  }
+
+
+  private openSortDialog(dept: Dept): void {
+    this.sortingDeptId = dept.id;
+    this.sortingDeptName = dept.name;
+    this.sortValue = dept.sort.toString();
+    this.showSortDialog = true;
+  }
+
+  async submitSort(): Promise<void> {
+    const value: number = Number(this.sortValue.trim());
+    if (this.sortValue.trim().length === 0 || Number.isNaN(value)) {
+      AlertDialog.show({
+        title: '排序值无效',
+        message: '请输入整数排序值。',
+        primaryButton: { value: '知道了', action: () => {} }
+      });
+      return;
+    }
+    const resp = await this.deptApi.update(this.sortingDeptId, { sort: value });
+    if (resp.ok && resp.data) {
+      const updated: DeptView = resp.data;
+      const next: Dept[] = [];
+      for (let i = 0; i < this.depts.length; i++) {
+        if (this.depts[i].id === updated.id) {
+          next.push(deptViewToDept(updated));
+        } else {
+          next.push(this.depts[i]);
+        }
+      }
+      next.sort((a: Dept, b: Dept): number => a.sort - b.sort);
+      this.depts = next;
+      this.showSortDialog = false;
+    } else {
+      AlertDialog.show({
+        title: '排序失败',
         message: resp.error?.message ?? '请重试',
         primaryButton: { value: '知道了', action: () => {} }
       });
@@ -329,6 +375,68 @@ struct DeptManageSection {
     .alignItems(HorizontalAlign.Center)
   }
 
+
+  @Builder
+  sortDialogBuilder() {
+    Column() {
+      Column() {
+        Text('调整部门排序')
+          .fontSize(FontSize.title)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(Color.textPrimary)
+          .margin({ bottom: Space.xs })
+
+        Text(`部门：${this.sortingDeptName}`)
+          .width('100%')
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textTertiary)
+          .margin({ bottom: Space.lg })
+
+        TextInput({ text: this.sortValue, placeholder: '输入排序值' })
+          .fontSize(FontSize.body)
+          .fontColor(Color.textPrimary)
+          .backgroundColor(Color.canvas)
+          .borderRadius(Radius.input)
+          .padding({ left: Space.md, right: Space.md })
+          .height(40)
+          .width('100%')
+          .margin({ bottom: Space.lg })
+          .onChange((v: string) => { this.sortValue = v; })
+
+        Row() {
+          Button('取消')
+            .type(ButtonType.Normal)
+            .backgroundColor(StatusColor.todo.bg)
+            .fontColor(Color.textSecondary)
+            .layoutWeight(1)
+            .borderRadius(Radius.button)
+            .onClick(() => {
+              this.showSortDialog = false;
+            })
+
+          Button('保存排序')
+            .type(ButtonType.Capsule)
+            .backgroundColor(Color.primary)
+            .fontColor(Color.onPrimary)
+            .layoutWeight(1)
+            .margin({ left: Space.md })
+            .borderRadius(Radius.button)
+            .onClick(() => { this.submitSort(); })
+        }
+        .width('100%')
+      }
+      .width('85%')
+      .padding(Space.xl)
+      .backgroundColor(Color.surface)
+      .borderRadius(Radius.card)
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(Color.overlay)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+  }
+
   @Builder
   deleteBlockedBuilder() {
     Column() {
@@ -421,89 +529,113 @@ struct DeptManageSection {
 
   build() {
     Column() {
-      SectionHeader({
-        title: '部门管理',
-        actionText: canManageDepts() ? '+ 新建部门' : '',
-        onAction: () => {
-          this.newDeptName = '';
-          this.showCreateDialog = true;
-        }
-      })
+      Row() {
+        Column({ space: 2 }) {
+          Text('部门与组织')
+            .fontSize(FontSize.body)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(Color.textPrimary)
 
-      Column() {
-        if (this.loading) {
-          Row() {
-            LoadingProgress().width(24).height(24).color(Color.primary)
-          }
-          .width('100%')
-          .padding(Space.card)
-          .justifyContent(FlexAlign.Center)
-        } else if (this.depts.length === 0) {
-          Text('暂无部门')
-            .fontSize(FontSize.caption)
+          Text('增删改仅会长；删除非空部门会被拒绝（DEPT_NOT_EMPTY）')
+            .fontSize(FontSize.micro)
             .fontColor(Color.textTertiary)
-            .width('100%')
-            .padding(Space.card)
-            .textAlign(TextAlign.Center)
-        } else {
-          ForEach(this.depts, (dept: Dept) => {
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+
+        if (canManageDepts()) {
+          Text('+ 新建')
+            .fontSize(FontSize.caption)
+            .fontColor(Color.primary)
+            .onClick(() => {
+              this.newDeptName = '';
+              this.showCreateDialog = true;
+            })
+        }
+      }
+      .width('100%')
+
+      if (this.loading) {
+        Row() {
+          LoadingProgress().width(24).height(24).color(Color.primary)
+        }
+        .width('100%')
+        .height(64)
+        .justifyContent(FlexAlign.Center)
+      } else if (this.depts.length === 0) {
+        Text('暂无部门')
+          .width('100%')
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textTertiary)
+          .textAlign(TextAlign.Center)
+          .padding({ top: 24, bottom: 16 })
+      } else {
+        ForEach(this.depts, (dept: Dept, index: number) => {
+          Column() {
             Row() {
-              Column() {
-                Text(dept.name)
-                  .fontSize(FontSize.body)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(Color.textPrimary)
-                Text(`${dept.memberCount} 人`)
-                  .fontSize(FontSize.caption)
-                  .fontColor(Color.textTertiary)
-                  .margin({ top: 2 })
-              }
-              .alignItems(HorizontalAlign.Start)
-              .layoutWeight(1)
+              Text(dept.name)
+                .layoutWeight(1)
+                .fontSize(FontSize.body)
+                .fontColor(Color.textPrimary)
 
               if (canManageDepts()) {
-                Text('编辑')
-                  .fontSize(FontSize.body)
-                  .fontColor(Color.primary)
-                  .margin({ right: Space.lg })
-                  .onClick(() => {
-                    this.editingDeptId = dept.id;
-                    this.editDeptName = dept.name;
-                    this.showEditDialog = true;
-                  })
+                Row({ space: 12 }) {
+                  Text('改名')
+                    .fontSize(FontSize.caption)
+                    .fontColor(Color.primary)
+                    .onClick(() => {
+                      this.editingDeptId = dept.id;
+                      this.editDeptName = dept.name;
+                      this.showEditDialog = true;
+                    })
 
-                Text('删除')
-                  .fontSize(FontSize.body)
-                  .fontColor(StatusColor.overdue.fg)
-                  .onClick(() => {
-                    if (dept.memberCount > 0) {
-                      this.deletingDeptId = dept.id;
-                      this.deletingDeptName = dept.name;
-                      this.deletingDeptCount = dept.memberCount;
-                      this.showDeleteBlocked = true;
-                    } else {
-                      this.deletingDeptId = dept.id;
-                      this.deletingDeptName = dept.name;
-                      this.deletingDeptCount = 0;
-                      this.showDeleteConfirm = true;
-                    }
-                  })
+                  Text('排序')
+                    .fontSize(FontSize.caption)
+                    .fontColor(Color.primary)
+                    .onClick(() => { this.openSortDialog(dept); })
+
+                  Text('删除')
+                    .fontSize(FontSize.caption)
+                    .fontColor(Color.primary)
+                    .onClick(() => {
+                      if (dept.memberCount > 0) {
+                        this.deletingDeptId = dept.id;
+                        this.deletingDeptName = dept.name;
+                        this.deletingDeptCount = dept.memberCount;
+                        this.showDeleteBlocked = true;
+                      } else {
+                        this.deletingDeptId = dept.id;
+                        this.deletingDeptName = dept.name;
+                        this.deletingDeptCount = 0;
+                        this.showDeleteConfirm = true;
+                      }
+                    })
+                }
               }
             }
             .width('100%')
-            .padding(Space.card)
-            .backgroundColor(Color.surface)
-            .margin({ bottom: 1 })
-          }, (dept: Dept) => dept.id.toString())
-        }
+            .height(38)
+
+            if (index < this.depts.length - 1) {
+              Divider()
+                .strokeWidth(1)
+                .color(Color.divider)
+            }
+          }
+          .width('100%')
+        }, (dept: Dept) => dept.id.toString())
       }
-      .backgroundColor(Color.surface)
-      .borderRadius(Radius.card)
-      .margin({ left: Space.page, right: Space.page })
     }
     .width('100%')
+    .padding(16)
+    .backgroundColor(Color.surface)
+    .border({ width: 1, color: Color.divider })
+    .borderRadius(Radius.card)
     .bindContentCover(this.showCreateDialog, this.createDialogBuilder)
     .bindContentCover(this.showEditDialog, this.editDialogBuilder)
+    .bindContentCover(this.showSortDialog, this.sortDialogBuilder)
     .bindContentCover(this.showDeleteBlocked, this.deleteBlockedBuilder)
     .bindContentCover(this.showDeleteConfirm, this.deleteConfirmBuilder)
   }
@@ -672,69 +804,67 @@ struct RegisterConfigSection {
 
   build() {
     Column() {
-      SectionHeader({ title: '注册口令', actionText: '' })
-
-      Column() {
-        Row() {
-          Column() {
-            Text('当前口令')
-              .fontSize(FontSize.caption)
-              .fontColor(Color.textTertiary)
-            Text(this.loading ? '加载中…' : this.code)
-              .fontSize(20)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(Color.primary)
-              .margin({ top: Space.xs })
-          }
-          .alignItems(HorizontalAlign.Start)
-          .layoutWeight(1)
-
-          Button('复制')
-            .type(ButtonType.Capsule)
-            .fontSize(FontSize.caption)
-            .height(32)
-            .backgroundColor(Color.primarySoft)
-            .fontColor(Color.primary)
-            .enabled(!this.loading)
-            .onClick(() => { copyText(this.code); })
-        }
+      Text('注册口令')
         .width('100%')
-        .padding(Space.lg)
+        .fontSize(FontSize.body)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(Color.textPrimary)
 
-        Divider()
-          .color(Color.divider)
+      Row({ space: 8 }) {
+        Text(this.loading ? '加载中…' : this.code)
+          .layoutWeight(1)
+          .fontSize(FontSize.title)
+          .fontWeight(FontWeight.Bold)
+          .fontFamily('Inter')
+          .fontFeature('"tnum" 1')
+          .fontColor(Color.textPrimary)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .onClick(() => {
+            if (!this.loading && this.code.length > 0) {
+              copyText(this.code);
+            }
+          })
 
         if (canChangeRegisterCode()) {
-          Row() {
-            Button('更换口令')
-              .layoutWeight(1)
-              .backgroundColor(StatusColor.todo.bg)
-              .fontColor(Color.textSecondary)
-              .margin({ right: Space.sm })
-              .borderRadius(Radius.button)
-              .onClick(() => {
-                this.newCode = '';
-                this.showChangeDialog = true;
-              })
+          Button('更换')
+            .type(ButtonType.Normal)
+            .height(34)
+            .fontSize(FontSize.caption)
+            .fontColor(Color.textSecondary)
+            .backgroundColor(Color.surface)
+            .border({ width: 1, color: Color.divider })
+            .borderRadius(Radius.input)
+            .padding({ left: 12, right: 12 })
+            .enabled(!this.loading)
+            .onClick(() => {
+              this.newCode = '';
+              this.showChangeDialog = true;
+            })
 
-            Button('随机轮换')
-              .layoutWeight(1)
-              .backgroundColor(Color.primary)
-              .fontColor(Color.onPrimary)
-              .borderRadius(Radius.button)
-              .onClick(() => {
-                this.showRotateConfirm = true;
-              })
-          }
-          .width('100%')
-          .padding({ left: Space.lg, right: Space.lg, top: Space.md, bottom: Space.lg })
+          Button('随机轮换')
+            .type(ButtonType.Normal)
+            .height(34)
+            .fontSize(FontSize.caption)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(Color.onPrimary)
+            .backgroundColor(Color.primary)
+            .borderRadius(Radius.input)
+            .padding({ left: 12, right: 12 })
+            .enabled(!this.loading)
+            .onClick(() => {
+              this.showRotateConfirm = true;
+            })
         }
       }
-      .backgroundColor(Color.surface)
-      .borderRadius(Radius.card)
-      .margin({ left: Space.page, right: Space.page })
+      .width('100%')
+      .margin({ top: 12 })
     }
     .width('100%')
+    .padding(16)
+    .backgroundColor(Color.surface)
+    .border({ width: 1, color: Color.divider })
+    .borderRadius(Radius.card)
     .bindContentCover(this.showChangeDialog, this.changeDialogBuilder)
     .bindContentCover(this.showRotateConfirm, this.rotateDialogBuilder)
   }
@@ -886,82 +1016,96 @@ struct InviteLinkSection {
 
   build() {
     Column() {
-      SectionHeader({
-        title: '招募链接',
-        actionText: canManageInviteLinks() ? '+ 生成链接' : '',
-        onAction: () => {
-          this.showCreateDialog = true;
-        }
-      })
+      Row() {
+        Text('招募链接')
+          .layoutWeight(1)
+          .fontSize(FontSize.body)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(Color.textPrimary)
 
-      Column() {
-        if (this.loading) {
-          Row() {
-            LoadingProgress().width(24).height(24).color(Color.primary)
-          }
-          .width('100%')
-          .padding(Space.card)
-          .justifyContent(FlexAlign.Center)
-        } else if (this.links.length === 0) {
-          Text('暂无招募链接')
+        if (canManageInviteLinks()) {
+          Text('+ 生成链接')
             .fontSize(FontSize.caption)
-            .fontColor(Color.textTertiary)
-            .width('100%')
-            .padding(Space.card)
-            .textAlign(TextAlign.Center)
-        } else {
-          ForEach(this.links, (link: InviteLink) => {
-            Column() {
-              Row() {
-                Text(link.deptName)
-                  .fontSize(FontSize.body)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(Color.textPrimary)
-
-                Blank()
-
-                Text(link.enabled ? '启用中' : '已停用')
-                  .fontSize(FontSize.caption)
-                  .fontColor(link.enabled ? StatusColor.done.fg : Color.textTertiary)
-                  .padding({ left: Space.xs * 2, right: Space.xs * 2, top: 2, bottom: 2 })
-                  .backgroundColor(link.enabled ? StatusColor.done.bg : StatusColor.todo.bg)
-                  .borderRadius(Radius.pill)
-              }
-              .width('100%')
-
-              Text(link.url)
-                .fontSize(FontSize.caption)
-                .fontColor(Color.primary)
-                .margin({ top: Space.xs })
-
-              Row() {
-                Text(`创建于 ${link.createdAt}`)
-                  .fontSize(FontSize.caption)
-                  .fontColor(Color.textTertiary)
-
-                Blank()
-
-                if (canManageInviteLinks() && link.enabled) {
-                  Text('停用')
-                    .fontSize(FontSize.caption)
-                    .fontColor(StatusColor.overdue.fg)
-                    .onClick(() => { this.disableLink(link.id); })
-                }
-              }
-              .width('100%')
-              .margin({ top: Space.sm })
-            }
-            .width('100%')
-            .padding(Space.card)
-            .margin({ bottom: 1 })
-          }, (link: InviteLink) => link.id)
+            .fontColor(Color.primary)
+            .onClick(() => {
+              this.showCreateDialog = true;
+            })
         }
       }
-      .backgroundColor(Color.surface)
-      .borderRadius(Radius.card)
-      .margin({ left: Space.page, right: Space.page })
+      .width('100%')
+
+      if (this.loading) {
+        Row() {
+          LoadingProgress().width(24).height(24).color(Color.primary)
+        }
+        .width('100%')
+        .height(64)
+        .justifyContent(FlexAlign.Center)
+      } else if (this.links.length === 0) {
+        Text('暂无招募链接')
+          .width('100%')
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textTertiary)
+          .textAlign(TextAlign.Center)
+          .padding({ top: 24, bottom: 16 })
+      } else {
+        ForEach(this.links, (link: InviteLink, index: number) => {
+          Column() {
+            Row({ space: 8 }) {
+              Column({ space: 2 }) {
+                Text(`/join/${link.id}`)
+                  .width('100%')
+                  .fontSize(FontSize.body)
+                  .fontFamily('Inter')
+                  .fontColor(Color.textSecondary)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+                Text(`${link.deptName} 预填`)
+                  .width('100%')
+                  .fontSize(FontSize.micro)
+                  .fontColor(Color.textTertiary)
+              }
+              .layoutWeight(1)
+              .alignItems(HorizontalAlign.Start)
+
+              Text(link.enabled ? '启用中' : '已停用')
+                .fontSize(FontSize.caption)
+                .fontColor(link.enabled ? Color.primary : Color.textTertiary)
+                .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+                .backgroundColor(link.enabled ? Color.primarySoft : StatusColor.todo.bg)
+                .border({ width: 1, color: link.enabled ? Color.primaryBorder : Color.divider })
+                .borderRadius(Radius.input)
+
+              if (canManageInviteLinks() && link.enabled) {
+                Text('停用')
+                  .fontSize(FontSize.caption)
+                  .fontColor(Color.textSecondary)
+                  .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+                  .border({ width: 1, color: Color.divider })
+                  .borderRadius(Radius.input)
+                  .onClick(() => { this.disableLink(link.id); })
+              }
+            }
+            .width('100%')
+
+            if (index < this.links.length - 1) {
+              Divider()
+                .strokeWidth(1)
+                .color(Color.divider)
+                .margin({ top: 12, bottom: 12 })
+            }
+          }
+          .width('100%')
+          .padding({ top: index === 0 ? 14 : 0 })
+        }, (link: InviteLink) => link.id)
+      }
     }
     .width('100%')
+    .padding({ left: 16, right: 16, top: 16, bottom: 14 })
+    .backgroundColor(Color.surface)
+    .border({ width: 1, color: Color.divider })
+    .borderRadius(Radius.card)
     .bindContentCover(this.showCreateDialog, this.createDialogBuilder)
   }
 }
@@ -992,6 +1136,14 @@ struct DangerZoneSection {
         .filter((m: MemberBrief): boolean => m.status === 'active')
         .map((m: MemberBrief): MemberOption => memberToMemberOption(m));
     }
+  }
+
+  private transferCandidateLabel(): string {
+    const candidates: MemberOption[] = this.transferCandidates();
+    if (candidates.length === 0) {
+      return '暂无可移交成员';
+    }
+    return candidates[0].name;
   }
 
   // 移交给的候选（排除自己）
@@ -1258,140 +1410,75 @@ struct DangerZoneSection {
   }
 
   build() {
-    if (canTransferPresidency() || canResetMemberPassword()) {
+    if (canTransferPresidency()) {
       Column() {
-        SectionHeader({ title: '危险操作', actionText: '' })
+        Text('会长移交')
+          .width('100%')
+          .fontSize(FontSize.body)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(Color.danger)
 
-        Column() {
-          if (canTransferPresidency()) {
-            Row() {
-              Column() {
-                Text('移交会长')
-                  .fontSize(FontSize.body)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(Color.textPrimary)
-                Text('将会长权限转让给另一位成员')
-                  .fontSize(FontSize.caption)
-                  .fontColor(Color.textTertiary)
-                  .margin({ top: 2 })
-              }
-              .alignItems(HorizontalAlign.Start)
-              .layoutWeight(1)
+        Text('原子操作：目标变成会长，自己降为你选的档位，两步同时生效。社团必须始终保留至少一位会长，因此这一项需要二次确认。')
+          .width('100%')
+          .fontSize(FontSize.micro)
+          .fontColor(Color.textSecondary)
+          .lineHeight(17)
+          .margin({ top: 4, bottom: 12 })
 
-              Text('>')
-                .fontSize(FontSize.title)
-                .fontColor(Color.textTertiary)
-            }
-            .width('100%')
-            .padding(Space.card)
-            .onClick(() => {
-              this.showTransferDialog = true;
-            })
-
-            Divider().color(Color.divider).margin({ left: Space.lg })
-          }
-
-          if (canResetMemberPassword()) {
-            Row() {
-              Column() {
-                Text('重置成员密码')
-                  .fontSize(FontSize.body)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(Color.textPrimary)
-                Text('为成员生成一次性临时密码')
-                  .fontSize(FontSize.caption)
-                  .fontColor(Color.textTertiary)
-                  .margin({ top: 2 })
-              }
-              .alignItems(HorizontalAlign.Start)
-              .layoutWeight(1)
-
-              Text('>')
-                .fontSize(FontSize.title)
-                .fontColor(Color.textTertiary)
-            }
-            .width('100%')
-            .padding(Space.card)
-            .onClick(() => {
-              this.showResetDialog = true;
-            })
-          }
-        }
-        .backgroundColor(Color.surface)
-        .borderRadius(Radius.card)
-        .margin({ left: Space.page, right: Space.page })
+        Button(`移交给 ${this.transferCandidateLabel()}`)
+          .width('100%')
+          .height(40)
+          .type(ButtonType.Normal)
+          .fontSize(FontSize.body)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(Color.danger)
+          .backgroundColor(Color.surface)
+          .border({ width: 1, color: Color.dangerBorder })
+          .borderRadius(Radius.button)
+          .onClick(() => {
+            this.showTransferDialog = true;
+          })
       }
       .width('100%')
+      .padding(16)
+      .backgroundColor(Color.surface)
+      .border({ width: 1, color: Color.dangerBorder })
+      .borderRadius(Radius.card)
       .bindContentCover(this.showTransferDialog, this.transferDialogBuilder)
       .bindContentCover(this.showTransferResult, this.transferResultBuilder)
-      .bindContentCover(this.showResetDialog, this.resetDialogBuilder)
-      .bindContentCover(this.showResetResult, this.resetResultBuilder)
     }
   }
 }
 
+
 @Component
 export default struct ManagePage {
-  @State currentTab: number = 0;
-
   build() {
-    Column() {
-      Tabs({ barPosition: BarPosition.Start }) {
-        TabContent() {
-          Scroll() {
-            Column() {
-              if (canManageDepts()) {
-                DeptManageSection()
-              }
-              if (canViewRegisterCode()) {
-                RegisterConfigSection()
-              }
-              if (canManageInviteLinks()) {
-                InviteLinkSection()
-              }
-              DangerZoneSection()
-            }
-          }
-          .scrollBar(BarState.Off)
+    Scroll() {
+      Column({ space: 12 }) {
+        if (canManageDepts()) {
+          DeptManageSection()
         }
-        .tabBar('综合管理')
+        if (canViewRegisterCode()) {
+          RegisterConfigSection()
+        }
+        if (canManageInviteLinks()) {
+          InviteLinkSection()
+        }
+        DangerZoneSection()
 
-        TabContent() {
-          Column() {
-            Text('部门管理（独立页）')
-              .fontSize(FontSize.subtitle)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(Color.textPrimary)
-              .margin({ top: Space.xl })
-          }
+        Text('口令与链接都是敏感信息：轮换后旧口令立即失效；客户端不得落盘长存，也不得打印到设备日志。')
           .width('100%')
-          .height('100%')
-          .justifyContent(FlexAlign.Center)
-        }
-        .tabBar('部门')
-
-        TabContent() {
-          Column() {
-            Text('成员管理（独立页）')
-              .fontSize(FontSize.subtitle)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(Color.textPrimary)
-              .margin({ top: Space.xl })
-          }
-          .width('100%')
-          .height('100%')
-          .justifyContent(FlexAlign.Center)
-        }
-        .tabBar('成员')
+          .fontSize(FontSize.micro)
+          .fontColor(Color.textTertiary)
+          .lineHeight(17)
       }
-      .onChange((index: number) => {
-        this.currentTab = index;
-      })
       .width('100%')
-      .layoutWeight(1)
+      .padding({ left: Space.page, right: Space.page, top: 12, bottom: 24 })
     }
     .width('100%')
     .height('100%')
     .backgroundColor(Color.canvas)
+    .scrollBar(BarState.Off)
   }
 }

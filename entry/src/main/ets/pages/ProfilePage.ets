@@ -61,17 +61,22 @@ export struct ProfilePage {
         Row() {
           Text('我的')
             .width('100%')
-            .fontSize(FontSize.headline)
-            .fontWeight(600)
+            .fontSize(20)
+            .fontWeight(FontWeight.Bold)
             .fontColor(Color.textPrimary)
         }
         .width('100%')
-        .height(56)
+        .height(52)
         .padding({ left: Space.page, right: Space.page })
         .alignItems(VerticalAlign.Center)
+        .backgroundColor(Color.surface)
+
+        Divider()
+          .strokeWidth(1)
+          .color(Color.divider)
 
         Scroll() {
-          Column({ space: 9 }) {
+          Column({ space: 12 }) {
             this.profileCard()
 
             if (this.errorMsg.length > 0) {
@@ -89,16 +94,16 @@ export struct ProfilePage {
             Button('退出登录')
               .width('100%')
               .height(46)
-              .fontSize(13)
+              .fontSize(FontSize.body)
               .fontWeight(FontWeight.Medium)
               .fontColor(Color.danger)
-              .backgroundColor(Color.dangerBg)
+              .backgroundColor(Color.surface)
               .border({ width: 1, color: Color.dangerBorder })
               .borderRadius(Radius.button)
               .onClick(() => this.confirmLogout())
           }
           .width('100%')
-          .padding({ left: Space.page, right: Space.page, top: 8, bottom: 110 })
+          .padding({ left: Space.page, right: Space.page, top: 12, bottom: 24 })
         }
         .layoutWeight(1)
         .width('100%')
@@ -121,37 +126,47 @@ export struct ProfilePage {
   @Builder
   profileCard() {
     Row({ space: 14 }) {
-      Image($r('app.media.icon_person'))
-        .width(48)
-        .height(48)
+      Column() {
+        Image($r('app.media.icon_person'))
+          .width(28)
+          .height(28)
+      }
+      .width(56)
+      .height(56)
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor(Color.primarySoft)
+      .borderRadius(28)
 
-      Column({ space: 5 }) {
+      Column({ space: 4 }) {
         Text(this.user?.name ?? '未登录')
-          .fontSize(FontSize.headline)
-          .fontWeight(600)
+          .fontSize(FontSize.title)
+          .fontWeight(FontWeight.Bold)
           .fontColor(Color.textPrimary)
 
         Text(this.maskPhone(this.user?.phone ?? ''))
-          .fontSize(FontSize.caption)
+          .fontSize(FontSize.body)
           .fontFamily('Inter')
           .fontFeature('"tnum" 1')
-          .fontColor(Color.textSecondary)
+          .fontColor(Color.textTertiary)
 
         Row({ space: 6 }) {
           Text(this.user?.dept?.name ?? '未分配')
-            .fontSize(FontSize.micro)
-            .fontColor(Color.primary)
+            .fontSize(FontSize.caption)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(StatusColor.done.fg)
             .padding({ left: 9, right: 9, top: 3, bottom: 3 })
-            .backgroundColor(Color.primarySoft)
+            .backgroundColor(StatusColor.done.bg)
             .borderRadius(Radius.pill)
 
           Text(this.roleLabel(this.user?.role ?? ''))
-            .fontSize(FontSize.micro)
-            .fontColor(StatusColor.pending.fg)
+            .fontSize(FontSize.caption)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(Color.textSecondary)
             .padding({ left: 9, right: 9, top: 3, bottom: 3 })
-            .backgroundColor(StatusColor.pending.bg)
+            .backgroundColor(StatusColor.todo.bg)
             .borderRadius(Radius.pill)
         }
+        .margin({ top: 1 })
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
@@ -159,16 +174,17 @@ export struct ProfilePage {
     .width('100%')
     .padding(16)
     .backgroundColor(Color.surface)
+    .border({ width: 1, color: Color.divider })
     .borderRadius(Radius.card)
-    .shadow(Shadow.L2)
+    .shadow(Shadow.L1)
   }
 
   @Builder
   permissionCard() {
-    Column({ space: 9 }) {
+    Column() {
       Text('我的权限 · 由 GET /auth/me 下发')
         .width('100%')
-        .fontSize(FontSize.subtitle)
+        .fontSize(FontSize.body)
         .fontWeight(FontWeight.Medium)
         .fontColor(Color.textPrimary)
 
@@ -176,130 +192,139 @@ export struct ProfilePage {
         .width('100%')
         .fontSize(FontSize.caption)
         .fontColor(Color.textTertiary)
+        .margin({ top: 4 })
 
-      ForEach(this.permissionRows(), (item: PermissionDisplay) => {
+      Divider()
+        .strokeWidth(1)
+        .color(Color.divider)
+        .margin({ top: 10 })
+
+      ForEach(this.permissionRows(), (item: PermissionDisplay, index: number) => {
+        if (index > 0) {
+          Divider()
+            .strokeWidth(1)
+            .color(Color.divider)
+        }
+
         Row({ space: 8 }) {
-          Column({ space: 2 }) {
-            Text(item.name)
-              .fontSize(FontSize.caption)
-              .fontColor(Color.textPrimary)
-            Text(item.desc)
-              .fontSize(FontSize.micro)
-              .fontColor(Color.textTertiary)
-          }
-          .layoutWeight(1)
-          .alignItems(HorizontalAlign.Start)
-
-          Text(item.value)
-            .fontSize(FontSize.caption)
+          Text(`${item.name} · ${item.desc}`)
+            .layoutWeight(1)
+            .fontSize(FontSize.body)
             .fontColor(Color.textSecondary)
 
-          Image(item.ok ? $r('app.media.icon_check') : $r('app.media.icon_cross'))
-            .width(18)
-            .height(18)
+          Row({ space: 6 }) {
+            Text(item.value)
+              .fontSize(FontSize.body)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(item.ok ? Color.textSecondary : Color.textTertiary)
+
+            Image(item.ok ? $r('app.media.icon_check') : $r('app.media.icon_cross'))
+              .width(16)
+              .height(16)
+          }
         }
         .width('100%')
-        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-        .backgroundColor(Color.canvas)
-        .borderRadius(Radius.input)
+        .padding({ top: 9, bottom: 9 })
       }, (item: PermissionDisplay): string => item.name)
     }
     .width('100%')
-    .padding(12)
+    .padding(16)
     .backgroundColor(Color.surface)
+    .border({ width: 1, color: Color.divider })
     .borderRadius(Radius.card)
+    .shadow(Shadow.L1)
   }
 
   @Builder
   managementCard() {
     if (this.canManageMembers() || this.canOpenManage()) {
-      Column({ space: 8 }) {
-        Text('管理入口')
-          .width('100%')
-          .fontSize(FontSize.subtitle)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(Color.textPrimary)
-
+      Column() {
         if (this.canManageMembers()) {
-          this.entryRow('待分配审批', '审批新成员并分配部门与角色', 'pages/ApprovePage')
+          this.entryRow('待分配审批', 'pages/ApprovePage')
         }
+
+        if (this.canManageMembers() && this.canOpenManage()) {
+          Divider()
+            .strokeWidth(1)
+            .color(Color.divider)
+        }
+
         if (this.canOpenManage()) {
-          this.entryRow('管理 · 部门 / 口令 / 链接 / 成员', '按权限显示可执行的管理能力', 'pages/AdminPage')
+          this.entryRow('管理 · 部门 / 口令 / 链接 / 成员', 'pages/AdminPage')
         }
       }
       .width('100%')
-      .padding(12)
       .backgroundColor(Color.surface)
+      .border({ width: 1, color: Color.divider })
       .borderRadius(Radius.card)
+      .shadow(Shadow.L1)
     }
   }
 
   @Builder
   settingsCard() {
-    Column({ space: 8 }) {
-      Text('设置')
-        .width('100%')
-        .fontSize(FontSize.subtitle)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(Color.textPrimary)
-
+    Column() {
       Row() {
         Text('改密码')
           .fontSize(FontSize.body)
           .fontColor(Color.textPrimary)
         Blank()
         Image($r('app.media.chevron_right'))
-          .width(20)
-          .height(20)
+          .width(16)
+          .height(16)
       }
       .width('100%')
-      .height(42)
+      .height(50)
+      .padding({ left: Space.page, right: Space.page })
       .onClick(() => this.openPasswordSheet())
 
+      Divider()
+        .strokeWidth(1)
+        .color(Color.divider)
+
       Row() {
-        Column({ space: 2 }) {
-          Text('待同步的更改（Outbox）')
-            .fontSize(FontSize.body)
-            .fontColor(Color.textPrimary)
-          Text(this.outboxCount === 0 ? '没有待同步的更改。' : `${this.outboxCount} 条排队中`)
-            .fontSize(FontSize.micro)
-            .fontColor(Color.textTertiary)
-        }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
+        Text('待同步的更改（Outbox）')
+          .layoutWeight(1)
+          .fontSize(FontSize.body)
+          .fontColor(Color.textPrimary)
+
+        Text(this.outboxCount === 0 ? '已同步' : `${this.outboxCount} 条排队中`)
+          .fontSize(FontSize.body)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.outboxCount > 0 ? StatusColor.blocked.fg : Color.textTertiary)
+
         Image($r('app.media.chevron_right'))
-          .width(20)
-          .height(20)
+          .width(16)
+          .height(16)
+          .margin({ left: 6 })
       }
       .width('100%')
-      .height(52)
+      .height(50)
+      .padding({ left: Space.page, right: Space.page })
       .onClick(() => this.openOutbox())
     }
     .width('100%')
-    .padding(12)
     .backgroundColor(Color.surface)
+    .border({ width: 1, color: Color.divider })
     .borderRadius(Radius.card)
+    .shadow(Shadow.L1)
   }
 
   @Builder
-  entryRow(title: string, subtitle: string, path: string) {
+  entryRow(title: string, path: string) {
     Row() {
-      Column({ space: 2 }) {
-        Text(title)
-          .fontSize(FontSize.body)
-          .fontColor(Color.textPrimary)
-        Text(subtitle)
-          .fontSize(FontSize.micro)
-          .fontColor(Color.textTertiary)
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
+      Text(title)
+        .layoutWeight(1)
+        .fontSize(FontSize.body)
+        .fontColor(Color.textPrimary)
+
       Image($r('app.media.chevron_right'))
-          .width(20)
-          .height(20)
+        .width(16)
+        .height(16)
     }
     .width('100%')
-    .height(52)
+    .height(50)
+    .padding({ left: Space.page, right: Space.page })
     .onClick(() => pushTo(path))
   }
 

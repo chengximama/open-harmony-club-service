@@ -4,7 +4,7 @@ import BuildProfile from 'BuildProfile';
  * 调试构建继续使用模拟器宿主机 HTTP 地址。
  * 真机联调时只需改 DEV_BASE_URL 为后端电脑的局域网 IP。
  */
-const DEV_BASE_URL: string = 'http://10.0.2.2:8080/api/v1';
+const DEV_BASE_URL: string = 'http://10.194.208.10:8080/api/v1';
 
 /**
  * 发布构建必须走 HTTPS。

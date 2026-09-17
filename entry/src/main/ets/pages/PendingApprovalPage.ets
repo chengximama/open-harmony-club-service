@@ -1,22 +1,18 @@
-// 待分配审批页面（B同学负责）
-// 展示 pending 状态的成员，支持多选批量分配部门+角色
-// 含：dept_hint 招募来源展示、批量分配结果逐条展示（succeeded/failed）
-// 工程化：Theme token 化、bindContentCover 化
-// 已接真接口：MemberApi.pending() / MemberApi.assignBatch() / DeptApi.list()
+// 待分配审批页：按 Figma 参考站 pendingAssign 结构实现
+// 交互：成员多选 -> 当前页选择部门/角色 -> assign-batch 提交 -> 汇总结果
+// 真实接口：MemberApi.pending() / MemberApi.assignBatch() / DeptApi.list()
 
 import type { DeptBrief } from '../api/AuthApi';
 import { MemberApi, PendingMemberView, AssignBatchResponse, BatchFailItem } from '../api/MemberApi';
 import { DeptApi, DeptView } from '../api/DeptApi';
 import { Color, StatusColor, Space, Radius, FontSize, Shadow } from '../core/Theme';
+import { backPage } from '../utils/RouterUtils';
 
-// 带 UI 选择状态的待分配成员（独立 interface，不用 extends，ArkTS 兼容）
-// deptHint 对齐为 DeptBrief | null（来自后端 PendingMemberView.dept_hint）
 interface PendingMemberUI {
   id: number;
   name: string;
-  deptHint: DeptBrief | null;    // 招募来源部门提示
+  deptHint: DeptBrief | null;
   registeredAt: string;
-  selected: boolean;
 }
 
 interface Dept {
@@ -29,265 +25,42 @@ interface RoleOption {
   label: string;
 }
 
-// 批量分配结果条目（逐条展示）
-interface AssignResultItem {
-  id: number;
-  name: string;
-  ok: boolean;
-  roleName: string;     // 成功时显示分配的角色
-  deptName: string;     // 成功时显示分配的部门
-  errorMsg: string;     // 失败时显示错误信息
-}
-
-// ─── 角色选项（静态 UI 数据）───
 const ROLE_OPTIONS: RoleOption[] = [
   { key: 'member', label: '成员' },
   { key: 'vice_lead', label: '副部长' },
   { key: 'lead', label: '部长' },
   { key: 'vice_president', label: '副会长' },
-  { key: 'president', label: '会长' },
 ];
 
-// 批量分配失败的错误码 → 文案（与后端 errors.cj 对齐）
 function batchFailMsg(code: string): string {
-  if (code === 'FORBIDDEN_ROLE') return '当前角色无权执行此操作';
+  if (code === 'FORBIDDEN_ROLE') return '不能作用于同权或更高权的人';
   if (code === 'FORBIDDEN_LAST_PRESIDENT') return '系统必须始终保留至少一位会长';
   if (code === 'FORBIDDEN_NOT_IN_DEPT') return '不能操作其他部门';
   if (code === 'MEMBER_NOT_FOUND') return '成员不存在';
   if (code === 'MEMBER_DISABLED') return '该成员已退出社团';
+  if (code === 'INVALID_ROLE') return '角色无效';
+  if (code === 'DEPT_NOT_FOUND') return '部门不存在';
   return '分配失败';
 }
 
-// 在失败列表里按 id 找错误码
-function findFailCode(failed: BatchFailItem[], id: number): string {
-  for (let i = 0; i < failed.length; i++) {
-    if (failed[i].id === id) return failed[i].code;
-  }
-  return '';
+function registrationLabel(value: string): string {
+  if (value.length === 0) return '注册时间未知';
+  const date = new Date(value);
+  const time = date.getTime();
+  if (Number.isNaN(time)) return value;
+
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const dateStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const days = Math.floor((todayStart - dateStart) / 86400000);
+  if (days <= 0) return '今天注册';
+  if (days === 1) return '昨天注册';
+  return `${days} 天前注册`;
 }
 
-@Component
-struct PendingMemberCard {
-  member: PendingMemberUI = { id: 0, name: '', deptHint: null, registeredAt: '', selected: false };
-  onToggle: (id: number) => void = (_id: number) => {};
-
-  build() {
-    Row() {
-      Checkbox()
-        .select(this.member.selected)
-        .onChange((_checked: boolean) => { this.onToggle(this.member.id); })
-        .width(24)
-        .height(24)
-
-      Column() {
-        Row() {
-          Text(this.member.name)
-            .fontSize(FontSize.subtitle)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(Color.textPrimary)
-
-          if (this.member.deptHint !== null) {
-            Text(`· 意向: ${this.member.deptHint.name}`)
-              .fontSize(FontSize.caption)
-              .fontColor(StatusColor.blocked.fg)
-              .margin({ left: Space.sm })
-          }
-        }
-
-        Text(`注册于 ${this.member.registeredAt}`)
-          .fontSize(FontSize.caption)
-          .fontColor(Color.textTertiary)
-          .margin({ top: Space.xs })
-      }
-      .alignItems(HorizontalAlign.Start)
-      .margin({ left: Space.md })
-      .layoutWeight(1)
-    }
-    .width('100%')
-    .padding(Space.card)
-    .backgroundColor(Color.surface)
-    .borderRadius(Radius.card)
-    .margin({ bottom: Space.cardGap })
-  }
-}
-
-@Component
-struct AssignBottomBar {
-  selectedCount: number = 0;
-  onAssign: () => void = () => {};
-
-  build() {
-    Row() {
-      Text(`已选 ${this.selectedCount} 人`)
-        .fontSize(FontSize.body)
-        .fontColor(Color.textSecondary)
-
-      Button('批量分配')
-        .type(ButtonType.Capsule)
-        .backgroundColor(Color.primary)
-        .fontColor(Color.onPrimary)
-        .enabled(this.selectedCount > 0)
-        .onClick(() => { this.onAssign(); })
-    }
-    .width('100%')
-    .padding({ left: Space.page, right: Space.page, top: Space.md, bottom: Space.md })
-    .backgroundColor(Color.surface)
-    .justifyContent(FlexAlign.SpaceBetween)
-    .shadow(Shadow.card)
-  }
-}
-
-// 批量分配弹窗：由 bindContentCover 挂载，每次打开都是新实例，选择态自动重置为默认值
-@Component
-struct AssignDialog {
-  depts: Dept[] = [];
-  onConfirm: (deptIndex: number, roleIndex: number) => void = (_d: number, _r: number) => {};
-  onCancel: () => void = () => {};
-  @State selectedDeptIndex: number = 0;
-  @State selectedRoleIndex: number = 0;
-
-  build() {
-    Column() {
-      Column() {
-        Text('批量分配')
-          .fontSize(FontSize.title)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(Color.textPrimary)
-          .margin({ bottom: Space.lg })
-
-        Text('分配到部门')
-          .fontSize(FontSize.body)
-          .fontColor(Color.textSecondary)
-          .width('100%')
-          .margin({ bottom: Space.xs })
-
-        Select(this.depts.map((d: Dept): SelectOption => ({ value: d.name })))
-          .selected(this.selectedDeptIndex)
-          .value(this.depts.length > 0 ? this.depts[this.selectedDeptIndex].name : '')
-          .onSelect((index: number) => { this.selectedDeptIndex = index; })
-          .width('100%')
-          .margin({ bottom: Space.lg })
-
-        Text('角色')
-          .fontSize(FontSize.body)
-          .fontColor(Color.textSecondary)
-          .width('100%')
-          .margin({ bottom: Space.xs })
-
-        Select(ROLE_OPTIONS.map((r: RoleOption): SelectOption => ({ value: r.label })))
-          .selected(this.selectedRoleIndex)
-          .value(ROLE_OPTIONS[this.selectedRoleIndex].label)
-          .onSelect((index: number) => { this.selectedRoleIndex = index; })
-          .width('100%')
-          .margin({ bottom: Space.xl })
-
-        Row() {
-          Button('取消')
-            .type(ButtonType.Normal)
-            .backgroundColor(StatusColor.todo.bg)
-            .fontColor(Color.textSecondary)
-            .layoutWeight(1)
-            .borderRadius(Radius.button)
-            .onClick(() => { this.onCancel(); })
-
-          Button('确认分配')
-            .type(ButtonType.Capsule)
-            .backgroundColor(Color.primary)
-            .fontColor(Color.onPrimary)
-            .layoutWeight(1)
-            .margin({ left: Space.md })
-            .onClick(() => { this.onConfirm(this.selectedDeptIndex, this.selectedRoleIndex); })
-        }
-        .width('100%')
-      }
-      .width('85%')
-      .padding(Space.xl)
-      .backgroundColor(Color.surface)
-      .borderRadius(Radius.card)
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(Color.overlay)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-  }
-}
-
-// 批量分配结果弹窗：逐条展示 succeeded / failed（满足"显示 3 succeeded, 2 failed"的口径）
-@Component
-struct AssignResultDialog {
-  results: AssignResultItem[] = [];
-  onConfirm: () => void = () => {};
-
-  getSuccessCount(): number {
-    return this.results.filter((r: AssignResultItem): boolean => r.ok).length;
-  }
-
-  getFailCount(): number {
-    return this.results.filter((r: AssignResultItem): boolean => !r.ok).length;
-  }
-
-  build() {
-    Column() {
-      Column() {
-        Text('分配结果')
-          .fontSize(FontSize.title)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(Color.textPrimary)
-          .margin({ bottom: Space.sm })
-
-        Text(`${this.getSuccessCount()} 成功 / ${this.getFailCount()} 失败`)
-          .fontSize(FontSize.body)
-          .fontColor(Color.textSecondary)
-          .margin({ bottom: Space.lg })
-
-        Scroll() {
-          Column() {
-            ForEach(this.results, (r: AssignResultItem) => {
-              Row() {
-                Text(r.name)
-                  .fontSize(FontSize.body)
-                  .fontColor(Color.textPrimary)
-                  .layoutWeight(1)
-
-                if (r.ok) {
-                  Text(`✓ ${r.roleName} @ ${r.deptName}`)
-                    .fontSize(FontSize.caption)
-                    .fontColor(StatusColor.done.fg)
-                } else {
-                  Text(`✗ ${r.errorMsg}`)
-                    .fontSize(FontSize.caption)
-                    .fontColor(StatusColor.overdue.fg)
-                }
-              }
-              .width('100%')
-              .padding({ top: Space.sm, bottom: Space.sm })
-            }, (r: AssignResultItem) => r.id.toString())
-          }
-          .width('100%')
-        }
-        .height(200)
-        .margin({ bottom: Space.lg })
-
-        Button('知道了')
-          .type(ButtonType.Capsule)
-          .backgroundColor(Color.primary)
-          .fontColor(Color.onPrimary)
-          .width('100%')
-          .borderRadius(Radius.button)
-          .onClick(() => { this.onConfirm(); })
-      }
-      .width('85%')
-      .padding(Space.xl)
-      .backgroundColor(Color.surface)
-      .borderRadius(Radius.card)
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(Color.overlay)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-  }
+function deptHintLabel(member: PendingMemberUI): string {
+  if (member.deptHint === null) return '未指定部门';
+  return member.deptHint.name;
 }
 
 @Component
@@ -296,9 +69,12 @@ export default struct PendingApprovalPage {
   @State depts: Dept[] = [];
   @State loading: boolean = true;
   @State errorMsg: string = '';
-  @State showAssignDialog: boolean = false;
-  @State showAssignResult: boolean = false;
-  @State assignResults: AssignResultItem[] = [];
+  @State selectedDeptIndex: number = 0;
+  @State selectedRoleIndex: number = 0;
+  @State selectedMemberIds: number[] = [];
+  @State assigning: boolean = false;
+  @State lastResultSummary: string = '';
+  @State lastResultDetail: string = '';
   private memberApi: MemberApi = new MemberApi();
   private deptApi: DeptApi = new DeptApi();
 
@@ -309,6 +85,8 @@ export default struct PendingApprovalPage {
   async loadData(): Promise<void> {
     this.loading = true;
     this.errorMsg = '';
+    this.lastResultSummary = '';
+    this.lastResultDetail = '';
     await this.loadDepts();
     await this.loadPending();
     this.loading = false;
@@ -318,6 +96,7 @@ export default struct PendingApprovalPage {
     const resp = await this.deptApi.list();
     if (resp.ok && resp.data) {
       this.depts = resp.data.items.map((d: DeptView): Dept => ({ id: d.id, name: d.name }));
+      this.selectedDeptIndex = 0;
     } else {
       this.errorMsg = resp.error?.message ?? '加载部门失败';
     }
@@ -331,39 +110,62 @@ export default struct PendingApprovalPage {
         name: v.name,
         deptHint: v.dept_hint,
         registeredAt: v.registered_at ?? '',
-        selected: false,
       }));
+      this.selectedMemberIds = [];
     } else {
       this.errorMsg = resp.error?.message ?? '加载待审批成员失败';
     }
   }
 
-  toggleSelect(id: number): void {
-    const idx = this.members.findIndex((m: PendingMemberUI): boolean => m.id === id);
-    if (idx >= 0) {
-      this.members[idx].selected = !this.members[idx].selected;
-      this.members = [...this.members];
+  selectedCount(): number {
+    return this.selectedMemberIds.length;
+  }
+
+  isMemberSelected(id: number): boolean {
+    return this.selectedMemberIds.indexOf(id) >= 0;
+  }
+
+  toggleMember(id: number): void {
+    if (this.isMemberSelected(id)) {
+      this.selectedMemberIds = this.selectedMemberIds.filter((selectedId: number): boolean => selectedId !== id);
+    } else {
+      this.selectedMemberIds = [...this.selectedMemberIds, id];
     }
   }
 
-  getSelectedCount(): number {
-    return this.members.filter((m: PendingMemberUI): boolean => m.selected).length;
+  clearSelection(): void {
+    this.selectedMemberIds = [];
   }
 
-  selectAll(): void {
-    const allSelected = this.getSelectedCount() === this.members.length;
-    this.members.forEach((m: PendingMemberUI): void => { m.selected = !allSelected; });
-    this.members = [...this.members];
+  buildResultSummary(data: AssignBatchResponse, deptName: string, roleLabel: string): void {
+    const successCount = data.succeeded.length;
+    const failCount = data.failed.length;
+    const codes: string[] = [];
+    for (let i = 0; i < data.failed.length; i++) {
+      const code = data.failed[i].code;
+      if (codes.indexOf(code) < 0) {
+        codes.push(code);
+      }
+    }
+
+    this.lastResultSummary = `上次结果 · 成功 ${successCount} 条，失败 ${failCount} 条`;
+    if (failCount > 0) {
+      const codeText = codes.length > 0 ? codes.join('、') : 'UNKNOWN';
+      this.lastResultDetail = `${codeText}：${batchFailMsg(codes.length > 0 ? codes[0] : '')}；失败条目保留选中以便重试。`;
+    } else {
+      this.lastResultDetail = `${deptName} · ${roleLabel} 已分配，成功成员已从列表移除。`;
+    }
   }
 
-  // 执行批量分配：调真实接口，按后端 succeeded/failed 构造逐条结果
-  async doAssign(deptIndex: number, roleIndex: number): Promise<void> {
-    if (this.depts.length === 0) return;
-    const dept: Dept = this.depts[deptIndex];
-    const role: RoleOption = ROLE_OPTIONS[roleIndex];
-    const selected: PendingMemberUI[] = this.members.filter((m: PendingMemberUI): boolean => m.selected);
-    const memberIds: number[] = selected.map((m: PendingMemberUI): number => m.id);
+  async submitAssign(): Promise<void> {
+    if (this.assigning || this.depts.length === 0) return;
+    const selected = this.members.filter((m: PendingMemberUI): boolean => this.isMemberSelected(m.id));
+    if (selected.length === 0) return;
 
+    this.assigning = true;
+    const dept = this.depts[this.selectedDeptIndex];
+    const role = ROLE_OPTIONS[this.selectedRoleIndex];
+    const memberIds = selected.map((m: PendingMemberUI): number => m.id);
     const resp = await this.memberApi.assignBatch({
       dept_id: dept.id,
       role: role.key,
@@ -371,151 +173,319 @@ export default struct PendingApprovalPage {
     });
 
     if (resp.ok && resp.data) {
-      const data: AssignBatchResponse = resp.data;
-      const succeededIds: number[] = data.succeeded;
-      const results: AssignResultItem[] = selected.map((m: PendingMemberUI): AssignResultItem => {
-        const ok: boolean = succeededIds.includes(m.id);
-        return {
-          id: m.id,
-          name: m.name,
-          ok: ok,
-          roleName: role.label,
-          deptName: dept.name,
-          errorMsg: ok ? '' : batchFailMsg(findFailCode(data.failed, m.id)),
-        };
-      });
-
-      this.assignResults = results;
-      this.showAssignDialog = false;
-      this.showAssignResult = true;
-      // 从列表移除分配成功的成员
+      const data = resp.data;
+      const succeededIds = data.succeeded;
+      this.buildResultSummary(data, dept.name, role.label);
       this.members = this.members.filter((m: PendingMemberUI): boolean => !succeededIds.includes(m.id));
+      this.selectedMemberIds = this.selectedMemberIds.filter((id: number): boolean => !succeededIds.includes(id));
     } else {
-      // 整批失败（网络/权限等）：全部标为失败
-      const errMsg: string = resp.error?.message ?? '分配失败';
-      const results: AssignResultItem[] = selected.map((m: PendingMemberUI): AssignResultItem => ({
-        id: m.id,
-        name: m.name,
-        ok: false,
-        roleName: role.label,
-        deptName: dept.name,
-        errorMsg: errMsg,
-      }));
-      this.assignResults = results;
-      this.showAssignDialog = false;
-      this.showAssignResult = true;
+      this.lastResultSummary = '上次结果 · 提交失败';
+      this.lastResultDetail = `${resp.error?.message ?? '分配失败'}；已选成员保持不变，可重试。`;
     }
+    this.assigning = false;
   }
 
   @Builder
-  assignDialogBuilder() {
-    AssignDialog({
-      depts: this.depts,
-      onConfirm: (deptIndex: number, roleIndex: number): void => {
-        this.doAssign(deptIndex, roleIndex);
-      },
-      onCancel: (): void => {
-        this.showAssignDialog = false;
+  headerBuilder() {
+    Row() {
+      Row({ space: 4 }) {
+        Image($r('app.media.icon_chevron_left_primary'))
+          .width(18)
+          .height(18)
+
+        Text('待分配审批')
+          .fontSize(FontSize.body)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(Color.primary)
       }
-    })
+      .height('100%')
+      .onClick(() => backPage())
+
+      Blank()
+
+      Text(`${this.members.length} 人待处理`)
+        .fontSize(FontSize.body)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(Color.primary)
+    }
+    .width('100%')
+    .height(52)
+    .padding({ left: Space.page, right: Space.page })
+    .alignItems(VerticalAlign.Center)
+    .backgroundColor(Color.surface)
   }
 
   @Builder
-  assignResultBuilder() {
-    AssignResultDialog({
-      results: this.assignResults,
-      onConfirm: (): void => {
-        this.showAssignResult = false;
-        // 清空已选状态（成功成员已移除，剩余成员重置 selected）
-        this.members.forEach((m: PendingMemberUI): void => { m.selected = false; });
-        this.members = [...this.members];
-      }
-    })
+  infoBannerBuilder() {
+    Text('dept_hint 只是招募链接预填的部门，不代表已分配；角色一律由会长授予，口令与链接不承载任何角色。')
+      .width('100%')
+      .fontSize(FontSize.body)
+      .fontColor(StatusColor.pending.fg)
+      .lineHeight(21)
+      .padding(16)
+      .backgroundColor(StatusColor.pending.bg)
+      .border({ width: 1, color: '#E5DDFD' })
+      .borderRadius(Radius.card)
   }
 
-  build() {
+  @Builder
+  memberRowBuilder(member: PendingMemberUI, showDivider: boolean) {
+    if (showDivider) {
+      Divider()
+        .strokeWidth(1)
+        .color(Color.divider)
+    }
+
+    Row({ space: 12 }) {
+      Stack() {
+        if (this.isMemberSelected(member.id)) {
+          Text('✓')
+            .fontSize(13)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(Color.onPrimary)
+        }
+      }
+      .width(20)
+      .height(20)
+      .backgroundColor(this.isMemberSelected(member.id) ? Color.primary : Color.surface)
+      .border({ width: 2, color: this.isMemberSelected(member.id) ? Color.primary : Color.inputBorder })
+      .borderRadius(4)
+
+      Column({ space: 2 }) {
+        Text(member.name)
+          .width('100%')
+          .fontSize(FontSize.body)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(Color.textPrimary)
+
+        Text(`${registrationLabel(member.registeredAt)} · dept_hint：${deptHintLabel(member)}`)
+          .width('100%')
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textTertiary)
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+    }
+    .width('100%')
+    .padding({ top: 13, bottom: 13 })
+    .onClick(() => this.toggleMember(member.id))
+  }
+
+  @Builder
+  memberListBuilder() {
     Column() {
+      ForEach(this.members, (member: PendingMemberUI, index: number) => {
+        this.memberRowBuilder(member, index > 0)
+      }, (member: PendingMemberUI): string => `${member.id}-${this.isMemberSelected(member.id) ? '1' : '0'}`)
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16 })
+    .backgroundColor(Color.surface)
+    .borderRadius(Radius.card)
+    .shadow(Shadow.L1)
+  }
+
+  @Builder
+  assignCardBuilder() {
+    Column({ space: 14 }) {
       Row() {
-        Text('待审批列表')
+        Text(`已选 ${this.selectedCount()} 人`)
+          .fontSize(FontSize.body)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(Color.textPrimary)
+
+        Blank()
+
+        Text('取消选择')
+          .fontSize(FontSize.caption)
+          .fontColor(Color.primary)
+          .onClick(() => this.clearSelection())
+      }
+      .width('100%')
+
+      Row() {
+        Text('分配部门')
           .fontSize(FontSize.body)
           .fontColor(Color.textSecondary)
 
         Blank()
 
-        Text(this.getSelectedCount() === this.members.length ? '取消全选' : '全选')
-          .fontSize(FontSize.body)
-          .fontColor(Color.primary)
-          .onClick(() => { this.selectAll(); })
+        Select(this.depts.map((d: Dept): SelectOption => ({ value: d.name })))
+          .selected(this.selectedDeptIndex)
+          .value(this.depts.length > 0 ? this.depts[this.selectedDeptIndex].name : '暂无部门')
+          .onSelect((index: number) => {
+            this.selectedDeptIndex = index;
+          })
+          .width(132)
       }
       .width('100%')
-      .padding({ left: Space.page, right: Space.page, top: Space.md, bottom: Space.sm })
 
-      if (this.loading) {
-        Column() {
-          LoadingProgress().width(32).height(32).color(Color.primary)
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-      } else if (this.errorMsg.length > 0) {
-        Column() {
-          Text(this.errorMsg)
-            .fontSize(FontSize.body)
-            .fontColor(StatusColor.overdue.fg)
-            .textAlign(TextAlign.Center)
+      Row() {
+        Text('角色')
+          .fontSize(FontSize.body)
+          .fontColor(Color.textSecondary)
 
-          Button('重试')
-            .type(ButtonType.Capsule)
-            .backgroundColor(Color.primary)
-            .fontColor(Color.onPrimary)
-            .margin({ top: Space.md })
-            .onClick(() => { this.loadData(); })
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Center)
-      } else if (this.members.length === 0) {
-        Column() {
-          Text('🎉')
-            .fontSize(48)
-            .margin({ bottom: Space.md })
+        Blank()
 
-          Text('暂无待审批成员')
-            .fontSize(FontSize.body)
-            .fontColor(Color.textTertiary)
-        }
+        Select(ROLE_OPTIONS.map((r: RoleOption): SelectOption => ({ value: r.label })))
+          .selected(this.selectedRoleIndex)
+          .value(ROLE_OPTIONS[this.selectedRoleIndex].label)
+          .onSelect((index: number) => {
+            this.selectedRoleIndex = index;
+          })
+          .width(132)
+      }
+      .width('100%')
+
+      Button(this.assigning ? '提交中…' : '一次提交（assign-batch）')
         .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Center)
-      } else {
-        List({ space: Space.cardGap }) {
-          ForEach(this.members, (item: PendingMemberUI) => {
-            ListItem() {
-              PendingMemberCard({
-                member: item,
-                onToggle: (id: number): void => this.toggleSelect(id)
-              })
+        .height(44)
+        .type(ButtonType.Normal)
+        .fontSize(FontSize.body)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(Color.onPrimary)
+        .backgroundColor(Color.primary)
+        .borderRadius(Radius.button)
+        .enabled(!this.assigning && this.depts.length > 0)
+        .onClick(() => this.submitAssign())
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor(Color.surface)
+    .border({ width: 1, color: Color.divider })
+    .borderRadius(Radius.card)
+    .shadow(Shadow.L1)
+  }
+
+  @Builder
+  resultBuilder() {
+    Column({ space: 4 }) {
+      Text(this.lastResultSummary)
+        .width('100%')
+        .fontSize(FontSize.caption)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(Color.textSecondary)
+
+      Text(this.lastResultDetail)
+        .width('100%')
+        .fontSize(FontSize.micro)
+        .fontColor(Color.textTertiary)
+        .lineHeight(17)
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(StatusColor.todo.bg)
+    .borderRadius(Radius.card)
+  }
+
+  @Builder
+  loadingBuilder() {
+    Column() {
+      LoadingProgress()
+        .width(32)
+        .height(32)
+        .color(Color.primary)
+
+      Text('正在加载待分配成员…')
+        .fontSize(FontSize.caption)
+        .fontColor(Color.textTertiary)
+        .margin({ top: Space.md })
+    }
+    .width('100%')
+    .height(240)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+  }
+
+  @Builder
+  errorBuilder() {
+    Column() {
+      Text(this.errorMsg)
+        .width('100%')
+        .fontSize(FontSize.body)
+        .fontColor(StatusColor.overdue.fg)
+        .textAlign(TextAlign.Center)
+
+      Button('重试')
+        .type(ButtonType.Capsule)
+        .backgroundColor(Color.primary)
+        .fontColor(Color.onPrimary)
+        .margin({ top: Space.md })
+        .onClick(() => this.loadData())
+    }
+    .width('100%')
+    .height(240)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+  }
+
+  @Builder
+  emptyBuilder() {
+    Column() {
+      Image($r('app.media.clock_pending'))
+        .width(68)
+        .height(68)
+        .margin({ bottom: Space.lg })
+
+      Text('暂无待审批成员')
+        .fontSize(FontSize.subtitle)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(Color.textPrimary)
+        .margin({ bottom: Space.xs })
+
+      Text('新成员注册后会出现在这里')
+        .fontSize(FontSize.caption)
+        .fontColor(Color.textTertiary)
+    }
+    .width('100%')
+    .height(280)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+  }
+
+  build() {
+    Column() {
+      this.headerBuilder()
+
+      Divider()
+        .strokeWidth(1)
+        .color(Color.divider)
+
+      Scroll() {
+        Column({ space: 12 }) {
+          this.infoBannerBuilder()
+
+          if (this.loading) {
+            this.loadingBuilder()
+          } else if (this.errorMsg.length > 0) {
+            this.errorBuilder()
+          } else {
+            if (this.members.length === 0) {
+              this.emptyBuilder()
+            } else {
+              this.memberListBuilder()
             }
-          }, (item: PendingMemberUI) => item.id.toString())
+
+            if (this.selectedCount() > 0) {
+              this.assignCardBuilder()
+            }
+
+            if (this.lastResultSummary.length > 0) {
+              this.resultBuilder()
+            }
+          }
         }
         .width('100%')
-        .layoutWeight(1)
-        .padding({ left: Space.page, right: Space.page, top: Space.xs, bottom: Space.sm })
+        .padding({ left: Space.page, right: Space.page, top: 12, bottom: 24 })
       }
-
-      if (this.getSelectedCount() > 0) {
-        AssignBottomBar({
-          selectedCount: this.getSelectedCount(),
-          onAssign: (): void => { this.showAssignDialog = true; }
-        })
-      }
+      .width('100%')
+      .layoutWeight(1)
+      .scrollBar(BarState.Off)
     }
     .width('100%')
     .height('100%')
     .backgroundColor(Color.canvas)
-    .bindContentCover(this.showAssignDialog, this.assignDialogBuilder)
-    .bindContentCover(this.showAssignResult, this.assignResultBuilder)
   }
 }
