@@ -37,9 +37,9 @@ async function login() {
       <h1>轻舟后台管理系统</h1>
       <p class="sub">社团管理 · 运维台</p>
       <label>手机号 / 用户名</label>
-      <input v-model="username" placeholder="13800000009 或 admin">
+      <input v-model="username" placeholder="手机号 或 用户名">
       <label>口令</label>
-      <input v-model="password" type="password" placeholder="运维口令 / 后台口令">
+      <input v-model="password" type="password" placeholder="口令">
       <button class="btn" @click="login">登 录</button>
       <div class="err">{{ err }}</div>
       <p class="hint">

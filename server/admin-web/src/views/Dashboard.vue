@@ -6,12 +6,21 @@ const stats = ref({ users: 0, roles: 0 })
 const perms = ref([])
 const err = ref('')
 
+/*
+ * 权限点是**后台管理员专属**的接口（/api/perms 要 perm:list 权限）。
+ * 用运维账号登录时它必然 401 —— 虽然下面写了 try/catch 想忽略，但没必要白打一发：
+ * 先看身份再决定要不要请求（同时也让"为什么这块是空的"有个准确解释）。
+ */
+const me = JSON.parse(localStorage.getItem('qz_me') || '{}')
+const isAdmin = me.role === 'admin'
+
 onMounted(async () => {
   try {
     const d = await api.dashboard()
     stats.value = d.stats
-    // 尝试加载权限列表（无权限则忽略，仅展示可用性）
-    try { perms.value = await api.perms() } catch (_) {}
+    if (isAdmin) {
+      try { perms.value = await api.perms() } catch (_) {}
+    }
   } catch (e) {
     err.value = '加载失败：' + e.message
   }

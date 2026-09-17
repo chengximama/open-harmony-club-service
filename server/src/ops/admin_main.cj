@@ -982,6 +982,19 @@ main(): Int64 {
     let staticOpts = StaticOptions()
     staticOpts.spaFallback = true
     staticOpts.enableCache = false   /* 运维台改前端要立即生效，不缓存 */
+    /*
+     * 2026-09-17：**必须关掉 ETag**，否则重建前端后浏览器会卡在旧页面上（实测白屏）。
+     *
+     * 框架的 ETag 是"**仅按字节大小**"生成的强校验器（static.cj 的 makeETag(size) → `"<size>"`，
+     * 文件头第 32 行写明），而 vite 重建时 index.html 里变的只有两个 8 位 hash 文件名 ——
+     * **字节数一模一样**（实测重建前后都是 399 字节，`git cat-file -s` 两版相同）。
+     * 于是 ETag 完全相同：浏览器带着 If-None-Match 回来直接拿到 **304**，继续用旧的
+     * index.html，而它引用的 index-<旧hash>.js 已被 vite 删掉 → **JS 404 → 一片空白**。
+     * （Last-Modified 那一路本身是对的，但它排在前面且因 mtime 已变而不匹配，
+     *   于是落到 ETag 这一路命中 304，正好把这个坑踩满。）
+     * 运维台只在本机/运维网内使用，每次重下发 ~115 KB 的 JS 完全可以接受 —— 正确性优先。
+     */
+    staticOpts.enableETag = false
 
     let app = QingZhouApp()
         .use(securityHeaders())

@@ -28,7 +28,7 @@
 | **服务端代码评审（第三轮）** | `docs/code-review.md` 第三轮复验：第二轮 9 条**全部确认修复**；新发现 4 条（**N-10** `assign`/`assign-batch` 漏在同权保护之外 · N-11 文档限定词 · N-12 裸 IPv6 退化 · N-13 分布式尝试）—— **已全部处理**。N-10 的两个面（降级同权者、用 `assign` 推翻会长对同权者的移出决定）都已堵住 | ✅ 完成并验证 |
 | **轻舟升级与 CangDB 适配** | 升级轻舟到 **`e072980`**（= 上游 HEAD；上游 `141a735` 修好 DEF-1，本地补丁撤销）；新版 `store.cj` / `rbac.cj` 依赖的 **CangDB 上游仓只有 README、没有代码** → 用 `server/src/fw_rbac_store.cj`（文件存储的数据层）+ `fw_rbac.cj`（`requirePermission` 中间件）替代，`build.ps1` 排除框架原版 | ✅ 完成并验证（单测 471 / 冒烟 421 / TLS 22 / 契约 30） |
 | **轻舟后台管理界面（新增）** | 随 `e072980` 快照带进上游的**后台管理界面**，并新增 `build.ps1 -Target admin` → `build\admin\admin.exe`（自包含：exe + 前端 + `admin.env`）。它的数据层**路由到本地 JSON 文件**（复用 `fw_rbac_store.cj`，沧海 CangDB 未公开）。端到端验证 `server/tests/admin-check.ps1` | ✅ 完成并验证（后台端到端 **29 / 0**） |
-| **「社团管理」运维页（新增）** | 后台里加一页 `/club`：**读**直接读社团库文件（`server/src/ops/*`，club-server 不在跑也能看），**写**由后台以**专用运维账号**（club-server 的 `role = ops`）的身份调用 club-server 真实 API（分配/停用/重置口令/换注册口令/部门增删/优雅停服），另带概览、任务/课题/招募链接查询、**审计日志**与**一键备份**。入口是我们自己的 `src/ops/admin_main.cj`（上游 `examples/admin.cj` 只作对照、逐字节原样）；顺手修掉上游"成功响应也可能带 404"的状态码问题。端到端验证 `server/tests/ops-check.ps1` | ✅ 完成并验证（运维页端到端 **52 / 0**） |
+| **「社团管理」运维页（新增）** | 后台里加一页 `/club`：**读**直接读社团库文件（`server/src/ops/*`，club-server 不在跑也能看），**写**由后台以**专用运维账号**（club-server 的 `role = ops`）的身份调用 club-server 真实 API（分配/停用/重置口令/换注册口令/部门增删/优雅停服），另带概览、任务/课题/招募链接查询、**审计日志**与**一键备份**。入口是我们自己的 `src/ops/admin_main.cj`（上游 `examples/admin.cj` 只作对照、逐字节原样）；顺手修掉上游"成功响应也可能带 404"的状态码问题。端到端验证 `server/tests/ops-check.ps1` | ✅ 完成并验证（运维页端到端 **64 / 0**） |
 | **运维身份独立于会长（新增）** | 运维**不该由会长执行**：新增内置身份 **`ops`**（权限 = 会长去掉「移交会长」，**不可由 API 分配**，只能 `club-server init-ops <手机号> <口令>` 创建、`retire-ops` 停用）。运维人员只登录后台（口令由 `admin.exe` 首次启动随机生成），后台代持运维账号去调 club-server → **审计里 actor 是运维**，与会长做的操作分得清清楚楚。顺带补齐部门新增/改名的审计（原先只有删除记了） | ✅ 完成并验证（单测 490 / 冒烟 422 全绿） |
 | **服务端容量基准与四项性能改造** | 按"接近千人"的容量问题做了可复现基准（`server/tests/bench.ps1`，真实 HTTP + 旧版本 worktree 对比），并落地四项改造：① 列表排序插入排序→**堆排序** ② **PBKDF2 移出全局锁**（三阶段加锁）③ 过期**令牌回收** ④ 整库落盘移出锁（请求链末端刷盘）。实测只有 ② 有量级收益（**4 并发登录 1574 → 867 ms**），①④ 在千人档落在噪声内、价值是最坏情况下界 —— 见 `docs/capacity-baseline.md` | ✅ 完成并验证（单测 349 / 冒烟 347 / TLS 22） |
 | **服务端第四轮复验修复** | 按 `docs/code-review.md` **第四轮**的 6 条新发现修：**N-14**（本机判定用子串匹配 `::1` → 远程 IPv6 可远程关停服务，改成按地址相等比白名单）· **N-15**（4 个 handler 被 4xx 拒绝却留下半改状态并落盘，改成两阶段赋值）· **N-16**（登录时序侧信道可枚举手机号，改成两条路径等价 PBKDF2）· **N-17**（审计 IO 移出锁）· **N-18**（任务可挂任意部门课题，补部门一致性）· **N-19**（招募 token 32 位 → 32 字节） | ✅ 完成并验证（单测 387 / 冒烟 360 / TLS 22） |
@@ -63,10 +63,15 @@ cd server
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target admin   # 编运维台（会带上 server\admin-web\dist）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\admin-check.ps1     # 后台自身（RBAC + JSON 数据层）29 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\ops-check.ps1       # 「社团管理」运维页 64 项（含运维账号登录 / 写路径）
+node .\tests\web-logic-check.mjs                                                 # 前端逻辑 17 项（401 不该整页跳转，见 code-review N-32）
 ```
 
 > 改了前端源码（`server\admin-web\src`）要重建 `dist`（需要 Node）：
 > `cd server\admin-web ; npm install ; npm run build` —— 部署机不需要 Node，`dist` 随仓库提交。
+> 本机没装 npm 时可直接用仓库里已有的 vite：`node node_modules\vite\bin\vite.js build`。
+> ⚠️ 运维台**关闭了 ETag**（`admin_main.cj` 的 `staticOpts.enableETag = false`）：轻舟的 ETag 只按
+> 文件字节大小生成，而 vite 重建后 `index.html` 字节数不变（只有 hash 文件名变）→ 浏览器会拿到
+> 304 卡在旧 HTML 上、而它引用的旧 JS 已被删除 → **白屏**。见 code-review N-33。
 
 ---
 

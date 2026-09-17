@@ -1,4 +1,22 @@
 // 统一 API 封装：自动带 token，统一处理 {code, message, data} 响应壳
+//
+// ⚠ 401 有两种完全不同的含义，**不能一律当成"会话失效"去整页跳登录**：
+//   ① 没登录 / 令牌过期  → 该回登录页；
+//   ② 已登录、但这条接口不归你（例如运维账号去读后台管理接口 /api/perms）→ 只是没权限。
+//
+// 原先两者不分，于是有两个真实故障（2026-09-17 实测）：
+//   · **登录后闪一下就退回登录页**：Dashboard 里 `api.perms()` 外面明明写了
+//     try/catch 想"拿不到权限就忽略"，但整页跳转发生在 catch 之前（这里直接
+//     window.location.href），所以那个 catch 永远轮不到 —— 用运维账号登录时，
+//     仪表盘先渲染出来（/api/dashboard 是 200），紧接着 /api/perms 拿到 401
+//     就把整页跳走了。
+//   · **错了口令，提示一闪即逝、输入被清空**：/api/login 的 401 也走了这条路，
+//     整页重载把输入框和错误提示一起冲掉了。
+//
+// 所以：只有"任何登录身份都该能用"的接口上的 401 才算会话失效；登录接口自己的 401
+// 是"口令错"，后台管理接口上的 401 是"没这个权限"，两者都只抛不跳，交给调用方展示。
+const ADMIN_ONLY = ['/api/users', '/api/roles', '/api/perms']
+
 async function request(path, options = {}) {
   const token = localStorage.getItem('qz_token')
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) }
@@ -6,12 +24,18 @@ async function request(path, options = {}) {
   const res = await fetch(path, { ...options, headers })
   const json = await res.json()
   if (json.code !== 0) {
-    if (json.code === 401) {
-      // 登录失效，清 token 回登录页
+    const e = new Error(json.message || 'request failed')
+    e.code = json.code
+    const isLoginCall = path.startsWith('/api/login')
+    const adminOnly = ADMIN_ONLY.some((p) => path.startsWith(p))
+    // adminOnly 上若**连 token 都没有**，那确实是没登录，仍然回登录页。
+    const sessionGone = json.code === 401 && !isLoginCall && (!adminOnly || !token)
+    if (sessionGone) {
       localStorage.removeItem('qz_token')
+      localStorage.removeItem('qz_me')
       window.location.href = '/login'
     }
-    throw new Error(json.message || 'request failed')
+    throw e
   }
   return json.data
 }
