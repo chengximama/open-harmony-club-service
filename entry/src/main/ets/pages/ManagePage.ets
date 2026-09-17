@@ -30,6 +30,10 @@ interface MemberOption {
   deptName: string;
 }
 
+interface SelectOption {
+  value: string;
+}
+
 // ─── 假数据 ───
 const DEPTS: Dept[] = [
   { id: 0, name: '主席团', memberCount: 3 },
@@ -51,6 +55,28 @@ const MEMBERS: MemberOption[] = [
   { id: 5, name: '孙副部长', deptName: '课题部' },
 ];
 
+
+function deptSelectOptions(): SelectOption[] {
+  return DEPTS.map((item: Dept): SelectOption => {
+    const option: SelectOption = { value: item.name };
+    return option;
+  });
+}
+
+function memberSelectOptions(): SelectOption[] {
+  return MEMBERS.map((item: MemberOption): SelectOption => {
+    const option: SelectOption = { value: `${item.name}（${item.deptName}）` };
+    return option;
+  });
+}
+
+function transferMemberSelectOptions(): SelectOption[] {
+  return MEMBERS.filter((item: MemberOption): boolean => item.id !== MOCK_CURRENT_USER.id)
+    .map((item: MemberOption): SelectOption => {
+      const option: SelectOption = { value: `${item.name}（${item.deptName}）` };
+      return option;
+    });
+}
 // 当前登录用户的 mock（接 API 后改为 PermissionStore.getInstance().userInfo）
 const MOCK_CURRENT_USER: MemberSelf = {
   id: 1,
@@ -675,7 +701,7 @@ struct CreateLinkDialog {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(DEPTS.map((d: Dept) => ({ value: d.name })))
+        Select(deptSelectOptions())
           .selected(this.selectedDeptIndex)
           .value(DEPTS[this.selectedDeptIndex]?.name || DEPTS[0].name)
           .onSelect((index: number) => { this.selectedDeptIndex = index; })
@@ -853,8 +879,7 @@ struct DangerZoneSection {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(MEMBERS.filter((m: MemberOption): boolean => m.id !== MOCK_CURRENT_USER.id)
-          .map((m: MemberOption) => ({ value: `${m.name}（${m.deptName}）` })))
+        Select(transferMemberSelectOptions())
           .selected(this.selectedTransferIndex)
           .value(MEMBERS.filter((m: MemberOption): boolean => m.id !== MOCK_CURRENT_USER.id)[this.selectedTransferIndex]?.name || '请选择')
           .onSelect((index: number) => { this.selectedTransferIndex = index; })
@@ -967,7 +992,7 @@ struct DangerZoneSection {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(MEMBERS.map((m: MemberOption) => ({ value: `${m.name}（${m.deptName}）` })))
+        Select(memberSelectOptions())
           .selected(0)
           .value(MEMBERS[0]?.name || '请选择')
           .width('100%')

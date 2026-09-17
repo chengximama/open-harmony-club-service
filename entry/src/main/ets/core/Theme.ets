@@ -1,45 +1,72 @@
 /**
  * 设计与视觉规范 —— Design Tokens 唯一同源
  * 对应《鸿蒙俱乐部-全场景UI设计规格》Design Tokens · Light Theme
- * 原则：一处定义 · 全页复用 · 页面里不出现硬编码色值。
- *
- * 注：设计稿里的 SemiBold 在 ArkUI 无对应档位，统一用 FontWeight.Bold 落地；
- *     数字/日期的 Inter 等宽数字需先在 resources 注册字体，再由 fontFamily 生效，暂以常量标注。
  */
 
-// ─── 品牌与中性色 ───
-// 底色带极淡紫调、卡片纯白浮起；中性色只负责秩序，全部提示信号交给状态色。
 export interface ColorTokens {
   canvas: string;
   surface: string;
   primary: string;
   primarySoft: string;
-  onPrimary: string;       // 在 primary 上的前景色（白）
-  onSurface: string;        // 在 surface 上的前景色（深色，等同 textPrimary）
-  overlay: string;          // 模态浮层半透明遮罩（50% 黑）
+  primaryBorder: string;
+  onPrimary: string;
+  onSurface: string;
+  overlay: string;
   divider: string;
   textPrimary: string;
   textSecondary: string;
   textTertiary: string;
+  textDisabled: string;
+  danger: string;
+  dangerBg: string;
+  dangerBorder: string;
+  inputBorder: string;
+  sheetBg: string;
+  blockedText: string;
 }
 
 export const Color: ColorTokens = {
-  canvas: '#F5F6FA',        // 页面底色
-  surface: '#FFFFFF',       // 卡片
-  primary: '#1F6FEB',       // 主色
-  primarySoft: '#E8F1FE',   // 主色浅底
-  onPrimary: '#FFFFFF',    // 在 primary 上的白
-  onSurface: '#1B1F24',    // 在 surface 上的深色（= textPrimary）
-  overlay: '#80000000',     // 模态遮罩 50% 黑
-  divider: '#E6E9EE',       // 分隔线
-  textPrimary: '#1B1F24',   // 一级文字
-  textSecondary: '#5A6472', // 二级文字
-  textTertiary: '#8A94A6',  // 三级文字
+  canvas: '#F5F6FA',
+  surface: '#FFFFFF',
+  primary: '#1F6FEB',
+  primarySoft: '#E8F1FE',
+  primaryBorder: '#BFDBFE',
+  onPrimary: '#FFFFFF',
+  onSurface: '#1B1F24',
+  overlay: 'rgba(0,0,0,0.45)',
+  divider: '#E6E9EE',
+  textPrimary: '#1B1F24',
+  textSecondary: '#5A6472',
+  textTertiary: '#8A94A6',
+  textDisabled: '#B0B7C3',
+  danger: '#D93A2B',
+  dangerBg: '#FDECEA',
+  dangerBorder: '#F0CFC9',
+  inputBorder: '#D6DBE3',
+  sheetBg: '#FFFFFF',
+  blockedText: '#8A5200',
 }
 
-// ─── 状态语义色（前景 / 浅底）───
-// 任务 4 档状态 + 逾期派生量 + 待分配账号；都是正常业务分支，不是系统错误。
-// 「逾期」是唯一需要立刻抓眼睛的事实；红/橙只出现在真正出事的分组。
+export class AppColor {
+  static readonly PAGE_BG: string = Color.canvas;
+  static readonly CARD_BG: string = Color.surface;
+  static readonly TEXT_PRIMARY: string = Color.textPrimary;
+  static readonly TEXT_SECONDARY: string = Color.textSecondary;
+  static readonly TEXT_TERTIARY: string = Color.textTertiary;
+  static readonly TEXT_DISABLED: string = Color.textDisabled;
+  static readonly DIVIDER: string = Color.divider;
+  static readonly PRIMARY: string = Color.primary;
+  static readonly PRIMARY_SOFT: string = Color.primarySoft;
+  static readonly PRIMARY_BORDER: string = Color.primaryBorder;
+  static readonly ON_PRIMARY: string = Color.onPrimary;
+  static readonly DANGER: string = Color.danger;
+  static readonly DANGER_BORDER: string = Color.dangerBorder;
+  static readonly INPUT_BORDER: string = Color.inputBorder;
+  static readonly OVERLAY: string = Color.overlay;
+  static readonly SHEET_BG: string = Color.sheetBg;
+  static readonly BLOCKED_TEXT: string = Color.blockedText;
+}
+
 export interface StatusColorPair {
   fg: string;
   bg: string;
@@ -55,15 +82,47 @@ export interface StatusColorTokens {
 }
 
 export const StatusColor: StatusColorTokens = {
-  todo:    { fg: '#6B7785', bg: '#F0F2F5' },  // 未开始
-  overdue: { fg: '#D93A2B', bg: '#FDECEA' },  // 逾期（服务端派生）
-  blocked: { fg: '#C77700', bg: '#FFF4E0' },  // 阻塞（必填原因）
-  doing:   { fg: '#1F6FEB', bg: '#E8F1FE' },  // 进行中
-  done:    { fg: '#2E7D4F', bg: '#E8F5EC' },  // 已完成（收敛安静）
-  pending: { fg: '#7A5AF8', bg: '#F1EEFE' },  // 待分配
+  todo: { fg: '#6B7785', bg: '#F0F2F5' },
+  overdue: { fg: '#D93A2B', bg: '#FDECEA' },
+  blocked: { fg: '#C77700', bg: '#FFF4E0' },
+  doing: { fg: '#1F6FEB', bg: '#E8F1FE' },
+  done: { fg: '#2E7D4F', bg: '#E8F5EC' },
+  pending: { fg: '#7A5AF8', bg: '#F1EEFE' },
 }
 
-// ─── 字体字号 ───
+export class Tone {
+  static readonly OVERDUE: string = StatusColor.overdue.fg;
+  static readonly OVERDUE_BG: string = StatusColor.overdue.bg;
+  static readonly BLOCKED: string = StatusColor.blocked.fg;
+  static readonly BLOCKED_BG: string = StatusColor.blocked.bg;
+  static readonly DOING: string = StatusColor.doing.fg;
+  static readonly DOING_BG: string = StatusColor.doing.bg;
+  static readonly TODO: string = StatusColor.todo.fg;
+  static readonly TODO_BG: string = StatusColor.todo.bg;
+  static readonly DONE: string = StatusColor.done.fg;
+  static readonly DONE_BG: string = StatusColor.done.bg;
+  static readonly PENDING: string = StatusColor.pending.fg;
+  static readonly PENDING_BG: string = StatusColor.pending.bg;
+
+  static fg(name: string): string {
+    if (name === 'overdue') return StatusColor.overdue.fg;
+    if (name === 'blocked') return StatusColor.blocked.fg;
+    if (name === 'doing') return StatusColor.doing.fg;
+    if (name === 'done') return StatusColor.done.fg;
+    if (name === 'pending') return StatusColor.pending.fg;
+    return StatusColor.todo.fg;
+  }
+
+  static bg(name: string): string {
+    if (name === 'overdue') return StatusColor.overdue.bg;
+    if (name === 'blocked') return StatusColor.blocked.bg;
+    if (name === 'doing') return StatusColor.doing.bg;
+    if (name === 'done') return StatusColor.done.bg;
+    if (name === 'pending') return StatusColor.pending.bg;
+    return StatusColor.todo.bg;
+  }
+}
+
 export interface FontSizeTokens {
   headline: number;
   title: number;
@@ -71,15 +130,21 @@ export interface FontSizeTokens {
   body: number;
   caption: number;
   micro: number;
+  navLabel: number;
+  numL: number;
+  numM: number;
 }
 
 export const FontSize: FontSizeTokens = {
-  headline: 22,  // SemiBold → Bold
-  title: 18,     // SemiBold → Bold
-  subtitle: 16,  // Medium
-  body: 14,      // Regular
-  caption: 12,   // Regular
-  micro: 11,     // Medium（胶囊专用）
+  headline: 22,
+  title: 18,
+  subtitle: 16,
+  body: 14,
+  caption: 12,
+  micro: 11,
+  navLabel: 10,
+  numL: 22,
+  numM: 12,
 }
 
 export interface FontFamilyTokens {
@@ -92,7 +157,6 @@ export const FontFamily: FontFamilyTokens = {
   numeric: 'Inter',
 }
 
-// ─── 间距（档位 4/8/12/16/24/32）───
 export interface SpaceTokens {
   xs: number;
   sm: number;
@@ -104,6 +168,12 @@ export interface SpaceTokens {
   card: number;
   cardGap: number;
   section: number;
+  XS: number;
+  S: number;
+  M: number;
+  L: number;
+  XL: number;
+  XXL: number;
 }
 
 export const Space: SpaceTokens = {
@@ -113,19 +183,26 @@ export const Space: SpaceTokens = {
   lg: 16,
   xl: 24,
   xxl: 32,
-  page: 16,      // 页边距
-  card: 14,      // 卡片内边距
-  cardGap: 12,   // 卡片间距
-  section: 24,   // 区块间距
+  page: 16,
+  card: 14,
+  cardGap: 12,
+  section: 24,
+  XS: 4,
+  S: 8,
+  M: 12,
+  L: 16,
+  XL: 24,
+  XXL: 32,
 }
 
-// ─── 圆角 ───
 export interface RadiusTokens {
   card: number;
   button: number;
   input: number;
   pill: number;
   bottomNav: number;
+  navItem: number;
+  sheet: number;
 }
 
 export const Radius: RadiusTokens = {
@@ -134,9 +211,10 @@ export const Radius: RadiusTokens = {
   input: 10,
   pill: 999,
   bottomNav: 36,
+  navItem: 26,
+  sheet: 20,
 }
 
-// ─── 阴影（三层：卡片浮起 / 弹层下压）───
 export interface ShadowValue {
   radius: number;
   color: string;
@@ -146,13 +224,22 @@ export interface ShadowValue {
 
 export interface ShadowTokens {
   card: ShadowValue;
+  L1: ShadowValue;
+  L2: ShadowValue;
+  L3: ShadowValue;
+  primary: ShadowValue;
+  pending: ShadowValue;
 }
 
 export const Shadow: ShadowTokens = {
   card: { radius: 12, color: '#14000000', offsetX: 0, offsetY: 2 },
+  L1: { radius: 2, color: '#0D101828', offsetX: 0, offsetY: 1 },
+  L2: { radius: 16, color: '#1A101828', offsetX: 0, offsetY: 4 },
+  L3: { radius: 40, color: '#2E101828', offsetX: 0, offsetY: 18 },
+  primary: { radius: 20, color: '#3D1F6FEB', offsetX: 0, offsetY: 8 },
+  pending: { radius: 24, color: '#3D7A5AF8', offsetX: 0, offsetY: 10 },
 }
 
-// ─── 状态派生辅助 ───
 export function statusLabel(status: string): string {
   if (status === 'todo') return '未开始'
   if (status === 'doing') return '进行中'

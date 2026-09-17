@@ -26,6 +26,10 @@ interface RoleOption {
   label: string;
 }
 
+interface SelectOption {
+  value: string;
+}
+
 // 批量分配结果条目（逐条展示）
 interface AssignResultItem {
   id: number;
@@ -52,6 +56,20 @@ const ROLE_OPTIONS: RoleOption[] = [
   { key: 'president', label: '会长' },
 ];
 
+
+function deptSelectOptions(): SelectOption[] {
+  return DEPTS.map((item: Dept): SelectOption => {
+    const option: SelectOption = { value: item.name };
+    return option;
+  });
+}
+
+function roleSelectOptions(): SelectOption[] {
+  return ROLE_OPTIONS.map((item: RoleOption): SelectOption => {
+    const option: SelectOption = { value: item.label };
+    return option;
+  });
+}
 const PENDING_MEMBERS: PendingMemberUI[] = [
   { id: 101, name: '新同学A', deptHint: { id: 1, name: '课题部' }, registeredAt: '2026-09-14 10:30', selected: false },
   { id: 102, name: '新同学B', deptHint: null, registeredAt: '2026-09-14 11:00', selected: false },
@@ -154,7 +172,7 @@ struct AssignDialog {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(DEPTS.map((d: Dept) => ({ value: d.name })))
+        Select(deptSelectOptions())
           .selected(this.selectedDeptIndex)
           .value(DEPTS[this.selectedDeptIndex].name)
           .onSelect((index: number) => { this.selectedDeptIndex = index; })
@@ -167,7 +185,7 @@ struct AssignDialog {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(ROLE_OPTIONS.map((r: RoleOption) => ({ value: r.label })))
+        Select(roleSelectOptions())
           .selected(this.selectedRoleIndex)
           .value(ROLE_OPTIONS[this.selectedRoleIndex].label)
           .onSelect((index: number) => { this.selectedRoleIndex = index; })

@@ -1,41 +1,19 @@
 /**
- * 注册页（美化版）
- * 注册口令 + 手机号 + 姓名 + 密码 → 注册成功跳等待分配页
+ * 加入社团：注册口令 + 手机号 + 姓名 + 密码。
  */
-import { AuthApi, RegisterRequest } from '../api/AuthApi';
+import { router } from '@kit.ArkUI';
+import { util } from '@kit.ArkTS';
+import { AuthApi, DeptBrief, RegisterRequest } from '../api/AuthApi';
+import { FormField } from '../components/FormField';
+import { Color, FontSize, Radius, Shadow, Space } from '../core/Theme';
 import { TokenStore } from '../store/TokenStore';
 import { PermissionStore, UpdateData } from '../store/PermissionStore';
-import { ApiRequestError } from '../api/HttpClient';
-import { replaceTo, backPage } from '../utils/RouterUtils';
+import { genClientToken } from '../util/ClientToken';
+import { backPage, replaceTo } from '../utils/RouterUtils';
 
-// ─── 设计令牌（与登录页统一） ───
-class Colors {
-  static readonly primary: string = '#0A59F7';
-  static readonly primaryDark: string = '#0845C4';
-  static readonly primaryBg: string = '#EEF3FF';
-  static readonly bg: string = '#F5F7FA';
-  static readonly card: string = '#FFFFFF';
-  static readonly textPrimary: string = '#1A1A2E';
-  static readonly textSecondary: string = '#666666';
-  static readonly textTertiary: string = '#999999';
-  static readonly inputBg: string = '#F2F4F7';
-  static readonly border: string = '#E8ECF0';
-  static readonly danger: string = '#E84026';
-  static readonly success: string = '#34C759';
-  static readonly white: string = '#FFFFFF';
-}
-
-class Font {
-  static readonly title: number = 26;
-  static readonly subtitle: number = 15;
-  static readonly body: number = 16;
-  static readonly caption: number = 13;
-  static readonly small: number = 12;
-}
-
-class Radius {
-  static readonly input: number = 12;
-  static readonly button: number = 12;
+interface RegisterRouteParams {
+  invite_token?: string;
+  dept_hint?: string;
 }
 
 @Entry
@@ -45,240 +23,156 @@ struct RegisterPage {
   @State phone: string = '';
   @State name: string = '';
   @State password: string = '';
-  @State confirmPassword: string = '';
   @State loading: boolean = false;
-  @State errorMsg: string = '';
-  @State passwordVisible: boolean = false;
-  @State confirmVisible: boolean = false;
+  @State codeError: string = '';
+  @State phoneError: string = '';
+  @State nameError: string = '';
+  @State passwordError: string = '';
+  @State formError: string = '';
+  @State backoffSeconds: number = 0;
+  @State inviteToken: string = '';
+  @State deptHint: DeptBrief | null = null;
 
   private authApi: AuthApi = new AuthApi();
   private tokenStore: TokenStore = TokenStore.getInstance();
-  private permStore: PermissionStore = PermissionStore.getInstance();
+  private permissionStore: PermissionStore = PermissionStore.getInstance();
+  private clientToken: string = genClientToken();
+  private backoffTimer: number = -1;
+
+  aboutToAppear(): void {
+    const params = router.getParams() as RegisterRouteParams;
+    if (params !== undefined && params !== null && params.invite_token !== undefined && params.invite_token.length > 0) {
+      this.inviteToken = params.invite_token;
+      this.loadInvitePreview();
+    }
+  }
+
+  aboutToDisappear(): void {
+    this.stopBackoff();
+  }
 
   build() {
     Column() {
-      // ─── 顶部导航 ───
-      Row() {
-        Text('‹ 返回登录')
-          .fontSize(Font.body)
-          .fontColor(Colors.primary)
-          .fontWeight(FontWeight.Medium)
-          .onClick(() => backPage())
+      Column() {
+        Row({ space: 4 }) {
+          Image($r('app.media.chevron_left'))
+            .width(18)
+            .height(18)
+            .onClick(() => backPage())
+          Text('加入社团')
+            .fontSize(FontSize.body)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(Color.primary)
+            .onClick(() => backPage())
+        }
+        .width('100%')
+        .height(44)
+        .padding({ left: Space.page, right: Space.page })
+        .alignItems(VerticalAlign.Center)
+
+        Divider()
+          .color(Color.divider)
       }
       .width('100%')
-      .padding({ left: 16, top: 16 })
 
       Scroll() {
-        Column() {
-          // ─── 标题区域 ───
-          Column() {
-            Text('加入社团')
-              .fontSize(Font.title)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(Colors.textPrimary)
-
-            Text('填写以下信息完成注册')
-              .fontSize(Font.subtitle)
-              .fontColor(Colors.textSecondary)
-              .margin({ top: 8 })
-          }
-          .width('100%')
-          .alignItems(HorizontalAlign.Start)
-          .padding({ left: 28, top: 20 })
-
-          // ─── 表单卡片 ───
-          Column() {
-            // 注册口令
-            Column() {
-              Text('注册口令')
-                .fontSize(Font.caption)
-                .fontColor(Colors.textSecondary)
-                .margin({ bottom: 8 })
-
-              TextInput({ placeholder: '请输入会长提供的注册口令', text: this.code })
-                .maxLength(32)
-                .onChange((val: string) => {
-                  this.code = val;
-                  this.errorMsg = '';
-                })
-                .padding({ left: 16, right: 16 })
-                .height(50)
-                .backgroundColor(Colors.inputBg)
-                .borderRadius(Radius.input)
-                .placeholderColor(Colors.textTertiary)
-                .fontSize(Font.body)
-            }
+        Column({ space: 16 }) {
+          Text('注册口令由会长发放；通过招募链接进入只会预填部门，不赋予任何角色。')
             .width('100%')
-
-            // 分割线
-            Column()
-              .width('100%')
-              .height(1)
-              .backgroundColor(Colors.border)
-              .margin({ top: 24, bottom: 8 })
-
-            // 手机号
-            Column() {
-              Text('手机号')
-                .fontSize(Font.caption)
-                .fontColor(Colors.textSecondary)
-                .margin({ bottom: 8 })
-
-              TextInput({ placeholder: '请输入手机号', text: this.phone })
-                .type(InputType.PhoneNumber)
-                .maxLength(11)
-                .onChange((val: string) => {
-                  this.phone = val;
-                  this.errorMsg = '';
-                })
-                .padding({ left: 16, right: 16 })
-                .height(50)
-                .backgroundColor(Colors.inputBg)
-                .borderRadius(Radius.input)
-                .placeholderColor(Colors.textTertiary)
-                .fontSize(Font.body)
-            }
-            .width('100%')
-            .margin({ top: 4 })
-
-            // 姓名
-            Column() {
-              Text('姓名')
-                .fontSize(Font.caption)
-                .fontColor(Colors.textSecondary)
-                .margin({ bottom: 8 })
-
-              TextInput({ placeholder: '请输入真实姓名', text: this.name })
-                .maxLength(20)
-                .onChange((val: string) => {
-                  this.name = val;
-                  this.errorMsg = '';
-                })
-                .padding({ left: 16, right: 16 })
-                .height(50)
-                .backgroundColor(Colors.inputBg)
-                .borderRadius(Radius.input)
-                .placeholderColor(Colors.textTertiary)
-                .fontSize(Font.body)
-            }
-            .width('100%')
-            .margin({ top: 20 })
-
-            // 密码
-            Column() {
-              Text('密码')
-                .fontSize(Font.caption)
-                .fontColor(Colors.textSecondary)
-                .margin({ bottom: 8 })
-
-              Row() {
-                TextInput({ placeholder: '至少6位密码', text: this.password })
-                  .type(this.passwordVisible ? InputType.Normal : InputType.Password)
-                  .maxLength(32)
-                  .onChange((val: string) => {
-                    this.password = val;
-                    this.errorMsg = '';
-                  })
-                  .layoutWeight(1)
-                  .padding({ left: 16, right: 8 })
-                  .height(50)
-                  .backgroundColor(Colors.inputBg)
-                  .borderRadius(Radius.input)
-                  .placeholderColor(Colors.textTertiary)
-                  .fontSize(Font.body)
-
-                Text(this.passwordVisible ? '🙈' : '👁')
-                  .fontSize(18)
-                  .padding({ right: 16 })
-                  .onClick(() => {
-                    this.passwordVisible = !this.passwordVisible;
-                  })
-              }
-              .width('100%')
-              .backgroundColor(Colors.inputBg)
-              .borderRadius(Radius.input)
-              .alignItems(VerticalAlign.Center)
-            }
-            .width('100%')
-            .margin({ top: 20 })
-
-            // 确认密码
-            Column() {
-              Text('确认密码')
-                .fontSize(Font.caption)
-                .fontColor(Colors.textSecondary)
-                .margin({ bottom: 8 })
-
-              Row() {
-                TextInput({ placeholder: '再次输入密码', text: this.confirmPassword })
-                  .type(this.confirmVisible ? InputType.Normal : InputType.Password)
-                  .maxLength(32)
-                  .onChange((val: string) => {
-                    this.confirmPassword = val;
-                    this.errorMsg = '';
-                  })
-                  .layoutWeight(1)
-                  .padding({ left: 16, right: 8 })
-                  .height(50)
-                  .backgroundColor(Colors.inputBg)
-                  .borderRadius(Radius.input)
-                  .placeholderColor(Colors.textTertiary)
-                  .fontSize(Font.body)
-
-                Text(this.confirmVisible ? '🙈' : '👁')
-                  .fontSize(18)
-                  .padding({ right: 16 })
-                  .onClick(() => {
-                    this.confirmVisible = !this.confirmVisible;
-                  })
-              }
-              .width('100%')
-              .backgroundColor(Colors.inputBg)
-              .borderRadius(Radius.input)
-              .alignItems(VerticalAlign.Center)
-            }
-            .width('100%')
-            .margin({ top: 20 })
-
-            // 错误提示
-            if (this.errorMsg.length > 0) {
-              Row() {
-                Text('⚠ ')
-                  .fontSize(Font.caption)
-                  .fontColor(Colors.danger)
-                Text(this.errorMsg)
-                  .fontSize(Font.caption)
-                  .fontColor(Colors.danger)
-              }
-              .width('100%')
-              .padding({ left: 4, top: 12 })
-            }
-
-            // 注册按钮
-            Button() {
-              if (this.loading) {
-                LoadingProgress()
-                  .width(22)
-                  .height(22)
-                  .color(Colors.white)
-              } else {
-                Text('注 册')
-                  .fontSize(Font.body)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(Colors.white)
-              }
-            }
-            .width('100%')
-            .height(50)
-            .backgroundColor(Colors.primary)
+            .fontSize(FontSize.body)
+            .fontColor(Color.textSecondary)
+            .padding(12)
+            .backgroundColor(Color.primarySoft)
+            .border({ width: 1, color: Color.primaryBorder })
             .borderRadius(Radius.button)
-            .margin({ top: 28 })
-            .enabled(!this.loading)
-            .onClick(() => this.handleRegister())
+            .margin({ left: Space.page, right: Space.page })
+
+          FormField({
+            fieldLabel: '注册口令',
+            placeholder: '请输入会长发放的注册口令',
+            inputValue: $code,
+            errorText: this.codeError,
+            maxLength: 32
+          })
+
+          FormField({
+            fieldLabel: '手机号',
+            placeholder: '请输入 11 位手机号',
+            inputValue: $phone,
+            errorText: this.phoneError,
+            numeric: true,
+            maxLength: 11
+          })
+
+          FormField({
+            fieldLabel: '姓名',
+            placeholder: '请输入真实姓名，方便会长识别',
+            inputValue: $name,
+            errorText: this.nameError,
+            maxLength: 32
+          })
+
+          FormField({
+            fieldLabel: '密码',
+            placeholder: '请设置密码',
+            inputValue: $password,
+            errorText: this.passwordError,
+            hint: '长度按字节计：8–32 字节，仅数字、英文或符号。',
+            isPassword: true,
+            maxLength: 32
+          })
+
+          if (this.deptHint !== null) {
+            Text(`来自于招募链接的部门预填：${this.deptHint.name}。它只是 dept_hint，审批前不生效。`)
+              .width('100%')
+              .fontSize(FontSize.body)
+              .fontColor(Color.primary)
+              .padding(12)
+              .backgroundColor(Color.primarySoft)
+              .border({ width: 1, color: Color.primaryBorder })
+              .borderRadius(Radius.button)
+              .margin({ left: Space.page, right: Space.page })
           }
-          .width('100%')
-          .padding({ left: 28, right: 28, top: 28, bottom: 24 })
-          .margin({ top: 8 })
+
+          if (this.formError.length > 0) {
+            Text(this.formError)
+              .width('100%')
+              .fontSize(FontSize.caption)
+              .fontColor(Color.danger)
+              .padding({ left: Space.page, right: Space.page })
+          }
+
+          Button(this.buttonText())
+            .width('100%')
+            .height(52)
+            .fontSize(FontSize.subtitle)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(Color.onPrimary)
+            .backgroundColor(Color.primary)
+            .borderRadius(Radius.button)
+            .shadow(Shadow.primary)
+            .enabled(!this.loading && this.backoffSeconds === 0)
+            .opacity(this.loading || this.backoffSeconds > 0 ? 0.65 : 1)
+            .onClick(() => {
+              if (!this.loading && this.backoffSeconds === 0) {
+                this.handleRegister();
+              }
+            })
+            .margin({ left: Space.page, right: Space.page })
+
+          Text('注册成功即返回 token，但账号是「待分配」、零权限——会被落在「等待管理员分配」页，而不是主界面。')
+            .width('100%')
+            .fontSize(FontSize.caption)
+            .fontColor(Color.textTertiary)
+            .textAlign(TextAlign.Center)
+            .padding({ left: Space.page, right: Space.page })
+
+          Text('连续输错口令会返回 429 TOO_MANY_ATTEMPTS，节流按客户端 IP，不影响他人，也不影响登录。')
+            .width('100%')
+            .fontSize(FontSize.caption)
+            .fontColor(Color.textTertiary)
+            .textAlign(TextAlign.Center)
+            .padding({ left: Space.page, right: Space.page, bottom: 24 })
         }
         .width('100%')
       }
@@ -286,59 +180,135 @@ struct RegisterPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(Colors.bg)
+    .backgroundColor(Color.surface)
+  }
+
+  private buttonText(): string {
+    if (this.loading) return '提交中…';
+    if (this.backoffSeconds > 0) return `请稍后再试 (${this.backoffSeconds})`;
+    return '提交申请';
+  }
+
+  private async loadInvitePreview(): Promise<void> {
+    const response = await this.authApi.previewInvite(this.inviteToken);
+    if (response.ok && response.data !== undefined && response.data.enabled && response.data.dept !== null) {
+      this.deptHint = response.data.dept;
+    }
+  }
+
+  private isPasswordValid(value: string): boolean {
+    const bytes: number = new util.TextEncoder().encodeInto(value).length;
+    if (bytes < 8 || bytes > 32) {
+      return false;
+    }
+    for (let i = 0; i < value.length; i++) {
+      const code: number = value.charCodeAt(i);
+      if (code < 0x21 || code > 0x7E) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private clearErrors(): void {
+    this.codeError = '';
+    this.phoneError = '';
+    this.nameError = '';
+    this.passwordError = '';
+    this.formError = '';
+  }
+
+  private validate(): boolean {
+    this.clearErrors();
+    let valid = true;
+    if (this.code.length < 6 || this.code.length > 32) {
+      this.codeError = '注册口令需为 6–32 位';
+      valid = false;
+    }
+    if (!/^\d{11}$/.test(this.phone)) {
+      this.phoneError = '请输入正确的手机号';
+      valid = false;
+    }
+    if (this.name.length === 0 || this.name.length > 32) {
+      this.nameError = '姓名不能为空且不能超过 32 个字符';
+      valid = false;
+    }
+    if (!this.isPasswordValid(this.password)) {
+      this.passwordError = '密码需为 8–32 字节，且仅含数字、英文或符号';
+      valid = false;
+    }
+    return valid;
+  }
+
+  private applyServerFields(fields?: Record<string, string>): void {
+    if (fields === undefined) return;
+    if (fields['register_code'] !== undefined) this.codeError = fields['register_code'];
+    if (fields['phone'] !== undefined) this.phoneError = fields['phone'];
+    if (fields['name'] !== undefined) this.nameError = fields['name'];
+    if (fields['password'] !== undefined) this.passwordError = fields['password'];
+  }
+
+  private startBackoff(): void {
+    this.stopBackoff();
+    this.backoffSeconds = 30;
+    this.backoffTimer = setInterval(() => {
+      if (this.backoffSeconds <= 1) {
+        this.backoffSeconds = 0;
+        this.stopBackoff();
+      } else {
+        this.backoffSeconds -= 1;
+      }
+    }, 1000);
+  }
+
+  private stopBackoff(): void {
+    if (this.backoffTimer !== -1) {
+      clearInterval(this.backoffTimer);
+      this.backoffTimer = -1;
+    }
   }
 
   async handleRegister(): Promise<void> {
-    if (!this.code) {
-      this.errorMsg = '请输入注册口令';
-      return;
-    }
-    if (!this.phone || this.phone.length !== 11) {
-      this.errorMsg = '请输入正确的手机号';
-      return;
-    }
-    if (!this.name) {
-      this.errorMsg = '请输入姓名';
-      return;
-    }
-    if (!this.password || this.password.length < 6) {
-      this.errorMsg = '密码至少6位';
-      return;
-    }
-    if (this.password !== this.confirmPassword) {
-      this.errorMsg = '两次密码输入不一致';
-      return;
-    }
-
+    if (!this.validate()) return;
     this.loading = true;
-    this.errorMsg = '';
-
     try {
-      const req: RegisterRequest = {
+      const request: RegisterRequest = {
         register_code: this.code,
         phone: this.phone,
         name: this.name,
         password: this.password,
+        client_token: this.clientToken,
       };
-      const resp = await this.authApi.register(req);
-
-      if (resp.ok && resp.data) {
-        await this.tokenStore.setToken(resp.data.token);
-        const updateData: UpdateData = {
-          user: resp.data.member,
-          permissions: resp.data.permissions,
-        };
-        this.permStore.update(updateData);
-
-        replaceTo('pages/PendingWaitPage');
+      if (this.inviteToken.length > 0) {
+        request.invite_token = this.inviteToken;
       }
-    } catch (err) {
-      if (err instanceof ApiRequestError) {
-        this.errorMsg = err.message;
-      } else {
-        this.errorMsg = '注册失败，请检查网络后重试';
+
+      const response = await this.authApi.register(request);
+      if (!response.ok || response.data === undefined) {
+        const code = response.error?.code ?? '';
+        if (code === 'REGISTER_CODE_INVALID') {
+          this.codeError = '注册口令不正确';
+        } else if (code === 'ALREADY_EXISTS') {
+          this.phoneError = '已存在同名或同手机号的账号';
+        } else {
+          this.applyServerFields(response.error?.fields);
+          this.formError = response.error?.message ?? '注册失败，请稍后重试';
+        }
+        if (code === 'TOO_MANY_ATTEMPTS') {
+          this.startBackoff();
+        }
+        return;
       }
+
+      await this.tokenStore.setToken(response.data.token);
+      const update: UpdateData = {
+        user: response.data.member,
+        permissions: response.data.permissions,
+      };
+      this.permissionStore.update(update);
+      replaceTo('pages/PendingPage');
+    } catch (_) {
+      this.formError = '网络不可用，请检查服务端是否可访问';
     } finally {
       this.loading = false;
     }

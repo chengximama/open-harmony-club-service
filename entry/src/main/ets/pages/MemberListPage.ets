@@ -1,5 +1,5 @@
 // 成员名录页面（B同学负责）
-// 按 4 个部门分组展示成员，点击卡片进入成员详情
+// 按部门分组展示成员，点击卡片进入成员详情
 
 interface Member {
   id: number;
@@ -16,29 +16,10 @@ interface Dept {
   name: string;
 }
 
-// ====== 假数据 ======
-const DEPTS: Dept[] = [
-  { id: 0, name: '主席团' },
-  { id: 1, name: '课题部' },
-  { id: 2, name: '运营部' },
-  { id: 3, name: '宣传部' },
-];
+// 接入后端后由部门与成员接口填充
+const DEPTS: Dept[] = [];
 
-const MEMBERS: Member[] = [
-  { id: 1, name: '王会长', role: 'president', deptId: 0, deptName: '主席团', status: 'active', joinedAt: '2026-09-01' },
-  { id: 2, name: '李副会长', role: 'vice_president', deptId: 0, deptName: '主席团', status: 'active', joinedAt: '2026-09-01' },
-  { id: 3, name: '张副会长', role: 'vice_president', deptId: 0, deptName: '主席团', status: 'active', joinedAt: '2026-09-01' },
-  { id: 4, name: '赵部长', role: 'lead', deptId: 1, deptName: '课题部', status: 'active', joinedAt: '2026-09-02' },
-  { id: 5, name: '孙副部长', role: 'vice_lead', deptId: 1, deptName: '课题部', status: 'active', joinedAt: '2026-09-02' },
-  { id: 6, name: '周小明', role: 'member', deptId: 1, deptName: '课题部', status: 'active', joinedAt: '2026-09-03' },
-  { id: 7, name: '吴小红', role: 'member', deptId: 1, deptName: '课题部', status: 'active', joinedAt: '2026-09-03' },
-  { id: 8, name: '郑部长', role: 'lead', deptId: 2, deptName: '运营部', status: 'active', joinedAt: '2026-09-02' },
-  { id: 9, name: '钱副部长', role: 'vice_lead', deptId: 2, deptName: '运营部', status: 'active', joinedAt: '2026-09-02' },
-  { id: 10, name: '冯小刚', role: 'member', deptId: 2, deptName: '运营部', status: 'active', joinedAt: '2026-09-04' },
-  { id: 11, name: '陈部长', role: 'lead', deptId: 3, deptName: '宣传部', status: 'active', joinedAt: '2026-09-02' },
-  { id: 12, name: '褚副部长', role: 'vice_lead', deptId: 3, deptName: '宣传部', status: 'active', joinedAt: '2026-09-02' },
-  { id: 13, name: '卫小美', role: 'member', deptId: 3, deptName: '宣传部', status: 'active', joinedAt: '2026-09-05' },
-];
+const MEMBERS: Member[] = [];
 
 const ROLE_MAP: Record<string, string> = {
   'president': '会长',
@@ -153,15 +134,31 @@ export default struct MemberListPage {
       .padding({ left: 16, right: 16, top: 12, bottom: 8 })
 
       List({ space: 8 }) {
-        ForEach(DEPTS, (dept: Dept) => {
+        if (DEPTS.length === 0) {
           ListItem() {
-            DeptSection({
-              deptName: dept.name,
-              members: this.getMembersByDept(dept.id),
-              onMemberClick: (id: number) => this.onMemberClick(id)
-            })
+            Column({ space: 8 }) {
+              Text('暂无成员数据')
+                .fontSize(16)
+                .fontColor('#999999')
+              Text('接入成员接口后，这里会按部门显示名录。')
+                .fontSize(12)
+                .fontColor('#999999')
+            }
+            .width('100%')
+            .padding({ top: 80, bottom: 80 })
+            .justifyContent(FlexAlign.Center)
           }
-        }, (dept: Dept) => dept.id.toString())
+        } else {
+          ForEach(DEPTS, (dept: Dept) => {
+            ListItem() {
+              DeptSection({
+                deptName: dept.name,
+                members: this.getMembersByDept(dept.id),
+                onMemberClick: (id: number) => this.onMemberClick(id)
+              })
+            }
+          }, (dept: Dept) => dept.id.toString())
+        }
       }
       .width('100%')
       .layoutWeight(1)

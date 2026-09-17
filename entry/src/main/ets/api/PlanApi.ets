@@ -110,7 +110,7 @@ export class PlanApi {
 
   /** POST /api/v1/plans — 创建课题（响应在 data.plan 下） */
   async create(data: CreatePlanRequest): Promise<ApiResponse<CreatePlanResponse>> {
-    return this.client.post<CreatePlanResponse>('/plans', data);
+    return this.client.post<CreatePlanResponse>('/plans', data, { label: '新建课题' });
   }
 
   /** PATCH /api/v1/plans/{id} — 更新课题（响应在 data.plan 下） */
