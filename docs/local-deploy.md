@@ -99,6 +99,14 @@ cd E:\harmonyOS\cangjie_web\server\build   # ← ⚠️ 必须进到 exe 所在�
 # ① 建社团库 + 首任会长（**只对空库可执行**）
 .\club-server.exe init-admin 13800000000 ClubPass2026 data
 
+#    想给会长起个真名（不叫默认的「会长」）就加姓名选项。
+#    ⚠ 中文**不能**直接写在命令行里 —— 仓颉把 argv 拼成 String 那一步就崩，
+#      早于 main 里任何校验（见 API-NOTES 坑 11）。所以中文姓名放进 UTF-8 文本文件：
+[IO.File]::WriteAllText("$PWD\president-name.txt", "张三", [Text.UTF8Encoding]::new($false))
+.\club-server.exe init-admin 13800000000 ClubPass2026 data --name-file president-name.txt
+#    ASCII 姓名可以直接给：   ... init-admin 13800000000 ClubPass2026 data --name LiSi
+#    两个都不给 = 默认「会长」（老的三参数写法行为完全不变）
+
 # ② 建运维账号（**只有要用运维台才需要**；幂等，可重复执行来重设口令）
 .\club-server.exe init-ops 13800000009 <运维口令> data
 ```
@@ -106,10 +114,14 @@ cd E:\harmonyOS\cangjie_web\server\build   # ← ⚠️ 必须进到 exe 所在�
 **① 真实输出**：
 
 ```
-已创建首任会长：13800000000（成员 id=1，部门=1）
+已创建首任会长：会长（13800000000，成员 id=1，部门=1）
 当前注册口令：DYMRXD          ← 随机 6 位，发给社团成员注册用，会长可随时更换
 数据目录：data（db.json）
 ```
+
+> 第一行括号里是手机号；**用了 `--name-file` / `--name` 时它显示你给的名字**（例：`已创建首任会长：张三（…）`）。
+> 姓名只要求非空白，与 App 里 `PATCH /api/v1/members/{id}` 改姓名同一口径。
+> 建完之后会长自己在 App 里也能改名，所以这纯粹是"省得再改一次"。
 
 同时预置 4 个组织：**主席团 / 课题部 / 运营部 / 宣传部**。
 

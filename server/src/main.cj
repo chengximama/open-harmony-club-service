@@ -31,7 +31,8 @@ func usage(): Unit {
     println("社团管理工具 · 服务端 v${APP_VERSION}")
     println("")
     println("用法:")
-    println("  club-server init-admin <手机号> <初始密码> [数据目录]   初始化首任会长与 4 个组织（仅空库可执行）")
+    println("  club-server init-admin <手机号> <初始密码> [数据目录] [姓名选项]")
+    println("                                                         初始化首任会长与 4 个组织（仅空库可执行）")
     println("  club-server init-ops <手机号> <口令> [数据目录]         创建/重设运维账号（角色 ops；除移交会长外与会长同权）")
     println("  club-server retire-ops <手机号> [数据目录]              停用运维账号（保留记录）")
     println("  club-server serve [端口] [数据目录]                    启动 HTTP 服务（默认 8080 / data）")
@@ -42,6 +43,11 @@ func usage(): Unit {
     println("证书必须是**带 SAN** 的自签证书（现代客户端只看 subjectAltName，完全忽略 CN）。")
     println("密码：8-32 位，只能用数字 / 英文 / 符号（如 ._/\\-!@#）。")
     println("⚠ 所有命令行参数只支持 ASCII —— 中文参数会让仓颉的 argv 解析直接抛异常（见 docs/API-NOTES.md 坑 11）。")
+    println("  所以**中文姓名不能写进 --name**（写进去会在 main 之前就崩）：把姓名存成一个")
+    println("  **UTF-8 文本文件**（内容就是姓名，可带 BOM 与结尾换行），用 --name-file <文件> 传入。")
+    println("  不传姓名选项时，首任会长的姓名默认是「会长」。例：")
+    println("    club-server init-admin 13800000000 <口令> data --name-file president-name.txt")
+    println("    club-server init-admin 13800000000 <口令> data --name LiSi        （仅 ASCII 姓名）")
 }
 
 /* 加载数据；失败就退出——绝不带着空库继续跑。 */
@@ -78,11 +84,80 @@ func deptIdByName(s: Store, name: String): Int64 {
     return 0
 }
 
+/* ===================== 会长姓名的输入通道（2026-09-17） =====================
+ *
+ * 为什么姓名不能直接当第 4 个命令行参数：**中文参数会让程序在 main 之前就崩**。
+ * 实测 `club-server.exe init-admin 13700000001 TestPass2026 nametest 张三` →
+ * 无输出、exit 1，只有 `IllegalArgumentException: Invalid unicode scalar value.`；
+ * 中文放在手机号 / 口令 / 数据目录任一位置都一样，切代码页（936 / 65001）也不行 ——
+ * 它抛在仓颉把 argv 拼成 String 那一步，早于本文件里的任何代码（docs/API-NOTES.md 坑 11）。
+ * 所以中文姓名只能**绕开 argv**：写进一个 UTF-8 文本文件，用 `--name-file` 传路径。
+ * （也评估过环境变量：仓颉 std 没有 `getEnv` / `envVars`，见 third_party/qingzhou/src/config.cj
+ *   的说明 —— 不适合拿一个未验证的 API 去搭功能，所以不采用。）
+ */
+
+/* ASCII 空白：空格 / 制表 / LF / CR / VT / FF。姓名文件多半带一个结尾换行。 */
+func isAsciiSpaceByte(c: UInt8): Bool {
+    return c == UInt8(0x20) || c == UInt8(0x09) || c == UInt8(0x0A) ||
+        c == UInt8(0x0D) || c == UInt8(0x0B) || c == UInt8(0x0C)
+}
+
+/*
+ * 去掉首尾 ASCII 空白。只切**空白字节**，所以边界一定落在字符边界上，
+ * 不会把一个多字节汉字切开（这也是不按"字符"裁剪的原因）。
+ */
+func trimAsciiBlank(s: String): String {
+    let a = s.toArray()
+    var b: Int64 = 0
+    var e: Int64 = a.size
+    while (b < e && isAsciiSpaceByte(a[b])) {
+        b += 1
+    }
+    while (e > b && isAsciiSpaceByte(a[e - 1])) {
+        e -= 1
+    }
+    if (b == 0 && e == a.size) {
+        return s
+    }
+    return String.fromUtf8(a[b..e])
+}
+
+/* 从 UTF-8 文本文件读一个姓名；任何问题都打印人话并返回 None。 */
+func readNameFile(path: String): ?String {
+    var bytes: Array<UInt8>
+    try {
+        bytes = File.readFrom(path)
+    } catch (e: Exception) {
+        println("读不到姓名文件：${path}（${e.message}）")
+        return None
+    }
+    /* PowerShell 5.1 的 `Set-Content -Encoding UTF8` 写出来是**带 BOM** 的，这里替用户剥掉 */
+    if (bytes.size >= 3 && bytes[0] == UInt8(0xEF) && bytes[1] == UInt8(0xBB) && bytes[2] == UInt8(0xBF)) {
+        bytes = bytes[3..]
+    }
+    var text = ""
+    try {
+        text = String.fromUtf8(bytes)
+    } catch (e: Exception) {
+        println("姓名文件不是合法的 UTF-8：${path}")
+        return None
+    }
+    let name = trimAsciiBlank(text)
+    if (isBlank(name)) {
+        println("姓名文件是空的：${path}（文件内容应当就是这个人的姓名）")
+        return None
+    }
+    return Some(name)
+}
+
 /*
  * 首任会长用**初始化命令**预置（api-design §2.8 决策 8），
  * 不采用"首个注册者自动成为会长"——那等于把社团管理权交给第一个扫码的人。
+ *
+ * name：首任会长的姓名；调用方已保证非空白（默认「会长」）。
+ * 与 HTTP 的 `PATCH /api/v1/members/{id}` 同一口径 —— 那边也只要求姓名非空白（见 h_member.cj）。
  */
-func cmdInitAdmin(phone: String, pw: String, dir: String): Int64 {
+func cmdInitAdmin(phone: String, pw: String, dir: String, name: String): Int64 {
     if (!isPhone(phone)) {
         println("手机号格式不正确（11 位，以 1 开头）")
         return 1
@@ -115,7 +190,7 @@ func cmdInitAdmin(phone: String, pw: String, dir: String): Int64 {
         let m = Member()
         m.id = s.next_member
         s.next_member += 1
-        m.name = "会长"
+        m.name = name
         m.phone = phone
         let rec = newPasswordRecord(pw)
         m.pw_salt = rec[0]
@@ -135,7 +210,7 @@ func cmdInitAdmin(phone: String, pw: String, dir: String): Int64 {
         /* 命令行路径，不在 HTTP 请求里，没有刷盘中间件可依赖 → 用同步落盘。 */
         storeSaveNow(s)
 
-        println("已创建首任会长：${phone}（成员 id=${m.id}，部门=${m.dept_id}）")
+        println("已创建首任会长：${name}（${phone}，成员 id=${m.id}，部门=${m.dept_id}）")
         println("当前注册口令：${s.register_code}")
         println("数据目录：${s.dir}（db.json）")
     } finally {
@@ -563,15 +638,70 @@ main(args: Array<String>): Int64 {
     }
     if (args[0] == "init-admin") {
         if (args.size < 3) {
-            println("用法: club-server init-admin <手机号> <初始密码> [数据目录]")
+            println("用法: club-server init-admin <手机号> <初始密码> [数据目录] [姓名选项]")
+            println("  姓名选项：--name <ASCII 姓名>  或  --name-file <UTF-8 文本文件>")
+            println("  ⚠ 中文姓名**只能**走 --name-file —— 中文命令行参数会让程序在 main 之前就崩（API-NOTES 坑 11）")
+            println("  两个都不给时，首任会长的姓名是「会长」")
             return 1
         }
-        let dir = if (args.size > 3) {
-            args[3]
-        } else {
-            "data"
+        /*
+         * 参数形态：<手机号> <口令> [数据目录] [姓名选项…]
+         *
+         * · 数据目录是**可选**的，所以用"第 4 个参数是不是 -- 开头"来判断它是目录还是选项 ——
+         *   于是 `init-admin P W --name-file f.txt`（省掉目录、用默认 data）也能正常工作。
+         * · 选项只认 --name / --name-file；**不认识的参数明确报错**，而不是像以前那样静默忽略
+         *   （静默忽略正是"以为传了名字、其实没传"的来源）。
+         * · 兼容性：`init-admin P W data` 这种老的三参数调用行为一字不变。
+         */
+        var dir = "data"
+        var i = 3
+        if (args.size > 3 && !startsWithAscii(args[3], "--")) {
+            dir = args[3]
+            i = 4
         }
-        return cmdInitAdmin(args[1], args[2], dir)
+        var name = ""
+        var nameFile = ""
+        while (i < args.size) {
+            if (args[i] == "--name") {
+                if (i + 1 >= args.size) {
+                    println("--name 后面要跟姓名")
+                    return 1
+                }
+                name = args[i + 1]
+                i += 2
+            } else if (args[i] == "--name-file") {
+                if (i + 1 >= args.size) {
+                    println("--name-file 后面要跟文件路径")
+                    return 1
+                }
+                nameFile = args[i + 1]
+                i += 2
+            } else {
+                println("不认识的参数：${args[i]}")
+                println("用法: club-server init-admin <手机号> <初始密码> [数据目录] [--name <姓名> | --name-file <文件>]")
+                return 1
+            }
+        }
+        if (name.size > 0 && nameFile.size > 0) {
+            println("--name 与 --name-file 只能给一个（--name 只支持 ASCII，中文请用 --name-file）")
+            return 1
+        }
+        if (nameFile.size > 0) {
+            let fromFile = match (readNameFile(nameFile)) {
+                case Some(n) => n
+                case None => return 1
+            }
+            name = fromFile
+        }
+        if (name.size == 0) {
+            name = "会长"
+        }
+        /* 与 HTTP 的 PATCH /members 同口径：姓名非空白即可（见 h_member.cj） */
+        if (isBlank(name)) {
+            println("姓名不能是空白")
+            return 1
+        }
+        return cmdInitAdmin(args[1], args[2], dir, trimAsciiBlank(name))
     }
     if (args[0] == "init-ops") {
         if (args.size < 3) {

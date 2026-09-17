@@ -39,7 +39,7 @@ cd build
 | --- | --- |
 | `club-server serve [端口] [数据目录]` | 启动 HTTP（默认 `8080` / `data`） |
 | `club-server serve-tls [端口] [数据目录] [证书] [私钥]` | 启动 HTTPS（默认 `8443` / `data` / `certs/cert.pem` / `certs/key.pem`） |
-| `club-server init-admin <手机号> <初始密码> [数据目录]` | 预置首任会长 + 4 个组织（仅空库可执行） |
+| `club-server init-admin <手机号> <初始密码> [数据目录] [姓名选项]` | 预置首任会长 + 4 个组织（仅空库可执行）。姓名选项：`--name <ASCII 姓名>` / `--name-file <UTF-8 文件>`；**中文姓名只能走文件**（中文当命令行参数会让程序在 `main` 之前就崩，见 `API-NOTES.md` 坑 11）；两个都不给则默认「会长」 |
 | `club-server init-ops <手机号> <口令> [数据目录]` | 创建/重设**运维账号**（角色 `ops`：除「移交会长」外与会长同权；不可由 API 分配） |
 | `club-server retire-ops <手机号> [数据目录]` | 停用运维账号（保留记录，审计仍可追溯） |
 | `club-server test` | 运行单测 |

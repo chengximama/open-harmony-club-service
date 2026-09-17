@@ -48,6 +48,7 @@ cd server
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 427 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1 # TLS 22 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-check.ps1  # 前后端契约 30 项
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\init-name-check.ps1        # init-admin 的会长姓名选项 40 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1     # 容量基准（按需，见 docs/capacity-baseline.md）
 ```
 
@@ -56,7 +57,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1     # 容�
 > 所以**项数可能在 427 上下浮动一两条，判据是 `FAIL 0`，不是那个总数**。
 > （本机无网卡时实测连跑两次都是 **PASS 427 / FAIL 0**。）
 
-**后台 / 运维页另有两套端到端**（改了 `build.ps1 -Target admin`、`fw_rbac_store.cj`、`src/ops/*`、轻舟快照或前端后都要跑）：
+**后台 / 运维页另有几套**（改了 `build.ps1 -Target admin`、`fw_rbac_store.cj`、`src/ops/*`、轻舟快照或前端后都要跑）：
 
 ```powershell
 cd server
@@ -139,6 +140,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 # 2. 到 exe 所在目录操作（与部署形态一致：一切按相对路径）
 cd build
 .\club-server.exe init-admin 13800000000 ClubPass2026 data   # 预置首任会长 + 4 个组织
+#    会长姓名（不给则默认「会长」）：ASCII 用 --name LiSi；
+#    **中文必须走文件**（中文当命令行参数会让程序在 main 之前就崩，见 docs\API-NOTES.md 坑 11）：
+#    [IO.File]::WriteAllText("$PWD\n.txt","张三",[Text.UTF8Encoding]::new($false))
+#    .\club-server.exe init-admin 13800000000 ClubPass2026 data --name-file n.txt
 .\club-server.exe serve 8080 data                           # HTTP 起服务
 # 或者 HTTPS（先用 openssl 生成带 SAN 的证书，见 docs\server-guide.md）
 .\club-server.exe serve-tls 8443 data ..\certs\cert.pem ..\certs\key.pem

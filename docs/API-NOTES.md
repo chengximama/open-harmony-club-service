@@ -137,7 +137,7 @@ app.serve(port): ServerHandle            // 非阻塞；handle.wait() 阻塞；h
 | 8 | 服务 `cwd` 必须是 exe 所在目录 | 数据目录按相对路径读；`cwd` 不对会出现**假失败 + 假通过** |
 | 9 | Windows 无 `std.runtime.Signal` | 优雅关闭只能靠 `POST /admin/shutdown`，**必须限本机** |
 | 10 | 在请求线程里直接 `handle.shutdown()` | 会等待本请求自己结束 → **死锁**。要 `spawn` 到后台线程 |
-| 11 | **命令行参数里出现非 ASCII，程序直接崩**（2026-09-16 实测） | `club-server.exe init-admin 13800000000 你的密码123 data` → 无输出、exit 1，stderr 只有 `IllegalArgumentException: Invalid unicode scalar value.`。<br>**与参数位置无关**：中文放在口令、手机号或数据目录上都一样 —— 抛在仓颉把 argv 拼成 `String` 的那一步，**早于 `main` 里的任何校验**（切代码页 936 / 65001 都不行）。<br>→ 命令行参数一律用 **ASCII**。口令本身已限定数字/英文/符号（`api-design §2.3` 注 5），手机号是数字，数据目录用英文即可。<br>⚠️ **只影响 CLI**：HTTP 路径是 UTF-8 JSON，中文口令会正常返回 `400 VALIDATION_FAILED`（冒烟 `[26]` 有闸门） |
+| 11 | **命令行参数里出现非 ASCII，程序直接崩**（2026-09-16 实测） | `club-server.exe init-admin 13800000000 你的密码123 data` → 无输出、exit 1，stderr 只有 `IllegalArgumentException: Invalid unicode scalar value.`。<br>**与参数位置无关**：中文放在口令、手机号或数据目录上都一样 —— 抛在仓颉把 argv 拼成 `String` 的那一步，**早于 `main` 里的任何校验**（切代码页 936 / 65001 都不行）。<br>→ 命令行参数一律用 **ASCII**。口令本身已限定数字/英文/符号（`api-design §2.3` 注 5），手机号是数字，数据目录用英文即可。<br>⚠️ **只影响 CLI**：HTTP 路径是 UTF-8 JSON，中文口令会正常返回 `400 VALIDATION_FAILED`（冒烟 `[26]` 有闸门）<br>**2026-09-17 补充 · 通用绕行办法**：`init-admin` 要传**会长姓名**时因此不能直接写成参数，于是加了 `--name <ASCII 姓名>` 与 **`--name-file <UTF-8 文件>`**（中文姓名走后者；文件内容即姓名，允许带 BOM 与结尾换行，会裁掉首尾空白）。**结论：凡是要把非 ASCII 文本交给 CLI，一律走文件**，别再试着直接塞参数。回归闸门：`tests/init-name-check.ps1`（40 项） |
 
 ### PowerShell 脚本（Windows PS 5.1）
 
