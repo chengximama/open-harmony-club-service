@@ -1,14 +1,16 @@
 /**
  * 全局 HTTP 客户端
  * - 自动携带 Authorization: Bearer <token>
- * - 统一错误码映射
- * - 401 自动抛出特定错误
+ * - 服务端错误码统一映射为友好文案
+ * - 401 清理全部登录态并跳转登录页
+ * - 网络失败时，显式标记为幂等的写请求进入 Outbox
  */
 import { http } from '@kit.NetworkKit';
+import { promptAction } from '@kit.ArkUI';
 import { TokenStore } from '../store/TokenStore';
+import { SessionStore } from '../store/SessionStore';
+import { OutboxStore, EnqueueOutboxInput, OutboxItem } from '../store/OutboxStore';
 import { replaceTo } from '../utils/RouterUtils';
-
-// ─── 请求/响应类型 ───
 
 export interface ApiResponse<T> {
   ok: boolean;
@@ -22,21 +24,26 @@ export interface ApiError {
   fields?: Record<string, string>;
 }
 
-/** 后端分页响应格式：{items: [...], total: number} */
 export interface PagedResponse<T> {
   items: T[];
   total: number;
+  page?: number;
+  size?: number;
 }
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+export interface OutboxMeta {
+  label: string;
+}
 
 export interface RequestOptions {
   method?: HttpMethod;
   headers?: Record<string, string>;
   body?: object;
+  outbox?: OutboxMeta;
+  skipOutbox?: boolean;
 }
-
-// ─── 自定义错误 ───
 
 export class ApiRequestError extends Error {
   code: string;
@@ -52,25 +59,39 @@ export class ApiRequestError extends Error {
   }
 }
 
-// 方法映射（PATCH 不存在于 RequestMethod 枚举中，用字符串代替）
-function toMethodStr(method: HttpMethod): string {
-  if (method === 'GET') {
-    return 'GET';
-  } else if (method === 'POST') {
-    return 'POST';
-  } else if (method === 'PUT') {
-    return 'PUT';
-  } else if (method === 'PATCH') {
-    return 'PATCH';
+function showToast(message: string): void {
+  try {
+    promptAction.showToast({ message: message, duration: 2000 });
+  } catch (_) {
   }
-  return 'DELETE';
 }
 
-// ─── 客户端 ───
+function friendlyMessage(statusCode: number, code: string): string {
+  if (code === 'AUTH_BAD_CREDENTIALS') return '手机号或密码不正确';
+  if (code === 'REGISTER_CODE_INVALID') return '注册口令不正确';
+  if (code === 'VALIDATION_FAILED' || code === 'ALREADY_EXISTS') return '请检查填写内容';
+  if (code === 'MEMBER_PENDING') return '你还未被分配部门与角色';
+  if (code === 'MEMBER_DISABLED') return '该成员已退出社团';
+  if (code === 'FORBIDDEN_ROLE') return '不能对同权限或更高权限的人执行此操作';
+  if (code === 'FORBIDDEN_LAST_PRESIDENT') return '社团必须始终有一位会长';
+  if (code === 'FORBIDDEN_NOT_IN_DEPT') return '只能操作本部门范围内的人与事';
+  if (code === 'TOO_MANY_ATTEMPTS') return '尝试过于频繁，请稍后再试';
+  if (code === 'BLOCKER_REQUIRED') return '进入阻塞状态必须填写阻塞原因';
+  if (code === 'PLAN_CYCLE_DETECTED') return '不能移动到自身或其子课题下';
+  if (code === 'PLAN_DEPTH_EXCEEDED') return '课题层级已达上限（6 层）';
+  if (code === 'DEPT_NOT_EMPTY') return '该部门下还有成员或顶层课题';
+  if (code === 'MEMBER_HAS_OPEN_TASKS') return '该成员名下还有未完成任务，需先转交';
+  if (code.endsWith('_NOT_FOUND')) return '请求的内容不存在';
+  if (statusCode >= 500) return '服务器开小差了，请稍后再试';
+  if (statusCode === 403) return '无权限执行此操作';
+  if (statusCode === 429) return '尝试过于频繁，请稍后再试';
+  return '请求失败，请稍后重试';
+}
 
 export class HttpClient {
   private static instance: HttpClient;
   private baseUrl: string;
+  private pendingGets: Map<string, Promise<ApiResponse<object>>> = new Map();
 
   private constructor() {
     this.baseUrl = '/api/v1';
@@ -88,13 +109,12 @@ export class HttpClient {
   }
 
   private async request<T>(path: string, options?: RequestOptions): Promise<ApiResponse<T>> {
-    const methodStr = toMethodStr(options?.method ?? 'GET');
+    const method: HttpMethod = options?.method ?? 'GET';
     const url = `${this.baseUrl}${path}`;
-
+    const requestBody: string = options?.body === undefined ? '' : JSON.stringify(options.body);
     const httpRequest = http.createHttp();
 
     try {
-      // 构造请求头（不使用展开运算符，ArkTS 严格模式不允许）
       const headerObj: Record<string, string> = {};
       headerObj['Content-Type'] = 'application/json';
       if (options?.headers) {
@@ -104,53 +124,81 @@ export class HttpClient {
         }
       }
 
-      // 自动携带 token
       const token = await TokenStore.getInstance().getToken();
-      if (token) {
+      if (token !== null && token.length > 0) {
         headerObj['Authorization'] = `Bearer ${token}`;
       }
 
-      // 请求体：仅在有 body 时携带 extraData。
-      // ⚠️ GET/DELETE 等方法下 extraData 会被拼到 URL 上，传空字符串会触发 4010001 "Parameter error"，
-      // 所以无 body 的请求必须完全省略该字段。
       const reqOptions: http.HttpRequestOptions = {
-        method: methodStr as http.RequestMethod,
         header: headerObj as Object,
         expectDataType: http.HttpDataType.OBJECT,
       };
-      if (options?.body !== undefined) {
-        reqOptions.extraData = JSON.stringify(options.body);
+      if (method === 'PATCH') {
+        reqOptions.method = http.RequestMethod.POST;
+        reqOptions.customMethod = 'PATCH';
+      } else {
+        reqOptions.method = method as http.RequestMethod;
+      }
+      if (requestBody.length > 0) {
+        reqOptions.extraData = requestBody;
       }
 
       const resp = await httpRequest.request(url, reqOptions);
-
       const statusCode = resp.responseCode;
+      const resultData = this.asObject(resp.result);
 
-      // 处理 result（resp.result 类型为 string | Object）
-      let resultData: Record<string, Object> | undefined = undefined;
-      const rawResult = resp.result;
-      if (typeof rawResult === 'object' && rawResult !== null) {
-        resultData = rawResult as Record<string, Object>;
+      if (statusCode === 401) {
+        const errObj = resultData?.['error'] as Record<string, Object> | undefined;
+        const code: string = (errObj?.['code'] as string) ?? '';
+        /*
+         * 登录和本人改密都用 AUTH_BAD_CREDENTIALS + 401 表示“当前密码错误”，
+         * 这不是 token 失效；只有其它 401 才按登录态过期处理。
+         */
+        if (code === 'AUTH_BAD_CREDENTIALS' || path === '/auth/login') {
+          return {
+            ok: false,
+            error: {
+              code: 'AUTH_BAD_CREDENTIALS',
+              message: path === '/auth/password' ? '当前密码错误' : friendlyMessage(401, 'AUTH_BAD_CREDENTIALS'),
+            },
+          } as ApiResponse<T>;
+        }
+        await SessionStore.clearAll();
+        showToast('登录已过期，请重新登录');
+        replaceTo('pages/LoginPage');
+        return {
+          ok: false,
+          error: { code: 'AUTH_EXPIRED', message: '登录已过期，请重新登录' },
+        } as ApiResponse<T>;
       }
 
-      // 处理错误
       if (statusCode >= 400) {
-        return this.handleError<T>(resultData, statusCode);
+        return await this.handleError<T>(resultData, statusCode, path);
       }
 
-      // 成功：剥掉服务端信封 {ok, data}，只把 data 交给调用方
       return {
         ok: true,
         data: resultData?.['data'] as T,
       } as ApiResponse<T>;
     } catch (err) {
-      // 网络错误等
-      const error = err as Error;
+      if (options?.outbox !== undefined && options.skipOutbox !== true) {
+        const input: EnqueueOutboxInput = {
+          method: method,
+          path: path,
+          body: requestBody,
+          label: options.outbox.label,
+        };
+        await OutboxStore.getInstance().enqueue(input);
+        return {
+          ok: false,
+          error: { code: 'NETWORK_QUEUED', message: '网络不可用，已保存到待同步' },
+        } as ApiResponse<T>;
+      }
       return {
         ok: false,
         error: {
           code: 'NETWORK_ERROR',
-          message: error.message || '网络请求失败',
+          message: '网络不可用，请检查服务端是否可访问',
         },
       } as ApiResponse<T>;
     } finally {
@@ -158,11 +206,21 @@ export class HttpClient {
     }
   }
 
-  private handleError<T>(result: Record<string, Object> | undefined, statusCode: number): ApiResponse<T> {
-    // 后端错误格式：{ok:false, error:{code, message, fields:{字段: 提示}}}
+  private asObject(value: string | Object): Record<string, Object> | undefined {
+    if (typeof value === 'object' && value !== null) {
+      return value as Record<string, Object>;
+    }
+    return undefined;
+  }
+
+  private async handleError<T>(
+    result: Record<string, Object> | undefined,
+    statusCode: number,
+    path: string
+  ): Promise<ApiResponse<T>> {
     const errObj = result?.['error'] as Record<string, Object> | undefined;
     const code: string = (errObj?.['code'] as string) ?? 'UNKNOWN_ERROR';
-    const message: string = (errObj?.['message'] as string) ?? '请求失败';
+    const message: string = friendlyMessage(statusCode, code);
 
     let fields: Record<string, string> | undefined;
     const rawFields = errObj?.['fields'];
@@ -170,9 +228,16 @@ export class HttpClient {
       fields = rawFields as Record<string, string>;
     }
 
-    // 401 自动跳转登录页（排除密码错误场景）
-    if (statusCode === 401 && code !== 'AUTH_BAD_CREDENTIALS') {
+    if (code === 'MEMBER_PENDING') {
+      replaceTo('pages/PendingPage');
+    } else if (code === 'MEMBER_DISABLED') {
+      await SessionStore.clearAll();
+      showToast('你已被移出社团');
       replaceTo('pages/LoginPage');
+    } else if (statusCode === 403) {
+      showToast(message);
+    } else if (statusCode === 429 || code === 'TOO_MANY_ATTEMPTS') {
+      showToast(message);
     }
 
     return {
@@ -181,22 +246,44 @@ export class HttpClient {
     } as ApiResponse<T>;
   }
 
-  // ─── 便捷方法 ───
+  async replayOutbox(item: OutboxItem): Promise<ApiResponse<object>> {
+    let body: object | undefined = undefined;
+    if (item.body.length > 0) {
+      body = JSON.parse(item.body) as object;
+    }
+    const options: RequestOptions = {
+      method: item.method as HttpMethod,
+      body: body,
+      skipOutbox: true,
+    };
+    return this.request<object>(item.path, options);
+  }
 
   async get<T>(path: string): Promise<ApiResponse<T>> {
-    return this.request<T>(path, { method: 'GET' });
+    const pending = this.pendingGets.get(path);
+    if (pending !== undefined) {
+      return pending as Promise<ApiResponse<T>>;
+    }
+    const request = this.request<object>(path, { method: 'GET' });
+    this.pendingGets.set(path, request);
+    request.then((): void => {
+      this.pendingGets.delete(path);
+    }, (_reason: Error): void => {
+      this.pendingGets.delete(path);
+    });
+    return request as Promise<ApiResponse<T>>;
   }
 
-  async post<T>(path: string, body?: object): Promise<ApiResponse<T>> {
-    return this.request<T>(path, { method: 'POST', body });
+  async post<T>(path: string, body?: object, outbox?: OutboxMeta): Promise<ApiResponse<T>> {
+    return this.request<T>(path, { method: 'POST', body: body, outbox: outbox });
   }
 
-  async patch<T>(path: string, body?: object): Promise<ApiResponse<T>> {
-    return this.request<T>(path, { method: 'PATCH', body });
+  async patch<T>(path: string, body?: object, outbox?: OutboxMeta): Promise<ApiResponse<T>> {
+    return this.request<T>(path, { method: 'PATCH', body: body, outbox: outbox });
   }
 
-  async put<T>(path: string, body?: object): Promise<ApiResponse<T>> {
-    return this.request<T>(path, { method: 'PUT', body });
+  async put<T>(path: string, body?: object, outbox?: OutboxMeta): Promise<ApiResponse<T>> {
+    return this.request<T>(path, { method: 'PUT', body: body, outbox: outbox });
   }
 
   async delete_<T>(path: string): Promise<ApiResponse<T>> {

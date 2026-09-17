@@ -81,6 +81,15 @@ export class CalendarMapStore {
     await this.save();
   }
 
+  async clear(): Promise<void> {
+    this.entries = {};
+    if (this.prefs === null) {
+      return;
+    }
+    await this.prefs.delete(STORE_KEY);
+    await this.prefs.flush();
+  }
+
   private async save(): Promise<void> {
     if (!this.prefs) {
       return;

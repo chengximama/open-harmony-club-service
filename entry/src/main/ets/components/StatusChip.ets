@@ -10,7 +10,7 @@ export struct StatusChip {
   @Prop isOverdue: boolean = false
 
   build() {
-    Text(this.isOverdue ? '逾期' : statusLabel(this.status))
+    Text(this.isOverdue ? '已逾期' : statusLabel(this.status))
       .fontSize(FontSize.micro)
       .fontWeight(FontWeight.Medium)
       .fontColor(this.isOverdue ? StatusColor.overdue.fg : statusFg(this.status))

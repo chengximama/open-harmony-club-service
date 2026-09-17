@@ -18,6 +18,8 @@ export interface PendingMemberView extends MemberBrief {
 export interface MemberStats {
   owned_tasks: number;
   open_tasks: number;
+  done_tasks: number;
+  overdue_tasks: number;
   owned_plans: number;
 }
 
@@ -48,6 +50,9 @@ export interface AssignBatchResponse {
 /** GET /api/v1/members 响应 */
 export interface MemberListResponse {
   items: MemberBrief[];
+  total: number;
+  page?: number;
+  size?: number;
 }
 
 /** GET /api/v1/members/pending 响应 */
@@ -97,7 +102,11 @@ export interface SetRegisterCodeRequest {
 /** GET /api/v1/members 查询参数 — 全部可选 */
 export interface MemberListParams {
   dept_id?: number;
+  role?: string;
   status?: 'active' | 'pending' | 'disabled';
+  q?: string;
+  page?: number;
+  size?: number;
 }
 
 // ─── API 类 ───
@@ -114,7 +123,11 @@ export class MemberApi {
     const parts: string[] = [];
     if (params !== undefined) {
       if (params.dept_id !== undefined) parts.push(`dept_id=${params.dept_id}`);
+      if (params.role !== undefined && params.role.length > 0) parts.push(`role=${encodeURIComponent(params.role)}`);
       if (params.status !== undefined) parts.push(`status=${params.status}`);
+      if (params.q !== undefined && params.q.length > 0) parts.push(`q=${encodeURIComponent(params.q)}`);
+      if (params.page !== undefined) parts.push(`page=${params.page}`);
+      if (params.size !== undefined) parts.push(`size=${params.size}`);
     }
     const qs = parts.join('&');
     return this.client.get<MemberListResponse>(`/members${qs.length > 0 ? '?' + qs : ''}`);
@@ -128,6 +141,11 @@ export class MemberApi {
   /** GET /api/v1/members/{id} — 成员详情（含统计数据） */
   async detail(id: number): Promise<ApiResponse<MemberDetailResponse>> {
     return this.client.get<MemberDetailResponse>(`/members/${id}`);
+  }
+
+  /** POST /api/v1/members/{id}/disable — 移出社团（有未完成任务会拒绝） */
+  async disable(id: number): Promise<ApiResponse<MemberBrief>> {
+    return this.client.post<MemberBrief>(`/members/${id}/disable`);
   }
 
   /** POST /api/v1/members/{id}/assign — 分配部门与角色 */

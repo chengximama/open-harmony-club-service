@@ -1,16 +1,14 @@
 {
   "src": [
     "pages/Index",
-    "pages/PendingApprovalPage",
-    "pages/ManagePage",
     "pages/LoginPage",
     "pages/RegisterPage",
-    "pages/PendingWaitPage",
-    "pages/SplashPage",
-    "pages/ProfilePage",
+    "pages/PendingPage",
     "pages/TaskDetailPage",
     "pages/PlanDetailPage",
     "pages/CreateTaskPage",
-    "pages/CreatePlanPage"
+    "pages/CreatePlanPage",
+    "pages/ApprovePage",
+    "pages/AdminPage"
   ]
 }
