@@ -6,11 +6,13 @@ import { OutboxStore } from '../store/OutboxStore';
 import { OutboxSync } from '../store/OutboxSync';
 import { HttpClient } from '../api/HttpClient';
 import { BASE_URL } from '../config/Env';
+import { extractInviteToken, openInviteRegistration, rememberInviteTokenFromUri } from '../utils/InviteDeepLink';
 
 const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    rememberInviteTokenFromUri(want.uri);
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
     } catch (err) {
@@ -36,6 +38,13 @@ export default class EntryAbility extends UIAbility {
         }
       });
     });
+  }
+
+  onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    const inviteToken: string = extractInviteToken(want.uri);
+    if (inviteToken.length > 0) {
+      openInviteRegistration(inviteToken);
+    }
   }
 
   onForeground(): void {
