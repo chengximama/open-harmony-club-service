@@ -4,6 +4,7 @@ import { TaskApi, MineGroups, TaskBrief } from '../api/TaskApi'
 import { StatusChip } from '../components/StatusChip'
 import { Color, FontSize, Radius, Shadow, Space, StatusColor } from '../core/Theme'
 import { PermissionStore } from '../store/PermissionStore'
+import { CalendarSyncService } from '../util/CalendarSync'
 
 const EMPTY_MINE_GROUPS: MineGroups = {
   overdue: [], blocked: [], due_today: [], due_week: [], later: [], no_due: [],
@@ -22,6 +23,7 @@ export default struct MyTasksPage {
 
   private taskApi: TaskApi = new TaskApi()
   private permissionStore: PermissionStore = PermissionStore.getInstance()
+  private calendarSync: CalendarSyncService = CalendarSyncService.getInstance()
 
   aboutToAppear(): void {
     this.load()
@@ -42,6 +44,7 @@ export default struct MyTasksPage {
       this.errorMsg = resp.error?.message ?? '加载失败'
     }
     this.loading = false
+    this.calendarSync.reconcile(getContext(this))
   }
 
   private clockText(): string {

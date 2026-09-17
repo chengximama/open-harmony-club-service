@@ -2,8 +2,9 @@
 // 接接口后：GET /plans/{id}、DELETE /plans/{id}。
 
 import router from '@ohos.router'
-import { PlanApi, PlanDetailResponse, PlanNode } from '../api/PlanApi'
+import { PlanApi, PlanDetailResponse, PlanNode, MovePlanRequest } from '../api/PlanApi'
 import { TaskBrief, PlanRef } from '../api/TaskApi'
+import { flattenPlans } from '../util/PlanTree'
 import { StatusChip } from '../components/StatusChip'
 import { ProgressBar } from '../components/ProgressBar'
 import { Color, FontSize, Radius, Space, StatusColor, statusLabel } from '../core/Theme'
@@ -38,6 +39,8 @@ struct PlanDetailPage {
   @State detail: PlanDetailResponse = EMPTY_PLAN_DETAIL
   @State loading: boolean = true
   @State errorMsg: string = ''
+  @State showMovePicker: boolean = false
+  @State moveOptions: PlanRef[] = []
 
   private planApi: PlanApi = new PlanApi()
 
@@ -69,6 +72,35 @@ struct PlanDetailPage {
       router.back()
     } else {
       AlertDialog.show({ message: resp.error?.message ?? '删除失败' })
+    }
+  }
+
+  private async openMovePicker(): Promise<void> {
+    const resp = await this.planApi.list()
+    if (resp.ok && resp.data) {
+      const flat = flattenPlans(resp.data.items)
+      const opts: PlanRef[] = []
+      for (const p of flat) {
+        if (p.id !== this.detail.plan.id) {
+          opts.push(p)
+        }
+      }
+      this.moveOptions = opts
+      this.showMovePicker = true
+    } else {
+      AlertDialog.show({ message: resp.error?.message ?? '加载课题列表失败' })
+    }
+  }
+
+  private async moveTo(parentId: number): Promise<void> {
+    this.showMovePicker = false
+    const data: MovePlanRequest = { new_parent_id: parentId }
+    const resp = await this.planApi.move(this.detail.plan.id, data)
+    if (resp.ok) {
+      AlertDialog.show({ message: '已移动课题' })
+      this.load(this.detail.plan.id)
+    } else {
+      AlertDialog.show({ message: resp.error?.message ?? '移动失败' })
     }
   }
 
@@ -210,6 +242,44 @@ struct PlanDetailPage {
             .padding(Space.card)
             .backgroundColor(Color.surface)
             .borderRadius(Radius.card)
+
+            Button('编辑课题')
+              .width('100%')
+              .height(44)
+              .backgroundColor(Color.primarySoft)
+              .fontColor(Color.primary)
+              .onClick(() => {
+                router.pushUrl({ url: 'pages/CreatePlanPage', params: { plan_id: this.detail.plan.id } })
+              })
+
+            Button('移动课题')
+              .width('100%')
+              .height(44)
+              .backgroundColor(Color.primarySoft)
+              .fontColor(Color.primary)
+              .onClick(() => {
+                this.openMovePicker()
+              })
+
+            if (this.showMovePicker) {
+              Column() {
+                Row() {
+                  Text('提升为顶层课题').fontSize(FontSize.body).fontColor(Color.primary)
+                }
+                .width('100%').padding({ top: Space.sm, bottom: Space.sm })
+                .onClick(() => {
+                  this.moveTo(0)
+                })
+                ForEach(this.moveOptions, (p: PlanRef) => {
+                  Text(p.title).fontSize(FontSize.body).fontColor(Color.textPrimary)
+                    .width('100%').padding({ top: Space.sm, bottom: Space.sm })
+                    .onClick(() => {
+                      this.moveTo(p.id)
+                    })
+                }, (p: PlanRef) => `${p.id}`)
+              }
+              .width('100%').padding({ left: Space.md, right: Space.md }).backgroundColor(Color.surface).borderRadius(Radius.card)
+            }
 
             Button('删除课题')
               .width('100%')

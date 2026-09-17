@@ -2,7 +2,7 @@
 // 负责人/所属课题下拉来自 MemberApi / PlanApi。
 
 import router from '@ohos.router'
-import { TaskApi, CreateTaskRequest, PlanRef } from '../api/TaskApi'
+import { TaskApi, CreateTaskRequest, UpdateTaskRequest, PlanRef } from '../api/TaskApi'
 import { MemberApi } from '../api/MemberApi'
 import { PlanApi } from '../api/PlanApi'
 import { MemberBrief } from '../api/AuthApi'
@@ -10,6 +10,10 @@ import { flattenPlans } from '../util/PlanTree'
 import { genClientToken } from '../util/ClientToken'
 import { formatYmdHm } from '../util/DateFmt'
 import { Color, FontSize, Radius, Space } from '../core/Theme'
+
+interface CreateTaskParams {
+  task_id?: number
+}
 
 @Entry
 @Component
@@ -24,13 +28,32 @@ struct CreateTaskPage {
   @State members: MemberBrief[] = []
   @State plansFlat: PlanRef[] = []
   @State submitting: boolean = false
+  @State isEdit: boolean = false
+  @State editingId: number = 0
 
   private taskApi: TaskApi = new TaskApi()
   private memberApi: MemberApi = new MemberApi()
   private planApi: PlanApi = new PlanApi()
 
   aboutToAppear(): void {
+    const p = router.getParams() as CreateTaskParams
+    if (p !== undefined && p !== null && p.task_id !== undefined) {
+      this.isEdit = true
+      this.editingId = p.task_id
+      this.loadTask(p.task_id)
+    }
     this.loadOptions()
+  }
+
+  private async loadTask(id: number): Promise<void> {
+    const resp = await this.taskApi.detail(id)
+    if (resp.ok && resp.data) {
+      this.title = resp.data.title
+      this.desc = resp.data.desc
+      this.ownerId = resp.data.owner?.id ?? 0
+      this.planId = resp.data.plan?.id ?? 0
+      this.dueAt = resp.data.due_at ?? ''
+    }
   }
 
   private async loadOptions(): Promise<void> {
@@ -85,6 +108,27 @@ struct CreateTaskPage {
   private async submit(): Promise<void> {
     if (this.submitting) return
     this.submitting = true
+    if (this.isEdit) {
+      const data: UpdateTaskRequest = {
+        title: this.title,
+        owner_id: this.ownerId
+      }
+      if (this.desc.length > 0) data.desc = this.desc
+      if (this.planId !== 0) data.plan_id = this.planId
+      if (this.dueAt.length > 0) data.due_at = this.dueAt
+      const resp = await this.taskApi.update(this.editingId, data)
+      this.submitting = false
+      if (resp.ok && resp.data) {
+        router.back()
+      } else {
+        AlertDialog.show({
+          title: '保存失败',
+          message: resp.error?.message ?? '请重试',
+          primaryButton: { value: '知道了', action: () => {} }
+        })
+      }
+      return
+    }
     const data: CreateTaskRequest = {
       title: this.title,
       owner_id: this.ownerId,
@@ -108,7 +152,7 @@ struct CreateTaskPage {
 
   build() {
     Column() {
-      Text('新建任务')
+      Text(this.isEdit ? '编辑任务' : '新建任务')
         .fontSize(FontSize.headline).fontWeight(FontWeight.Bold).fontColor(Color.textPrimary)
         .width('100%')
         .padding({ left: Space.page, right: Space.page, top: Space.lg, bottom: Space.sm })
@@ -213,7 +257,7 @@ struct CreateTaskPage {
             this.pickDueDate()
           })
 
-          Button('提交')
+          Button(this.isEdit ? '保存' : '提交')
             .width('100%').height(44).backgroundColor(Color.primary)
             .enabled(this.title.length > 0 && this.ownerId !== 0 && !this.submitting)
             .onClick(() => {

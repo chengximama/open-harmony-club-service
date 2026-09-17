@@ -2,7 +2,7 @@
 // 创建走 POST /plans，带 client_token 防重复提交。
 
 import router from '@ohos.router'
-import { PlanApi, CreatePlanRequest } from '../api/PlanApi'
+import { PlanApi, CreatePlanRequest, UpdatePlanRequest } from '../api/PlanApi'
 import { MemberApi } from '../api/MemberApi'
 import { DeptApi, DeptView } from '../api/DeptApi'
 import { MemberBrief } from '../api/AuthApi'
@@ -11,6 +11,10 @@ import { flattenPlans } from '../util/PlanTree'
 import { genClientToken } from '../util/ClientToken'
 import { formatYmdHm } from '../util/DateFmt'
 import { Color, FontSize, Radius, Space } from '../core/Theme'
+
+interface CreatePlanParams {
+  plan_id?: number
+}
 
 @Entry
 @Component
@@ -29,13 +33,39 @@ struct CreatePlanPage {
   @State depts: DeptView[] = []
   @State plansFlat: PlanRef[] = []
   @State submitting: boolean = false
+  @State isEdit: boolean = false
+  @State editingId: number = 0
 
   private planApi: PlanApi = new PlanApi()
   private memberApi: MemberApi = new MemberApi()
   private deptApi: DeptApi = new DeptApi()
 
   aboutToAppear(): void {
+    const p = router.getParams() as CreatePlanParams
+    if (p !== undefined && p !== null && p.plan_id !== undefined) {
+      this.isEdit = true
+      this.editingId = p.plan_id
+      this.loadPlan(p.plan_id)
+    }
     this.loadOptions()
+  }
+
+  private async loadPlan(id: number): Promise<void> {
+    const resp = await this.planApi.detail(id)
+    if (resp.ok && resp.data) {
+      const plan = resp.data.plan
+      this.title = plan.title
+      this.desc = plan.desc
+      this.ownerId = plan.owner?.id ?? 0
+      this.dueAt = plan.due_at ?? ''
+      if (plan.parent_id === 0) {
+        this.isTopLevel = true
+        this.deptId = plan.dept?.id ?? 0
+      } else {
+        this.isTopLevel = false
+        this.parentId = plan.parent_id
+      }
+    }
   }
 
   private async loadOptions(): Promise<void> {
@@ -100,6 +130,26 @@ struct CreatePlanPage {
   private async submit(): Promise<void> {
     if (this.submitting) return
     this.submitting = true
+    if (this.isEdit) {
+      const data: UpdatePlanRequest = {
+        title: this.title,
+        owner_id: this.ownerId
+      }
+      if (this.desc.length > 0) data.desc = this.desc
+      if (this.dueAt.length > 0) data.due_at = this.dueAt
+      const resp = await this.planApi.update(this.editingId, data)
+      this.submitting = false
+      if (resp.ok && resp.data) {
+        router.back()
+      } else {
+        AlertDialog.show({
+          title: '保存失败',
+          message: resp.error?.message ?? '请重试',
+          primaryButton: { value: '知道了', action: () => {} }
+        })
+      }
+      return
+    }
     const data: CreatePlanRequest = {
       title: this.title,
       owner_id: this.ownerId,
@@ -127,7 +177,7 @@ struct CreatePlanPage {
 
   build() {
     Column() {
-      Text('新建课题')
+      Text(this.isEdit ? '编辑课题' : '新建课题')
         .fontSize(FontSize.headline).fontWeight(FontWeight.Bold).fontColor(Color.textPrimary)
         .width('100%')
         .padding({ left: Space.page, right: Space.page, top: Space.lg, bottom: Space.sm })
@@ -279,7 +329,7 @@ struct CreatePlanPage {
             this.pickDueDate()
           })
 
-          Button('提交')
+          Button(this.isEdit ? '保存' : '提交')
             .width('100%').height(44).backgroundColor(Color.primary)
             .enabled(this.title.length > 0 && this.ownerId !== 0 && (this.isTopLevel ? this.deptId !== 0 : this.parentId !== 0) && !this.submitting)
             .onClick(() => {
