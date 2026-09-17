@@ -310,6 +310,15 @@ struct TaskDetailPage {
                 this.save()
               })
 
+            Button('编辑任务')
+              .width('100%')
+              .height(44)
+              .backgroundColor(Color.primarySoft)
+              .fontColor(Color.primary)
+              .onClick(() => {
+                router.pushUrl({ url: 'pages/CreateTaskPage', params: { task_id: this.detail.id } })
+              })
+
             Row({ space: Space.sm }) {
               Button('加入系统日历')
                 .layoutWeight(1)
