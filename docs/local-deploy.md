@@ -14,7 +14,7 @@
 
 | 形态 | 用途 | 怎么做 |
 | --- | --- | --- |
-| **① 在 `server\build\` 里直接跑** | 本机联调（客户端连它） | §2 的五步 |
+| **① 在 `server\build\` 里直接跑** | 本机联调（客户端连它） | §2 的部署顺序 |
 | **② 产出 `server\dist\club-server\`** | 可整体拷走（换机器 / 上服务器） | §4 |
 
 ---
@@ -40,7 +40,18 @@ Get-CimInstance Win32_QuickFixEngineering | Where-Object HotFixID -eq 'KB5124010
 
 ---
 
-## 2. 五步跑起来
+## 2. 部署顺序（**照这个顺序做，别跳步**）
+
+> **只有一条铁律：凡是要写 `db.json` 的命令，都必须在「起服务」之前做完。**
+> 这类命令有三个：`init-admin`（建社团库）· `init-ops`（建/改运维账号）· `retire-ops`（停用运维账号）。
+>
+> 原因：`club-server` **只在启动时**把整库读进内存一次，运行期间**别的进程改文件它不会知道**。
+> 所以「先把服务起了、再回头建运维账号」会得到一个**登录一直 401**、
+> 而运维页「成员名录」里**却看得见**这个账号的怪状态 —— 这是最容易误判成"口令填错了"的坑，
+> 也是本节为什么要把两条初始化命令都排在起服务之前。详见 §2.7 末尾的现象对照表。
+>
+> 顺序总览：**2.1 编译 → 2.2 一次性初始化（会长 + 运维账号）→ 2.3 起服务 → 2.4 验证 →
+> （要运维台就接着 2.7）**；2.5 / 2.6 是运行期的事，随时可做。
 
 ### 2.1 编译
 
@@ -80,14 +91,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 - **上一个服务端没停干净**：`ld.lld: error: failed to write the output file: Permission denied`
   —— 这不是权限/SDK 问题，而是 exe 还在运行。脚本会先自查，并直接给出处置命令。
 
-### 2.2 初始化数据库（**只对空库可执行**）
+### 2.2 一次性初始化（**两步都在起服务之前**）
 
 ```powershell
-cd build        # ← ⚠️ 必须进到 exe 所在目录：data\ 与 certs\ 都按**相对路径**读
+cd E:\harmonyOS\cangjie_web\server\build   # ← ⚠️ 必须进到 exe 所在目录：data\ 与 certs\ 都按**相对路径**读
+
+# ① 建社团库 + 首任会长（**只对空库可执行**）
 .\club-server.exe init-admin 13800000000 ClubPass2026 data
+
+# ② 建运维账号（**只有要用运维台才需要**；幂等，可重复执行来重设口令）
+.\club-server.exe init-ops 13800000009 <运维口令> data
 ```
 
-真实输出：
+**① 真实输出**：
 
 ```
 已创建首任会长：13800000000（成员 id=1，部门=1）
@@ -96,6 +112,27 @@ cd build        # ← ⚠️ 必须进到 exe 所在目录：data\ 与 certs\ �
 ```
 
 同时预置 4 个组织：**主席团 / 课题部 / 运营部 / 宣传部**。
+
+**② 真实输出**（最后四行是 2026-09-17 新加的告警，正是为了拦住"先起服务再 init-ops"）：
+
+```
+已创建运维账号：13800000009（成员 id=2，角色 ops）
+权限：除「移交会长」外与会长同权；不可由 API 分配，只能用本命令创建
+下一步：把手机号与口令填进 build\admin\admin.env 的 club_user / club_pass
+数据目录：data（db.json）
+
+⚠ 如果 club-server **正在运行**，它内存里还是旧的库 —— 必须**重启 club-server**，
+  上面这个账号才能登录（否则登录一直 401，而运维页的名录里却看得见它）。
+  正确顺序：先 init-ops，再启动 club-server；已经起了就先停掉再起。
+```
+
+> **口令规则**（`init-admin` / `init-ops` / 注册 / 改密同一口径）：**8–32 字节**，
+> 只能用**数字 / 英文 / 符号**（不能有空格、中文、全角字符）。
+> 所以 8 位纯字母数字虽然合法但很弱，对外部署请换掉。
+> **运维账号在 App 的名录里看不到**（服务端过滤掉系统账号，免得客户端显示成"待分配"），
+> 只在运维台的「成员名录」里显示为「运维」。
+> 退役：`.\club-server.exe retire-ops 13800000009 data`
+> （`retire-ops` 同样写库，所以**也要放在起服务之前**，或做完重启服务）。
 
 ### 2.3 起服务
 
@@ -115,6 +152,11 @@ $p = Start-Process .\club-server.exe -ArgumentList @("serve","8080","data") -Pas
 ```
 
 端口被占用先查：`netstat -ano | findstr :8080`。
+
+> ⚠️ **起了服务之后，就别再跑 `init-admin` / `init-ops` / `retire-ops` 了。**
+> 它们是**另一个进程去改 `db.json`**，而运行中的 club-server 只在启动时读过一次库 ——
+> **改了不生效**（新账号登录 401；停用的账号仍能用旧令牌）。
+> 真要在运行期加/改运维账号：**先 `2.5` 停服务 → 执行命令 → 再起服务**。
 
 ### 2.4 验证它真的活着
 
@@ -210,7 +252,7 @@ cd E:\harmonyOS\cangjie_web\server
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target admin   # -> build\admin\admin.exe
 cd build\admin
 .\admin.exe        # 后台 http://127.0.0.1:3000/   运维页 http://127.0.0.1:3000/club
-# 另开一个窗口跑端到端验证：后台自身 29 项 / 运维页（含写路径）42 项
+# 另开一个窗口跑端到端验证：后台自身 29 项 / 运维页（含写路径）52 项
 powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\admin-check.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1
 ```
@@ -235,18 +277,54 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1
 - 运维页 `/club` **只放给角色 1**（`user` 拿到 403）。它**读**社团库文件
   （`admin.env` 的 `club_data`，默认 `../data` —— 即从 `build\` 启动 club-server 时的数据目录），
   所以 **club-server 没起也能看**。
-- **写操作的身份是"专用运维账号"**（运维不该由会长执行）。三步：
+- **写操作的身份是"专用运维账号"**（运维不该由会长执行）。它的权限 = **除「移交会长」外与会长同权**
+  （能重置会长的口令、能改部门、能换注册口令），**不可由 API 分配**，只能用 CLI 建。
+  这个账号**已经在 §2.2 ② 建好了** —— 那是它唯一该建的位置（起服务之前），这里不再重复。
+  剩下要做的只有"把凭据交给面板"，**两步，顺序不能反**：
+
   ```powershell
-  cd build
-  ..\build\club-server.exe init-ops 13800000009 admin123 data   # ① 建运维账号（一次性；生产换强口令）
-  # ② 把手机号/口令填进 build\admin\admin.env 的 club_user / club_pass
-  # ③ 运维人员只用后台账号（见上一节：首次启动生成的随机口令）打开 /club —— 页面上不需要任何社团口令
+  # ① 先填面板配置（club_api 必须是 http://，端口与 §2.3 起服务时一致）
+  cd E:\harmonyOS\cangjie_web\server\build\admin
+  notepad .\admin.env
+  #     club_user=13800000009
+  #     club_pass=<运维口令>              ← 与 §2.2 ② 建账号时用的完全一致
+  #     club_api=http://127.0.0.1:8080   ← 必须 http://；端口与 §2.3 一致
+  #     club_data=../data                 ← 与 §2.2 的数据目录一致
+
+  # ② 【填完之后】才启动面板 —— 反过来做，它读不到你刚填的值
+  .\admin.exe
   ```
-  它的权限 = **除「移交会长」外与会长同权**（能重置会长的口令、能改部门、能换注册口令），
-  **不可由 API 分配**；退役：`club-server retire-ops 13800000009 data`。
-  → club-server 的审计日志里 `actor` 是运维，不是会长（职责分离可追溯）。
-  → 这个账号**在 App 的名录里看不到**（服务端过滤掉系统账号，免得客户端显示成"待分配"），
-    但在运维台的「成员名录」标签页里能看到（它直读库文件），标签是「运维」。
+
+  **两条"必须重启"**（最容易踩，两个进程都**不热加载**）：
+
+  | 你做了什么 | 必须 |
+  | --- | --- |
+  | 在 club-server **已经运行**时执行 `init-ops` | **重启 club-server** |
+  | 改过 `build\admin\admin.env`（`club_user`/`club_pass`/`club_api`/`club_data`） | **重启 admin.exe** |
+
+  原因：`club-server` **只在启动时**把 `db.json` 读进内存一次，运行期别人改文件它不知道；
+  `admin.exe` 也**只在启动时**读一次 `admin.env`。所以"边跑边改"一律不生效。
+
+  **怎么确认配好了**：浏览器开 `http://127.0.0.1:3000/club`，「社团管理」页顶部应显示
+  **运维身份 `13800000009`（运维）**。若显示"未配置运维账号"或报错，按下表对号入座：
+
+  | 页面上的现象 | 真实原因 | 处置 |
+  | --- | --- | --- |
+  | 提示**未配置运维账号** | `club_user`/`club_pass` 是空的，**或改了 `admin.env` 没重启面板** | 填好这两行 → **重启 admin.exe** |
+  | **登录一直 401**，但「成员名录」里**看得见**那个「运维」账号 | `init-ops` 是在 club-server **已运行**时执行的：账号只落到磁盘、没进内存 | **重启 club-server**（名录读文件、登录打 API，所以会出现"半可见"这种最迷惑人的状态） |
+  | 提示**连不上 club-server…（没起？）** | `club_api` 的地址/端口与 club-server 实际不符 | 对齐 `club_api` 与启动端口；注意 `serve-tls` 是 https，见下 |
+  | 提示**连不上 HTTPS 的 club-server** | `club_api` 写成了 `https://` | 改成明文 HTTP 端口（见下面的已知限制） |
+  | 提示**凭据被拒绝** | 口令错，或账号被 `retire-ops` 停用，或刚 `init-ops` 但没重启 club-server | 核对口令 / 重新 `init-ops` 后**重启 club-server** |
+
+  > **已知限制：面板的写路径不能走 HTTPS。**
+  > `club-server` 可以 `serve-tls 8443`（手机端就该走这条），但**面板出站的 HTTP 客户端没有 TLS 配置**
+  > （轻舟 `httpclient.cj` 的文件头写明"需要 TLS 请直接用 `stdx.net.http.Client`"），自签证书也过不了校验。
+  > 实测把 `club_api` 指向 `https://…:8443` **一定连不上**（现象见上表第 4 行）。
+  > 所以要用运维台**写数据**时，让 `club-server` **另以明文 HTTP 起一个本机端口**（如 `serve 8080`），
+  > 把 `club_api` 指向它，并**用防火墙限制该端口只对本机/运维机开放**。手机端继续走 8443，两者不冲突。
+
+  → 用运维账号做的写操作，在 club-server 审计日志里 `actor` 是**运维**而不是会长（职责分离可追溯）。
+  → 该账号**在 App 名录里看不到**、只在运维台名录里显示为「运维」—— 原因见 §2.2 的说明。
 - 只读视图是白名单：运维接口里**不含任何口令材料**（`pw_salt` / `pw_hash` / `pw_iter`）。
 - **`cwd` 必须是 `build\admin`**（按相对路径读 `admin.env` 与 `admin-web\dist`）。
 - 这套后台与 `club-server` **互不影响**（不同端口、不同数据文件、不同 exe），可以同时跑。
@@ -363,8 +441,9 @@ New-NetFirewallRule -DisplayName "club-server 8080" -Direction Inbound -Protocol
 
 | 项 | 值 |
 | --- | --- |
-| 实测时间 | 2026-09-16（本机） |
-| 结论 | §2 五步 + §4 部署包 + §3 TLS 全部通过；服务端四套测试基线 单测 **398** / 冒烟 **362** / TLS **22** / 跨仓契约 **30** |
-| 演示数据 | 本次实测在 `server\build\data` 留下演示库（会长 `13800000000` / 口令 `demo12345`）——正式用前删掉该目录重新 `init-admin` |
+| 实测时间 | 2026-09-16（全流程）；**2026-09-17 复验并重写 §2** |
+| 结论 | §2 部署顺序 + §4 部署包 + §3 TLS 全部通过；服务端测试基线 **单测 490 / 冒烟 427 / TLS 22 / 跨仓契约 30 / 后台端到端 29 / 运维页端到端 52**，全部 **FAIL 0** |
+| §2 重写的原因 | 原 §2 把「起服务」排在「建运维账号」之前（运维账号当时放在 §2.7 才讲），**照做必定踩到**「先起服务再 `init-ops` → 登录 401、而名录里看得见账号」。现把两条初始化命令（`init-admin` / `init-ops`）统一并入 §2.2，排在起服务之前；§2.7 只留"把凭据交给面板"两步。三处根因与复现见 `code-review.md` 第六轮补记 |
+| 演示数据 | `server\build` 被 `.gitignore` 忽略（`**/build`），**新克隆里没有 `db.json`** —— 照 §2.2 自己 `init-admin` 定口令即可（全文示例统一用 `ClubPass2026`，见 §2.2 / §2.4）。本机那台另留了个演示库，其**会长口令以当时 `init-admin` 的输入为准、文档不记录**；正式用前删掉 `server\build\data` 重新初始化 |
 | 队友视角复现 | 全新 `git clone` + 清空 `CANGJIE_HOME`/cjenv 的 PATH 后 `build.ps1` 自动挑到 `D:\Cangjie` 1.1.3 并**编译通过**；部署包解压后 `cmd /c start-http.cmd` → `/health` **200**、`init-admin` → `data\db.json` **683 字节** |
 | 未覆盖 | 公网部署（缺服务器信息）、真机/模拟器上的客户端联调（本机无设备） |

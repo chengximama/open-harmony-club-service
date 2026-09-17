@@ -246,8 +246,25 @@ func clubSessionEnsure(cfg: OpsConfig, sess: ClubSession, force: Bool): Unit {
         case None =>
             /* 区分"连不上"与"凭据不对" —— 两类问题的处置完全不同 */
             match (httpGetText(opsJoin(cfg.apiBase, "health"))) {
-                case Some(_) => sess.err = "运维账号凭据被拒绝：club_user=${cfg.clubUser}（口令错？账号被 retire-ops 停用？）"
-                case None => sess.err = "连不上 club-server：${cfg.apiBase}（没起？地址/端口在 admin.env 里改）"
+                case Some(_) => sess.err = "运维账号凭据被拒绝：club_user=${cfg.clubUser}（口令错？账号刚 init-ops 但 club-server 没重启？被 retire-ops 停用？）"
+                case None =>
+                    /*
+                     * 2026-09-17：https:// 必须单独说清楚，否则会把人带到完全错误的方向。
+                     *
+                     * 框架的 httpPostJson / httpGetText 用的是默认 ClientBuilder，**没有 TLS 配置**
+                     * （httpclient.cj 的文件头就写着"需要 TLS 请直接用 stdx.net.http.Client"），
+                     * 而 club-server 用的又是自签证书 —— 两者叠加必然连不上。
+                     * 实测：club_api=https://127.0.0.1:8443 时落到这里，但服务其实**好好起着**，
+                     * 原先那句"没起？"是错的诊断。
+                     */
+                    if (startsWithAscii(cfg.apiBase.toAsciiLower(), "https://")) {
+                        sess.err = "运维台连不上 HTTPS 的 club-server：${cfg.apiBase}。" +
+                            "出站客户端没有 TLS 配置，自签证书也过不了校验 —— " +
+                            "请让 club-server 另以**明文 HTTP** 起一个本机端口（如 serve 8080），" +
+                            "把 club_api 指向它，并用防火墙限制该端口的来源。"
+                    } else {
+                        sess.err = "连不上 club-server：${cfg.apiBase}（没起？地址/端口在 admin.env 里改）"
+                    }
             }
     }
 }

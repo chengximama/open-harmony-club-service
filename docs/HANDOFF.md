@@ -97,7 +97,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1      
   页面直连 club-server 的真实 API（`/api/v1/**`，CORS 已开）→ club-server 始终是唯一写入者，
   权限（N-7）、两阶段赋值（N-15）、部门一致性（N-18）全部仍然生效。
   **后台进程不会写社团库** —— 两个进程同时写同一个 db.json 就是 last-writer-wins，会静默丢数据。
-- **运维不该由会长执行（2026-09-16 定）**：运维人员**只登录后台一次**（`admin/admin123`），
+- **运维不该由会长执行（2026-09-16 定）**：运维人员**只登录后台一次**（后台口令由 `admin.exe`
+  首次启动随机生成、打印一次并写入 `build\admin\admin.env` —— 不再是写死的 `admin123`，见 N-29），
   页面上不出现任何社团账号口令。club-server 侧的运维身份是新增的内置 `ops` 档：
   权限 = **除「移交会长」外与会长同权**（能做部门增删改、换注册口令、重置会长的口令），
   **不可由 API 分配**，只能本机命令建：
@@ -112,19 +113,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1      
   改前端需要 Node：`cd server\admin-web ; npm install ; npm run build`。
 - 产物自包含：`admin.exe` + `admin-web\dist` + `admin.env`（首建生成随机 `secret`，不覆盖）+ 4 个 DLL；
   **cwd 必须是 `build\admin`**（上游按相对路径读配置与前端）。
-- 后台账号 `admin/admin123`（角色 1）、`user/user123`（角色 2）；`/api/club/**` **只放给角色 1**
+- 后台账号 `admin`（角色 1）、`user`（角色 2）；**口令不写死**（N-29）：`admin.exe` 首次启动
+  （建库）时随机生成一对（各 16 个十六进制字符），控制台打印一次并写入 `build\admin\admin.env`
+  的 `admin_pass` / `user_pass`；库里若仍是老的公开默认口令，启动会醒目告警。
+  `/api/club/**` **只放给角色 1**
   （`user` 拿到 403）。⚠️ 这两条是**轻舟 RBAC 那套口令**（存在 `rbac.json`），与 club-server 的
   账号（PBKDF2，存在 `db.json`）**不是一套**，不能互用 —— 运维人员用前者，写操作的身份是后者的 `ops` 账号。
 - 详见 `docs\API-NOTES.md`「坑 34」（状态码）与「坑 36」（关停回执竞态，已修）。
 
 #### 运维账号（`ops`）操作手册
 
-运维人员**只登录后台**（`admin/admin123`）；club-server 侧的身份是**专用运维账号**（`role = ops`）。
+运维人员**只登录后台**（口令见 `build\admin\admin.env`）；club-server 侧的身份是**专用运维账号**（`role = ops`）。
 
 | 要做什么 | 怎么做 |
 | --- | --- |
-| 建号 / 重设口令 | `cd server\build` → `..\club-server.exe init-ops <手机号> <口令> <数据目录>`（幂等；本机开发库现在是 `13800000009 / admin123`） |
-| 让运维台能用它 | 把手机号/口令填进 `build\admin\admin.env` 的 `club_user` / `club_pass`；留空则运维页只能看不能改（页面会提示） |
+| 建号 / 重设口令 | `cd server\build` → `..\club-server.exe init-ops <手机号> <口令> <数据目录>`（幂等，可重复执行来重设口令；本机开发库现在是 `13800000009 / admin123`）。⚠️ **必须在 club-server 未运行时执行** —— 它只在启动时把库读进内存一次，运行期别的进程改文件它不知道：新账号登录恒 **401**，而运维页名录读的是**文件**、照样看得见它；已经起了就先停掉再起 |
+| 让运维台能用它 | 把手机号/口令填进 `build\admin\admin.env` 的 `club_user` / `club_pass`；留空则运维页只能看不能改（页面会提示）。⚠️ 改完**必须重启 `admin.exe`** —— 它只在启动时读一次 `admin.env` |
 | 换人 / 退役 | `..\club-server.exe retire-ops <手机号> <数据目录>`（停用并作废其全部令牌；记录保留，审计仍可追溯） |
 | 它能看到什么 | 除「移交会长」外与会长同权：成员处置 / 部门增删改 / 换注册口令 / 重置**会长**的口令 / 停服 |
 | 它在哪儿可见 | **App 名录里看不到**（服务端过滤系统账号，客户端不需要为它改标签）；运维台 `/club` 的「成员名录」里能看到，标签「运维」；按 id 查详情仍可达 |
@@ -152,7 +156,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1      
 | `README.md` | 仓库唯一入口：进度、目录结构、六条最容易踩的坑 | 第一次打开这个仓库时 |
 | *（对外材料已移出仓库）* | 轻舟 TLS 实测与缺陷清单、仓颉运行时缺陷报告 —— 见上层 `cangjie-upstream\` | 追溯上游问题时看 |
 | **`server-guide.md`** | **服务端**：构建/初始化/运行/测试、进度表、两条实现纪律 | **写服务端时先看** |
-| **`local-deploy.md`** | **本机部署一页上手**（2026-09-16 全流程实测）：体检 → 五步 → HTTPS → 部署包 → 连客户端 → 备份 → 坑表 | **第一次上手时先看这个** |
+| **`local-deploy.md`** | **本机部署一页上手**（2026-09-16 全流程实测，2026-09-17 重写 §2 顺序）：体检 → 部署顺序 → HTTPS → 部署包 → 连客户端 → 备份 → 坑表 | **第一次上手时先看这个** |
 | **`API-NOTES.md`** | **服务端**：编译期 API 事实清单 + **30 条**踩坑记录 | 加新函数前先查（避让框架同名符号） |
 
 ---

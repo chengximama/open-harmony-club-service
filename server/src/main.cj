@@ -208,6 +208,17 @@ func cmdInitOps(phone: String, pw: String, dir: String): Int64 {
         println("权限：除「移交会长」外与会长同权；不可由 API 分配，只能用本命令创建")
         println("下一步：把手机号与口令填进 build\\admin\\admin.env 的 club_user / club_pass")
         println("数据目录：${s.dir}（db.json）")
+        /*
+         * 2026-09-17 加这段告警：本命令改的是 **db.json 文件**，而 club-server 只在**启动时**
+         * 把它读进内存一次。所以"服务已经起着"时执行本命令，账号只落到磁盘、内存里没有 ——
+         * 表现为**登录一直 401**；更坑的是运维台「成员名录」是直读文件的，
+         * 页面里**看得见**这个「运维」账号，于是极易被误判成"口令填错了"。
+         * 这条实测复现过（先起服务再 init-ops → 401；重启服务 → 200）。
+         */
+        println("")
+        println("⚠ 如果 club-server **正在运行**，它内存里还是旧的库 —— 必须**重启 club-server**，")
+        println("  上面这个账号才能登录（否则登录一直 401，而运维页的名录里却看得见它）。")
+        println("  正确顺序：先 init-ops，再启动 club-server；已经起了就先停掉再起。")
     } finally {
         s.lock.unlock()
     }
@@ -243,6 +254,8 @@ func cmdRetireOps(phone: String, dir: String): Int64 {
         storeSaveNow(s)
         println("已停用运维账号：${phone}（成员 id=${m.id}）")
         println("若要彻底删除，直接在数据目录的 db.json 里去掉该成员（或换个手机号重建）")
+        /* 同 init-ops：club-server 只在启动时读库一次，运行中改文件不会生效（见 init-ops 那段注释）。 */
+        println("⚠ 若 club-server 正在运行，**必须重启它**这次停用才会生效（否则旧令牌仍可用）。")
     } finally {
         s.lock.unlock()
     }
