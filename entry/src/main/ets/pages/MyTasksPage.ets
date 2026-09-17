@@ -18,10 +18,16 @@ export default struct MyTasksPage {
 
   // 由外层 TabBar 注入：点击顶部「课题」时切到课题 tab
   onOpenPlans?: () => void
+  // 由外层 TabBar 注入：切换 Tab / 从子页返回时 +1，触发重新拉取
+  @Prop @Watch('onRefreshSignal') refreshSignal: number = 0
 
   private taskApi: TaskApi = new TaskApi()
 
   aboutToAppear(): void {
+    this.load()
+  }
+
+  onRefreshSignal(): void {
     this.load()
   }
 

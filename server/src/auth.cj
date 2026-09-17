@@ -32,8 +32,22 @@ func hmacSha256(key: Array<UInt8>, msg: Array<UInt8>): Array<UInt8> {
     return mac.finish()
 }
 
-/* RFC 2898 PBKDF2，PRF = HMAC-SHA256。 */
+/*
+ * RFC 2898 PBKDF2，PRF = HMAC-SHA256。
+ *
+ * ⚠ **参数防线（2026-09-16 加固）**：本函数**不做业务校验**，非法参数一律
+ * **返回空数组（fail closed）**，而不是"算出一个看起来合法的弱摘要"：
+ *   · `iters <= 0` 时下面的循环一次都不跑，等价于 **1 轮** —— 规范里 c 的最小合法值，
+ *     也就是"静默降级成最弱配置"。原先没有任何检查，新调用方忘记校验就会拿到弱哈希。
+ *   · `dkLen <= 0` 时切片 `[0..dkLen]` 本身也不合法。
+ * 本项目的读取路径 `verifyPw` 已经在入口挡掉 `iters <= 0`（返回 false），
+ * 所以这条加固不影响既有行为，只保证**将来**的调用方不会踩到静默降级。
+ * 密码学原语宁可失败，也不降级。
+ */
 public func pbkdf2Sha256(pwd: Array<UInt8>, salt: Array<UInt8>, iters: Int64, dkLen: Int64): Array<UInt8> {
+    if (iters <= 0 || dkLen <= 0) {
+        return Array<UInt8>()
+    }
     let hLen: Int64 = 32
     let blocks: Int64 = (dkLen + hLen - 1) / hLen
     let out = ArrayList<UInt8>()

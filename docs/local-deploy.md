@@ -56,7 +56,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 [build] 工具链：cjc=D:\Cangjie
 [build]          stdx=E:\cangjie\stdx\windows_x86_64_cjnative\static\stdx
 [build]          cjc 版本：Cangjie Compiler: 1.1.3 (cjnative)
-[build] 框架：轻舟 3ea387e（内置 third_party\qingzhou，24 个文件参与编译）
+[build] 框架：轻舟 e072980（内置 third_party\qingzhou，31 个文件参与编译）
 [build] 服务端 23 个文件 -> ...\server\build\club-server.exe
 [build] 编译通过
 [build] OpenSSL DLL 来源：D:\Program Files\Git\mingw64\bin
@@ -84,7 +84,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 
 ```powershell
 cd build        # ← ⚠️ 必须进到 exe 所在目录：data\ 与 certs\ 都按**相对路径**读
-.\club-server.exe init-admin 13800000000 你的密码123 data
+.\club-server.exe init-admin 13800000000 ClubPass2026 data
 ```
 
 真实输出：
@@ -129,7 +129,7 @@ curl.exe -s http://127.0.0.1:8080/health
 # {"ok":true,"data":{"status":"ok","version":"0.1.0","time":"2026-09-16T13:20:08+08:00"}}
 
 # 再登录一次，确认接口链路通（拿令牌）
-'{"phone":"13800000000","password":"你的密码123"}' | Set-Content body.json -Encoding ASCII
+'{"phone":"13800000000","password":"ClubPass2026"}' | Set-Content body.json -Encoding ASCII
 curl.exe -s -X POST http://127.0.0.1:8080/api/v1/auth/login -H "Content-Type: application/json" --data-binary "@body.json"
 # {"ok":true,"data":{"token":"1c207a3c…","expires_at":"2026-10-16T13:20:08+08:00","member":{…}}}
 Remove-Item body.json
@@ -167,7 +167,7 @@ curl.exe -s http://127.0.0.1:8080/api/v1/register-config -H "Authorization: Bear
 
 换口令也是会长权限：`PUT /api/v1/register-config/code`（自定义）· `POST /api/v1/register-config/rotate`（随机换）。
 
-**② 注册**（字段规则：`register_code` 必填 · `phone` 必须是合法手机号 · `password` **至少 8 位** · `name` 必填）：
+**② 注册**（字段规则：`register_code` 必填 · `phone` 必须是合法手机号 · `password` **8-32 位、只用数字/英文/符号** · `name` 必填）：
 
 ```powershell
 # 注意：中文姓名要用 **UTF-8 无 BOM** 的文件体，别用 Set-Content（ASCII 会变 ???，UTF8 会带 BOM）
@@ -197,6 +197,62 @@ App 里对应「**待分配审批**」页（会长/副会长可见），两步�
 
 > ⚠️ **注册口令试错是按客户端 IP 节流的**（15 分钟内错 10 次 → 锁 5 分钟起、逐次翻倍，
 > 见 `API-NOTES.md` N-6）。它是**内存态**：被自己锁住时，**重启服务即可清零**。
+
+---
+
+### 2.7 可选：后台管理界面 + 「社团管理」运维页
+
+后台这份有两个页面：上游那套（仪表盘 / 用户管理，管**后台自己的账号**）和我们加的
+**「社团管理」运维页 `/club`**（管**社团的真实数据**）。前端产物已随仓库提交，**不需要 Node/npm**：
+
+```powershell
+cd E:\harmonyOS\cangjie_web\server
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target admin   # -> build\admin\admin.exe
+cd build\admin
+.\admin.exe        # 后台 http://127.0.0.1:3000/   运维页 http://127.0.0.1:3000/club
+# 另开一个窗口跑端到端验证：后台自身 29 项 / 运维页（含写路径）42 项
+powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\admin-check.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1
+```
+
+> ⚠️ **运维台监听的是 `0.0.0.0:3000`，不是只绑本机。**
+> 轻舟的 `app.serve(port)` 把地址写死成 `0.0.0.0`（`src/app.cj`），**没有"只绑回环"的开关**，
+> 所以上面那个 `http://127.0.0.1:3000/` 只是"在本机怎么访问它"，
+> 并不意味着别人连不上 —— **同一局域网/公网能到 3000 端口的人都能打开这个页面**。
+> 它能看到整个社团库（含手机号与审计日志），因此请用防火墙只对运维机放行 3000，
+> 不要把它暴露出去。
+
+- **后台账号口令：首次启动时随机生成，不在仓库里、也不是任何固定值。**
+  第一次运行（建库）时 `admin.exe` 会生成一对口令（各 16 个十六进制字符），
+  **打印在控制台一次**并追加到 `build\admin\admin.env` 的 `admin_pass` / `user_pass`；
+  之后启动只提示"见 admin.env"，不再回显。想自己指定就把这两行取消注释后填值
+  （**别用 `admin123` 这类公开默认值** —— 2026-09-17 前它就是默认值，见 `code-review.md` N-29）。
+  账号是 `admin`（角色 1）与 `user`（角色 2）。
+- 若 `admin.env` 里仍是老库的 `admin123`，启动时会**醒目告警**；处置办法是删掉
+  `build\admin\admin-data\rbac.json` 后重启（会重新随机生成），或改成自己的口令再删库重建。
+- 端口 / 密钥 / 令牌时长在 `admin.env`（首次构建生成随机 `secret`，之后不覆盖）。
+- 后台自己的数据落在 `build\admin\admin-data\rbac.json`（原子写：先 `.tmp` 再 rename）。
+- 运维页 `/club` **只放给角色 1**（`user` 拿到 403）。它**读**社团库文件
+  （`admin.env` 的 `club_data`，默认 `../data` —— 即从 `build\` 启动 club-server 时的数据目录），
+  所以 **club-server 没起也能看**。
+- **写操作的身份是"专用运维账号"**（运维不该由会长执行）。三步：
+  ```powershell
+  cd build
+  ..\build\club-server.exe init-ops 13800000009 admin123 data   # ① 建运维账号（一次性；生产换强口令）
+  # ② 把手机号/口令填进 build\admin\admin.env 的 club_user / club_pass
+  # ③ 运维人员只用后台账号（见上一节：首次启动生成的随机口令）打开 /club —— 页面上不需要任何社团口令
+  ```
+  它的权限 = **除「移交会长」外与会长同权**（能重置会长的口令、能改部门、能换注册口令），
+  **不可由 API 分配**；退役：`club-server retire-ops 13800000009 data`。
+  → club-server 的审计日志里 `actor` 是运维，不是会长（职责分离可追溯）。
+  → 这个账号**在 App 的名录里看不到**（服务端过滤掉系统账号，免得客户端显示成"待分配"），
+    但在运维台的「成员名录」标签页里能看到（它直读库文件），标签是「运维」。
+- 只读视图是白名单：运维接口里**不含任何口令材料**（`pw_salt` / `pw_hash` / `pw_iter`）。
+- **`cwd` 必须是 `build\admin`**（按相对路径读 `admin.env` 与 `admin-web\dist`）。
+- 这套后台与 `club-server` **互不影响**（不同端口、不同数据文件、不同 exe），可以同时跑。
+- 已修掉上游那个"成功响应也可能带 404"的状态码问题（在我们的入口里按 body 的 `code` 回写状态，
+  内置框架未动）—— 见 `API-NOTES.md`「坑 34」；关停回执丢失的竞态见「坑 36」。
+
 ## 3. HTTPS（手机端正式使用要走这条）
 
 自签证书**必须带 SAN**（现代客户端完全忽略 CN，只看 `subjectAltName`）：

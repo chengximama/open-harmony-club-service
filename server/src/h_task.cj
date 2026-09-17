@@ -29,8 +29,14 @@ func targetOfTask(actor: Member, t: Task): Target {
     return tgt
 }
 
-/* ===================== 「我的任务」首页的分组（纯函数，便于单测） ===================== */
-
+/*
+ * 「我的任务」首页的分组（纯函数，便于单测）
+ *
+ * D-4（2026-09-16）：`deptScopeId > 0` 时，除自己负责的任务外，**额外**把
+ * 本部门成员处于 `blocked` 的任务也纳入（设计规格 P03 的
+ * 「部长在首页即可看到这条」）。调用方只在操作者是部长 / 副部长时传自己的部门 id，
+ * 其余角色传 0（会长 / 副会长要看全貌走任务列表，不该让首页被别人的阻塞项淹没）。
+ */
 public class MineGroups {
     public var overdue: Array<Task> = Array<Task>()
     public var blocked: Array<Task> = Array<Task>()
@@ -39,6 +45,7 @@ public class MineGroups {
     public var later: Array<Task> = Array<Task>()
     public var no_due: Array<Task> = Array<Task>()
     public var open_total: Int64 = 0
+    public var borrowed: Int64 = 0   /* 其中"不是自己负责、但本部门被阻塞"的条数 */
 
     public init() {}
 }
@@ -53,8 +60,10 @@ public class MineGroups {
  *   blocked    **额外**一组：阻塞是状态，逾期是时间事实，两者不互斥（api-design §4.1）
  *
  * 只列**未完成**任务：首页是"我负责什么"，已完成的不该再出现在逾期里。
+ * 本部门被阻塞的任务（borrowed）同样进 blocked 组，并按同一套时间桶进入时间分组
+ * —— 与设计稿「阻塞项同时也会出现在下面的时间分组里」一致。
  */
-public func groupMine(s: Store, ownerId: Int64, now: Int64): MineGroups {
+public func groupMine(s: Store, ownerId: Int64, now: Int64, deptScopeId: Int64): MineGroups {
     let g = MineGroups()
     let todayStart = startOfLocalDay(now)
     let tomorrow = todayStart + DAY_SECONDS
@@ -68,11 +77,25 @@ public func groupMine(s: Store, ownerId: Int64, now: Int64): MineGroups {
     let none = ArrayList<Task>()
 
     for ((_k, t) in s.tasks) {
-        if (t.deleted_at > 0 || t.owner_id != ownerId) {
+        if (t.deleted_at > 0) {
+            continue
+        }
+        let mine = (t.owner_id == ownerId)
+        /*
+         * 「本部门被阻塞」= 别人负责 + 本部门 + blocked。
+         * 不额外要求 needs_help（help_dept_id）非空：设计规格 P01 的首页里，
+         * 部长看到的是一条**没标求助对象**的阻塞任务；标了求助对象的走同一组，
+         * 客户端用 needs_help 决定是否渲染「需要帮助 · …」那一行。
+         */
+        let borrowed = !mine && deptScopeId > 0 && t.status == "blocked" && t.dept_id == deptScopeId
+        if (!mine && !borrowed) {
             continue
         }
         if (t.status == "done") {
             continue
+        }
+        if (borrowed) {
+            g.borrowed += 1
         }
         g.open_total += 1
         if (t.status == "blocked") {
@@ -110,14 +133,26 @@ public func groupMine(s: Store, ownerId: Int64, now: Int64): MineGroups {
  * GET /api/v1/tasks/mine —— **v1 最重要的接口**
  *
  * 真正让人每天打开 App 的是「我负责什么」，不是组织架构图。
- * 永远只返回自己的任务，因此不需要 can() 判定。
+ * 主体永远是自己负责的任务，因此不需要 can() 判定。
+ *
+ * D-4（2026-09-16）唯一的例外：**部长 / 副部长**的首页还会带上「本部门成员的阻塞项」
+ * —— 设计规格 P03 原文「需要帮助 · 宣传部 陈屿（部长在首页即可看到这条）」，
+ * 对应 P01 里部长看到的「运营部 · 负责人 王砚」那条别人的阻塞任务。
+ * 这不是可见性放宽（读范围本身已全社团开放），而是"该谁管就该在谁的首页出现"。
+ * 会长 / 副会长不参与这一条：他们要全貌走任务列表，首页不该被全社团的阻塞项淹没。
  */
 public func handleTasksMine(ctx: Context, s: Store): Unit {
     let actor = requireActive(ctx, s)
+    /* 只有部长 / 副部长带部门范围；其余角色为 0（只看自己的） */
+    let deptScopeId = if (actor.role == "lead" || actor.role == "vice_lead") {
+        actor.dept_id
+    } else {
+        0
+    }
     s.lock.lock()
     try {
         let now = nowEpoch()
-        let g = groupMine(s, actor.id, now)
+        let g = groupMine(s, actor.id, now, deptScopeId)
         let data = JsonObject()
         data.put("overdue", taskArr(s, g.overdue, now))
         data.put("blocked", taskArr(s, g.blocked, now))
@@ -129,6 +164,8 @@ public func handleTasksMine(ctx: Context, s: Store): Unit {
         jPutInt(counts, "overdue", g.overdue.size)
         jPutInt(counts, "blocked", g.blocked.size)
         jPutInt(counts, "open_total", g.open_total)
+        /* 其中有多少条是"本部门别人的阻塞项"（部长 / 副部长才会有非零值） */
+        jPutInt(counts, "borrowed_blocked", g.borrowed)
         jPutObj(data, "counts", counts)
         sendOk(ctx, data)
     } finally {
@@ -490,6 +527,8 @@ public func handleTaskUpdate(ctx: Context, s: Store): Unit {
  * 2. 离开 blocked 自动清空 blocker（历史由 updated_at 体现，v1 不做完整变更历史）
  * 3. 进入 done 记 completed_at；退回其他状态时清空
  * 4. **允许任意状态互跳，不设状态机**——真实情况是"这事其实早做完了，我忘了标"
+ * 5. （D-4，2026-09-16）进 blocked 时可选带**求助对象** `help_dept_id` / `help_member_id`，
+ *    对应设计规格 P03 阻塞块里的「需要帮助 · 宣传部 陈屿」。离开 blocked 一并清空。
  */
 public func handleTaskStatus(ctx: Context, s: Store): Unit {
     let actor = requireActive(ctx, s)
@@ -500,6 +539,8 @@ public func handleTaskStatus(ctx: Context, s: Store): Unit {
     v.check("status", isTaskStatus(status), "状态只能是 todo / doing / blocked / done")
     v.done()
     let blocker = reqStrOr(body, "blocker", "")
+    let helpDept = reqIntOr(body, "help_dept_id", 0)
+    let helpMember = reqIntOr(body, "help_member_id", 0)
 
     s.lock.lock()
     try {
@@ -513,12 +554,56 @@ public func handleTaskStatus(ctx: Context, s: Store): Unit {
             throw apiErrFields("BLOCKER_REQUIRED", "进入阻塞状态必须填写阻塞原因",
                 oneField("blocker", "请说明卡在哪里，这比任何进度百分比都有用"))
         }
+        /*
+         * 求助对象只在 blocked 下有意义。非阻塞状态传了非零值就**明确报错**，
+         * 不静默忽略——静默忽略会让调用方以为求助已经登记上了（本项目一贯纪律）。
+         */
+        if (status != "blocked" && (helpDept > 0 || helpMember > 0)) {
+            throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+                oneField("help_dept_id", "只有阻塞状态才能指定求助对象（离开阻塞会自动清空）"))
+        }
+        /* ---------- 阶段一：只校验，不碰 t（N-15 的两阶段纪律） ---------- */
+        var nextHelpDept: Int64 = 0
+        var nextHelpMember: Int64 = 0
+        if (status == "blocked") {
+            if (helpMember > 0) {
+                let hm = match (s.members.get(helpMember)) {
+                    case Some(x) => x
+                    case None => throw apiErr("MEMBER_NOT_FOUND")
+                }
+                if (hm.status == "pending") {
+                    throw apiErrMsg("MEMBER_PENDING", "求助对象尚未被分配，不能作为求助人")
+                }
+                if (hm.status == "disabled") {
+                    throw apiErrMsg("MEMBER_DISABLED", "求助对象已退出社团，不能作为求助人")
+                }
+                if (helpDept > 0 && helpDept != hm.dept_id) {
+                    throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+                        oneField("help_member_id", "求助人不在所选部门里"))
+                }
+                nextHelpMember = helpMember
+                /* 只填人时按该成员的部门补齐——"本部门被求助"永远只要比一个字段 */
+                nextHelpDept = hm.dept_id
+            } else if (helpDept > 0) {
+                match (s.departments.get(helpDept)) {
+                    case Some(_) => ()
+                    case None => throw apiErr("DEPT_NOT_FOUND")
+                }
+                nextHelpDept = helpDept
+            }
+        }
+
+        /* ---------- 阶段二：全部通过之后才落值 ---------- */
         let now = nowEpoch()
         t.status = status
         if (status == "blocked") {
             t.blocker = blocker
+            t.help_dept_id = nextHelpDept
+            t.help_member_id = nextHelpMember
         } else {
             t.blocker = ""
+            t.help_dept_id = 0
+            t.help_member_id = 0
         }
         if (status == "done") {
             if (t.completed_at <= 0) {

@@ -26,7 +26,7 @@ $env:PATH            = "$ds\jbr\bin;$ds\tools\node;$ds\tools\ohpm\bin;$env:PATH"
 cd server
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 cd build
-.\club-server.exe init-admin 13800000000 你的口令 dev-data
+.\club-server.exe init-admin 13800000000 ClubPass2026 dev-data
 .\club-server.exe serve 8080 dev-data
 
 # 3) 契约回归：把 entry/src/main/ets/api/*.ets 里声明的每条 (方法, 路径) 都打一遍

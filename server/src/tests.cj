@@ -148,6 +148,26 @@ func testIds(t: TR): Unit {
     t.ok("token 唯一", newToken() != newToken())
     t.eqi("注册口令长度", newRegisterCode().size, 6)
     t.eqi("临时密码长度", newTempPassword().size, 8)
+    /*
+     * D-6（2026-09-16 定稿）：密码 = **8–32 字节** 且 **只用数字 / 英文 / 符号**。
+     * 这三组断言是口径的回归闸门：
+     *   · 去掉上限 → "33 位"那条变红
+     *   · 去掉字符集 → "中文"与"含空格"两条变红
+     *   · 改回 6 位下限 → "7 位"那条变红
+     */
+    t.eqs("密码 8 位 ASCII 合法（下界）", passwordError("abc12345"), "")
+    /* 32 位 = randHex(16)（十六进制串长度是字节数的 2 倍），33 位再多一个字符 */
+    t.eqs("密码 32 位 ASCII 合法（上界）", passwordError(randHex(16)), "")
+    t.ok("密码 7 位 → 拒（下界）", passwordError("abc1234").size > 0)
+    t.ok("密码 33 位 → 拒（上界，原先没有上限）", passwordError("a" + randHex(16)).size > 0)
+    t.ok("密码含中文 → 拒（字符集；18 字节本来在长度区间内）", passwordError("密码密码密码").size > 0)
+    t.ok("密码含空格 → 拒（不可见字符）", passwordError("abc 1234").size > 0)
+    t.ok("密码含全角字符 → 拒（字符集）", passwordError("ａｂｃ12345").size > 0)
+    t.eqs("密码含符号 ._/\\-! 合法", passwordError("Abc123._/\\-!"), "")
+    /* 「密码1」= 3 个中文字节 + 1 位数字 = 7 字节 → 应该报**长度**错，不是字符集错 */
+    t.ok("长度先判：7 字节中文报长度错", containsAscii(passwordError("密码1"), "至少"))
+    /* 重置密码签发的临时密码必须落在自己的口径内，否则管理员一重置就登不上 */
+    t.eqs("临时密码符合密码口径（D-6）", passwordError(newTempPassword()), "")
     let alpha = CODE_ALPHABET
     var i: Int64 = 0
     var allIn = true
@@ -208,6 +228,21 @@ func testStore(t: TR): Unit {
     let dir = "build/test-data"
     if (exists(dir)) {
         remove(dir, recursive: true)
+    }
+    /*
+     * 派生目录也必须清（2026-09-16 修）。
+     *
+     * 下面的 M-7 / N-5 / 空 token 三块都是同一个套路：先建库 → **往 db.json 写坏数据** →
+     * 断言 storeLoad 拒绝启动。坏数据是**故意留在磁盘上**的（这块测试的产物），
+     * 于是**不重新编译就连跑两次单测，第二次会在这个目录上先 `storeLoad` 直接抛异常**，
+     * 整个测试进程崩掉 —— 报出来的还是"数据文件损坏"，看着像真 bug。
+     * 违反的正是项目自己的测试标准："isolated setup/teardown；不依赖外部状态"。
+     * （之前一直没暴露：跑测试前若执行过 `build.ps1`，它会重建 build/ 顺带清掉这些目录。）
+     */
+    for (d in ["build/test-data-m7", "build/test-data-n5", "build/test-data-linkkey"]) {
+        if (exists(d)) {
+            remove(d, recursive: true)
+        }
     }
     let s = Store(dir)
 
@@ -298,6 +333,32 @@ func testStore(t: TR): Unit {
     t.eqs("注册口令往返", l.register_code, "K3M9P2")
     t.eqi("next_member 往返", l.next_member, 2)
 
+    /*
+     * D-4（2026-09-16）：Task 新增 `help_dept_id` / `help_member_id` 之后，
+     * **旧库（没有这两个字段的 db.json）必须照常加载** —— 这是文档里那句
+     * 「旧库无需迁移」的回归闸门。这里手写一个只含老字段的最小库文件。
+     * （Directory.create 在目录已存在时照样抛异常，所以先判存在 —— 见 writeDbFile 的注释。）
+     */
+    let oldDir = "build/test-data-store-old"
+    if (!exists(oldDir)) {
+        Directory.create(oldDir, recursive: true)
+    }
+    let oldJson = "{\"next_task\":3,\"tasks\":[{\"id\":2,\"title\":\"老任务\",\"owner_id\":1," +
+        "\"status\":\"blocked\",\"blocker\":\"老的阻塞原因\",\"created_at\":1789898400}]}"
+    File.writeTo(oldDir + "/db.json", oldJson.toArray())
+    let old = storeLoad(oldDir)
+    t.eqi("旧库能加载（D-4 无需迁移）", old.tasks.size, 1)
+    match (old.tasks.get(2)) {
+        case Some(ot) =>
+            t.eqs("旧任务标题", ot.title, "老任务")
+            t.eqs("旧任务状态", ot.status, "blocked")
+            t.eqi("旧任务 help_dept_id 默认 0（D-4）", ot.help_dept_id, 0)
+            t.eqi("旧任务 help_member_id 默认 0（D-4）", ot.help_member_id, 0)
+            t.ok("旧任务无求助对象 → needs_help=null（D-4）",
+                containsAscii(taskBrief(old, ot, 1789898400).toString(), "\"needs_help\":null"))
+        case None => t.ok("旧任务存在", false)
+    }
+
     /* 备份文件：**第二次保存**时才会生成（第一次没有旧库可备份） */
     storeSaveNow(s)
     t.ok("bak 已生成（第二次保存）", exists(s.dbFile() + ".bak"))
@@ -347,6 +408,28 @@ func testStore(t: TR): Unit {
         threw3 = true
     }
     t.ok("idem 坏记录也必须报错（N-5）", threw3)
+
+    /*
+     * 2026-09-16（读码发现的一致性缺口）：**空 token 的招募链接记录也必须报错**。
+     *
+     * 三张以字符串为主键的表里，tokens / idem 都会跳过空键（于是数组条数 ≠ map 条数，
+     * `checkLoaded` 按既定口径拒绝启动），只有 `invite_links` 原先无条件 `m[token] = x` ——
+     * 空 token 被塞进 `""` 键，两条计数相等，**一条损坏记录被静默接受**
+     * （还能被 `GET /api/v1/join/` 命中）。
+     * 这条断言就是那个缺口的闸门：改回去（取消 size > 0 判断）它立刻变红。
+     */
+    let linkDir = dir + "-linkkey"
+    let goodLink = storeLoad(linkDir)
+    storeSaveNow(goodLink) /* 先建出目录，再用坏内容覆盖 db.json */
+    let badLink = "{\"version\":1,\"invite_links\":[{\"token\":\"\",\"dept_id\":1,\"enabled\":true}]}"
+    File.writeTo(goodLink.dbFile(), badLink.toArray())
+    var threw4 = false
+    try {
+        storeLoad(linkDir)
+    } catch (e: Exception) {
+        threw4 = true
+    }
+    t.ok("空 token 的招募链接也必须报错（与 tokens/idem 同口径）", threw4)
 
     /* P1 M-3：限流状态不落盘 —— 保存后 db.json 里不应出现 login_fail */
     let lf = LoginFail()
@@ -425,6 +508,41 @@ func testPerms(t: TR): Unit {
     t.ok("会长删部门", can(pres, Action.DeleteDept, other))
     t.ok("会长改会长本人", can(pres, Action.SetRole, presTarget))
     t.ok("会长跨部门建任务", can(pres, Action.CreateTask, other))
+
+    /*
+     * 运维（ops，2026-09-16）：**除「移交会长」外与会长同权**。
+     * 存在的理由：运维不该由会长本人执行（职责分离）—— 运维台用专用账号调 club-server，
+     * 审计里 actor 就是运维账号。这里把"同权"和"唯一减法"都钉住：
+     * 少一条就会悄悄退化成副会长档（做不了部门增删改、换不了注册口令）。
+     */
+    let ops = mkMember(3, "ops", 0)   /* 运维不属于任何部门：dept_id = 0 */
+    t.ok("运维不能移交会长（唯一减法）", !can(ops, Action.TransferPresidency, other))
+    t.eqs("运维移交会长被拒的错误码", checkAccess(ops, Action.TransferPresidency, other) ?? "", "FORBIDDEN_ROLE")
+    t.ok("运维可增改部门（会长独占的那几项）", can(ops, Action.ManageDept, other))
+    t.ok("运维可删部门", can(ops, Action.DeleteDept, other))
+    t.ok("运维可换注册口令", can(ops, Action.ChangeRegisterCode, other))
+    t.ok("运维可看注册口令", can(ops, Action.ViewRegisterCode, other))
+    t.ok("运维可管招募链接", can(ops, Action.ManageInviteLink, other))
+    t.ok("运维可跨部门建任务（全社团范围）", can(ops, Action.CreateTask, other))
+    /* 与会长**同档**，但要能处置会长 —— "会长忘口令、运维帮他重置"正是典型运维场景。
+     * （权限层放行；handler 另有「最后一个会长」保护，见 h_member.cj 的 FORBIDDEN_LAST_PRESIDENT。） */
+    t.ok("运维可重置会长的口令", can(ops, Action.ResetPassword, presTarget))
+    t.ok("运维可禁用会长（handler 另有最后一个会长保护）", can(ops, Action.DisableMember, presTarget))
+    t.ok("运维可改会长的角色", can(ops, Action.SetRole, presTarget))
+    /* 但「重置密码不含本人」这条对它照旧（作废自己全部令牌 = 响应 200 后自己掉线） */
+    let opsSelf = Target()
+    opsSelf.member_id = 3
+    opsSelf.target_role = "ops"
+    t.ok("运维不能重置自己的口令（N-7 口径照旧）", !can(ops, Action.ResetPassword, opsSelf))
+    /* 这一档**不可由 API 分配**：否则会长能造出权限略高于自己的账号 */
+    t.ok("ops 不是可分配角色（只能由 init-ops 创建）", !isKnownRole("ops"))
+    t.eqs("ops 的角色中文名", roleLabel("ops"), "运维")
+    t.ok("运维权限摘要：manage_depts 为真", reqBoolOr(permissionsOf(ops), "manage_depts", false))
+    t.ok("运维权限摘要：change_register_code 为真", reqBoolOr(permissionsOf(ops), "change_register_code", false))
+    t.ok("运维权限摘要：transfer_presidency 为假", !reqBoolOr(permissionsOf(ops), "transfer_presidency", true))
+    /* 反向闸门：副会长档没有因为新增 ops 被顺手放开 */
+    t.ok("副会长仍不能增改部门（未因 ops 放开）", !can(vp, Action.ManageDept, other))
+    t.ok("副会长仍不能换注册口令（未因 ops 放开）", !can(vp, Action.ChangeRegisterCode, other))
 
     /* 副会长：除移交与改动会长本人外同权 */
     t.ok("副会长不能移交", !can(vp, Action.TransferPresidency, other))
@@ -544,9 +662,16 @@ func testPerms(t: TR): Unit {
     /* 成员 */
     t.ok("成员看名录（全社团）", can(mem, Action.ViewMembers, other))
     t.ok("成员看本部门任务", can(mem, Action.ViewTasks, own))
-    t.ok("成员看外部门任务 拒", !can(mem, Action.ViewTasks, other))
+    /*
+     * D-3（2026-09-16）：读范围按设计规格放开到全社团。
+     * 原先这里断言"成员看外部门任务 拒"——那是 v1-scope §3.4.3 的旧口径；
+     * 设计规格 P02「共 38 项 · 全社团范围可见」、P04 用「全部」筛选、P03「部长在首页即可看到这条」
+     * 三处都是全社团可读。这条断言会随回退变红，是本次改动的回归闸门。
+     */
+    t.ok("成员看外部门任务（D-3 全社团可读）", can(mem, Action.ViewTasks, other))
     t.ok("成员改自己任务状态（跨部门也行）", can(mem, Action.UpdateTaskStatus, selfTask))
-    t.ok("成员改他人任务状态 拒", !can(mem, Action.UpdateTaskStatus, own))
+    t.ok("成员改本部门他人任务状态 拒（写范围未放开）", !can(mem, Action.UpdateTaskStatus, own))
+    t.ok("成员改外部门他人任务状态 拒（D-3 只放开读）", !can(mem, Action.UpdateTaskStatus, other))
     t.ok("成员建任务 拒", !can(mem, Action.CreateTask, own))
     t.ok("成员换口令 拒", !can(mem, Action.ChangeRegisterCode, own))
     t.ok("成员移交 拒", !can(mem, Action.TransferPresidency, other))
@@ -608,13 +733,24 @@ func testViews(t: TR): Unit {
     let self = memberSelf(s, m).toString()
     t.ok("本人视图含手机号", containsAscii(self, "13900000000"))
 
-    t.eqs("lead view_scope", jsonGetStr(permissionsOf(m), "view_scope") ?? "", "dept")
+    /* D-3：读范围全社团 → active 的 view_scope 一律 all（除 pending 为 none） */
+    t.eqs("lead view_scope（D-3 全社团可读）", jsonGetStr(permissionsOf(m), "view_scope") ?? "", "all")
     t.ok("lead 不能设角色", (jsonGetBool(permissionsOf(m), "set_role") ?? true) == false)
     t.ok("lead 能建任务", (jsonGetBool(permissionsOf(m), "create_task") ?? false))
+    /* D-1：管理页四张分区卡的驱动布尔 —— 部长一个都不该有 */
+    t.ok("lead 不能管部门（D-1）", (jsonGetBool(permissionsOf(m), "manage_depts") ?? true) == false)
+    t.ok("lead 不能读口令（D-1）", (jsonGetBool(permissionsOf(m), "view_register_code") ?? true) == false)
+    t.ok("lead 不能换口令（D-1）", (jsonGetBool(permissionsOf(m), "change_register_code") ?? true) == false)
+    t.ok("lead 不能管链接（D-1）", (jsonGetBool(permissionsOf(m), "manage_invite_links") ?? true) == false)
+    t.ok("lead 不能移交（D-1）", (jsonGetBool(permissionsOf(m), "transfer_presidency") ?? true) == false)
 
     let pres = mkMember(1, "president", 1)
     t.eqs("president view_scope", jsonGetStr(permissionsOf(pres), "view_scope") ?? "", "all")
     t.ok("president 能设角色", (jsonGetBool(permissionsOf(pres), "set_role") ?? false))
+    /* D-1：会长独占项 */
+    t.ok("president 能管部门（D-1）", (jsonGetBool(permissionsOf(pres), "manage_depts") ?? false))
+    t.ok("president 能换口令（D-1）", (jsonGetBool(permissionsOf(pres), "change_register_code") ?? false))
+    t.ok("president 能移交（D-1）", (jsonGetBool(permissionsOf(pres), "transfer_presidency") ?? false))
 
     /*
      * L-1：set_role 必须与真实权限一致。副会长**能**改他人角色（只有会长本人动不了），
@@ -623,11 +759,21 @@ func testViews(t: TR): Unit {
     let vpView = mkMember(2, "vice_president", 1)
     t.ok("vice_president 能设角色（L-1）", (jsonGetBool(permissionsOf(vpView), "set_role") ?? false))
     t.ok("vice_president manage_members", (jsonGetBool(permissionsOf(vpView), "manage_members") ?? false))
+    /*
+     * D-1 的关键反例：副会长能管人，但**不能管组织、不能换口令、不能移交**。
+     * 只下发 manage_members 时，客户端会让副会长看到「部门与组织」入口然后被 403
+     * ——正是设计规格 P10「按权限显示的管理入口」要避免的场景。
+     */
+    t.ok("vice_president 能读口令（D-1）", (jsonGetBool(permissionsOf(vpView), "view_register_code") ?? false))
+    t.ok("vice_president 能管链接（D-1）", (jsonGetBool(permissionsOf(vpView), "manage_invite_links") ?? false))
+    t.ok("vice_president 不能管部门（D-1）", (jsonGetBool(permissionsOf(vpView), "manage_depts") ?? true) == false)
+    t.ok("vice_president 不能换口令（D-1）", (jsonGetBool(permissionsOf(vpView), "change_register_code") ?? true) == false)
+    t.ok("vice_president 不能移交（D-1）", (jsonGetBool(permissionsOf(vpView), "transfer_presidency") ?? true) == false)
     let viceView = mkMember(8, "vice_lead", 2)
     t.ok("vice_lead 不能设角色", (jsonGetBool(permissionsOf(viceView), "set_role") ?? true) == false)
 
     let mem = mkMember(9, "member", 2)
-    t.eqs("member view_scope", jsonGetStr(permissionsOf(mem), "view_scope") ?? "", "dept")
+    t.eqs("member view_scope（D-3 全社团可读）", jsonGetStr(permissionsOf(mem), "view_scope") ?? "", "all")
     t.ok("member 不能改他人任务", (jsonGetBool(permissionsOf(mem), "update_any_task") ?? true) == false)
 
     let pend = mkMember(10, "", 0)
@@ -744,6 +890,36 @@ func testPart3Views(t: TR): Unit {
     t.eqs("成员排序：主席团(sort0) 最前", sorted[0].name, "会长")
     t.eqs("成员排序：未分配部门最后", sorted[sorted.size - 1].name, "新人")
 
+    /*
+     * 2026-09-16（读码发现的口径裂缝）：**未分配部门的哨兵必须大于 SORT_MAX**。
+     *
+     * 原先 `sortedMembers` 把哨兵写死成 999，而 sort 的合法上界是 10000（SORT_MAX）——
+     * 于是只要有一个部门的 sort ≥ 999，未分配成员就会排到它**前面**，
+     * 与上面那条"未分配部门最后"的断言在小数据量下看不出、一到真实数据就相反。
+     * 这里造一个 sort=1000 的部门（客户端可以显式传，合法），再加一个该部门的成员：
+     * 旧写法下 `新人`（哨兵 999）会排在他前面 → 这条断言变红。
+     */
+    let dHigh = Department()
+    dHigh.id = 9
+    dHigh.name = "排序靠后的部门"
+    dHigh.sort = 1000
+    s.departments[9] = dHigh
+    let inHigh = Member()
+    inHigh.id = 9
+    inHigh.name = "靠后部门成员"
+    inHigh.role = "member"
+    inHigh.dept_id = 9
+    inHigh.status = "active"
+    s.members[9] = inHigh
+    let picked2 = ArrayList<Member>()
+    picked2.add(s.members[5])   /* 未分配（dept 0）*/
+    picked2.add(s.members[9])   /* sort=1000 的部门 */
+    let sorted2 = sortedMembers(s, picked2)
+    t.eqs("成员排序：sort=1000 的部门排在未分配之前", sorted2[0].name, "靠后部门成员")
+    t.eqs("成员排序：未分配仍然最后（哨兵 > SORT_MAX）", sorted2[1].name, "新人")
+    s.departments.remove(9)
+    s.members.remove(9)
+
     /* 成员详情：计数摘要 */
     let task = Task()
     task.id = 1
@@ -751,6 +927,8 @@ func testPart3Views(t: TR): Unit {
     task.owner_id = 2
     task.status = "doing"
     task.dept_id = 2
+    /* D-7：身份卡的「逾期 1」要有来源 —— 给这条挂一个已过的截止时间 */
+    task.due_at = 1789898400 - 7200
     s.tasks[1] = task
     let task2 = Task()
     task2.id = 2
@@ -773,11 +951,52 @@ func testPart3Views(t: TR): Unit {
     plan.dept_id = 2
     s.plans[1] = plan
 
-    let detail = memberDetailView(s, s.members[2]).toString()
+    let detail = memberDetailView(s, s.members[2], 1789898400).toString()
     t.ok("owned_tasks=2（软删除不计）", containsAscii(detail, "\"owned_tasks\":2"))
     t.ok("open_tasks=1", containsAscii(detail, "\"open_tasks\":1"))
     t.ok("owned_plans=1", containsAscii(detail, "\"owned_plans\":1"))
+    /*
+     * D-7（2026-09-16）：设计规格 P07 的身份卡是「未完成 5 · 逾期 1 · 已完成 12」——
+     * 三个计数都得服务端给。「已完成」原先要靠 owned-open 自己减，
+     * 「逾期」则根本推不出来（只能再打一次任务列表）。这两条断言是回归闸门。
+     */
+    t.ok("done_tasks=1（D-7）", containsAscii(detail, "\"done_tasks\":1"))
+    t.ok("overdue_tasks=1（D-7）", containsAscii(detail, "\"overdue_tasks\":1"))
     t.ok("详情不含手机号", !containsAscii(detail, "13800000002"))
+
+    /*
+     * D-2（2026-09-16）：名录搜索 —— 匹配**姓名 OR 部门名**
+     * （设计规格 P06 搜索框占位符「搜索姓名或部门」）。
+     * 纯函数覆盖，不依赖 HTTP；手机号**不参与匹配**（P06「名录不含手机号」）。
+     */
+    t.ok("搜索：姓名命中（D-2）", memberMatchesQuery(s, s.members[3], "成员"))
+    t.ok("搜索：部门名命中（D-2）", memberMatchesQuery(s, s.members[3], "运营"))
+    t.ok("搜索：姓名与部门都不匹配 → 不命中（D-2）", !memberMatchesQuery(s, s.members[3], "宣传部"))
+    t.ok("搜索：主席团的人不被「运营」命中（D-2）", !memberMatchesQuery(s, s.members[1], "运营"))
+    t.ok("搜索：待分配按 dept_hint 命中（D-2）", memberMatchesQuery(s, s.members[5], "运营"))
+    t.ok("搜索：手机号不参与匹配（隐私，D-2）", !memberMatchesQuery(s, s.members[3], "13800000003"))
+
+    /*
+     * D-16（2026-09-16）：招募链接 → 部门预填，由**服务端**从 token 推导。
+     * 三条反例（停用 / 不存在 / 畸形）都必须给 0，否则"停用的链接还能预填部门"
+     * 会让招募链接的启停形同虚设。
+     */
+    let liveLink = DeptInviteLink()
+    liveLink.token = "live-token-32"
+    liveLink.dept_id = 2
+    liveLink.enabled = true
+    s.invite_links["live-token-32"] = liveLink
+    let deadLink = DeptInviteLink()
+    deadLink.token = "dead-token-32"
+    deadLink.dept_id = 2
+    deadLink.enabled = false
+    s.invite_links["dead-token-32"] = deadLink
+    t.eqi("D16 启用中的链接 → 解析出部门", resolveInviteDept(s, "live-token-32"), 2)
+    t.eqi("D16 已停用的链接 → 0（启停必须真的生效）", resolveInviteDept(s, "dead-token-32"), 0)
+    t.eqi("D16 不存在的 token → 0", resolveInviteDept(s, "no-such-token"), 0)
+    t.eqi("D16 空 token → 0", resolveInviteDept(s, ""), 0)
+    /* 65 字节：32 字节十六进制是 64 个字符，再补一个（String 没有 repeat，别踩） */
+    t.eqi("D16 超长 token → 0（不做无谓查表）", resolveInviteDept(s, randHex(32) + "x"), 0)
 
     /* 未完成任务：只算 owner 匹配且未完成且未删除 */
     let open = openTasksOf(s, 2)
@@ -897,7 +1116,8 @@ func testTasks(t: TR): Unit {
     s.tasks[8] = t8
     s.tasks[9] = t9
 
-    let g = groupMine(s, owner, now)
+    /* deptScopeId = 0：只看自己的（会长 / 副会长 / 普通成员走这条） */
+    let g = groupMine(s, owner, now, 0)
     t.eqi("逾期组", g.overdue.size, 1)
     t.eqs("逾期组内容", g.overdue[0].title, "T1")
     t.eqi("今天组 = T2 + T6", g.due_today.size, 2)
@@ -908,11 +1128,53 @@ func testTasks(t: TR): Unit {
     t.eqi("阻塞组（与今天组并存，不互斥）", g.blocked.size, 1)
     t.eqs("阻塞组内容", g.blocked[0].title, "T6")
     t.eqi("未完成总数（不含 done/deleted/他人）", g.open_total, 6)
+    t.eqi("scope=0 时没有 borrowed", g.borrowed, 0)
+
+    /*
+     * D-4（2026-09-16）：部长 / 副部长的首页额外带「本部门成员的阻塞项」
+     * （设计规格 P03「部长在首页即可看到这条」）。t10 是**别人负责**、
+     * 本部门（dept 2）、blocked 的任务 —— 只有传了部门范围才会出现。
+     */
+    let t10 = mkTask(10, other, now + 3600, "blocked")
+    s.tasks[10] = t10
+    let gLead = groupMine(s, owner, now, 2)
+    t.eqi("部长首页：阻塞组 = 自己的 T6 + 本部门别人的 T10（D-4）", gLead.blocked.size, 2)
+    /* 按截止升序：T10 的截止（now+3600）早于 T6（now+7200），所以 T10 在前 */
+    t.eqs("部长首页：阻塞组仍按截止升序（D-4）", gLead.blocked[0].title, "T10")
+    t.eqs("部长首页：本部门别人的阻塞项也在里面（D-4）", gLead.blocked[1].title, "T6")
+    t.eqi("部长首页：borrowed 计数 = 1", gLead.borrowed, 1)
+    t.eqi("部长首页：未完成总数含 borrowed", gLead.open_total, 7)
+    t.eqi("部长首页：阻塞项同时进时间分组（T10 在今天组）", gLead.due_today.size, 3)
+    /* 反例：部门范围不匹配时，别人的阻塞项**不该**出现 */
+    let gOtherDept = groupMine(s, owner, now, 99)
+    t.eqi("部门范围不匹配 → 不含别人的阻塞项", gOtherDept.blocked.size, 1)
+    t.eqi("部门范围不匹配 → borrowed=0", gOtherDept.borrowed, 0)
+    /* 非阻塞的别人的任务无论怎样都不进首页 */
+    let t11 = mkTask(11, other, now + 3600, "doing")
+    s.tasks[11] = t11
+    let gLead2 = groupMine(s, owner, now, 2)
+    t.eqi("本部门别人的 doing 不进部长首页", gLead2.blocked.size, 2)
+    t.eqi("本部门别人的 doing 不计入 borrowed", gLead2.borrowed, 1)
 
     /* 逾期是派生量 */
     t.ok("未完成且过期 = 逾期", isTaskOverdue(t1, now))
     t.ok("已完成不算逾期", !isTaskOverdue(t7, now))
     t.ok("无截止不算逾期", !isTaskOverdue(t5, now))
+
+    /*
+     * D-5（2026-09-16）：逾期**天数**也由服务端下发
+     * （设计规格 P03「已逾期 2 天 · 该判断由服务端算出，客户端不重算」）。
+     * now = 2026-09-20 18:00，t1 的截止 = now - 3600 = 09-20 17:00 → 同日，0 天；
+     * 再压一条两天前的，验证日界差。
+     */
+    t.eqi("当天逾期 → overdue_days=0", overdueDaysOf(t1, now), 0)
+    let t12 = mkTask(12, owner, todayStart - 2 * 86400 + 3600, "doing")
+    t.eqi("两天前截止 → overdue_days=2", overdueDaysOf(t12, now), 2)
+    t.eqi("未逾期 → overdue_days=0", overdueDaysOf(t2, now), 0)
+    t.eqi("已完成 → overdue_days=0", overdueDaysOf(t7, now), 0)
+    /* 跨日但不足 24 小时的，按**日界**算 1 天（不是四舍五入成 0） */
+    let t13 = mkTask(13, owner, todayStart - 3600, "doing")
+    t.eqi("昨天 23:00 截止 → overdue_days=1", overdueDaysOf(t13, now), 1)
 
     t.ok("状态枚举合法", isTaskStatus("blocked"))
     t.ok("状态枚举非法", !isTaskStatus("doing50"))
@@ -968,7 +1230,42 @@ func testTasks(t: TR): Unit {
     let brief = taskBrief(s, t6, now).toString()
     t.ok("brief: blocked=true", containsAscii(brief, "\"blocked\":true"))
     t.ok("brief: is_overdue=false", containsAscii(brief, "\"is_overdue\":false"))
+    t.ok("brief: 含 overdue_days（D-5）", containsAscii(brief, "\"overdue_days\":0"))
+    /*
+     * P0（队友复验，2026-09-16）：阻塞原因必须进 TaskBrief。
+     * 设计规格 P01 的「阻塞中」卡片直接渲染阻塞原因高亮块；原先 blocker 只在 TaskDetail 里，
+     * 首页要显示它就得为每张卡再打一次详情接口。
+     */
+    t.ok("brief: 阻塞原因进 TaskBrief（P0 复验）", containsAscii(brief, "等场地审批"))
+    t.ok("brief: 非阻塞任务 blocker=null（P0 复验）",
+        containsAscii(taskBrief(s, t1, now).toString(), "\"blocker\":null"))
+    t.ok("brief: 无求助对象时 needs_help=null（D-4）", containsAscii(brief, "\"needs_help\":null"))
     t.ok("brief: 不含手机号", !containsAscii(brief, "\"phone\""))
+    /*
+     * D-4：求助对象 = 部门 + 人（设计规格 P03「需要帮助 · 宣传部 陈屿」）。
+     * 回退到"没有 needs_help 字段"时这三条会一起变红。
+     */
+    let helpDept = Department()
+    helpDept.id = 3
+    helpDept.name = "宣传部"
+    s.departments[3] = helpDept
+    let helper = mkMember(other, "member", 3)
+    helper.name = "陈屿"
+    s.members[other] = helper
+    t6.help_dept_id = 3
+    t6.help_member_id = other
+    let briefHelp = taskBrief(s, t6, now).toString()
+    t.ok("brief: needs_help 不是 null（D-4）", !containsAscii(briefHelp, "\"needs_help\":null"))
+    t.ok("brief: needs_help 含求助部门（D-4）", containsAscii(briefHelp, "宣传部"))
+    t.ok("brief: needs_help 含求助人（D-4）", containsAscii(briefHelp, "陈屿"))
+    /* 只到部门、不指定到人时 member 必须为 null（不是空对象） */
+    t6.help_member_id = 0
+    let briefDept = taskBrief(s, t6, now).toString()
+    t.ok("brief: 只到部门时 member=null（D-4）", containsAscii(briefDept, "\"member\":null"))
+    /* 离开 blocked 时由 handler 清空；这里钉住视图侧的语义：两者都为 0 → null */
+    t6.help_dept_id = 0
+    let briefCleared = taskBrief(s, t6, now).toString()
+    t.ok("brief: 清空后 needs_help=null（D-4）", containsAscii(briefCleared, "\"needs_help\":null"))
     let detail = taskDetail(s, t6, now).toString()
     t.ok("detail 含 blocker", containsAscii(detail, "等场地审批"))
     t.ok("detail 含 plan_path", containsAscii(detail, "plan_path"))
@@ -1303,6 +1600,30 @@ func testRbacAdaptation(t: TR): Unit {
     t.eqi("删除后用户数=2", st3.listUsers().size, 2)
     st3.close()
 
+    /*
+     * 2026-09-16（读码发现的数据安全缺口）：**文件存在但内容为空时绝不能重建种子**。
+     *
+     * `init` 原先用 `roles.size == 0` 判"首次打开"，于是"文件在、但 roles 键缺失或为空"
+     * （手工编辑过、或将来键名写错）会被当成首次打开 → seed() + save() →
+     * **用户真实数据被种子覆盖**。现在判据改成"文件不存在"，此断言即其闸门。
+     */
+    let emptyDir = "test-data-rbac-empty"
+    if (exists(emptyDir)) {
+        remove(emptyDir, recursive: true)
+    }
+    Directory.create(emptyDir, recursive: true)
+    let emptyPath = "${emptyDir}/rbac.json"
+    File.writeTo(emptyPath, "{\"users\":[],\"roles\":[],\"permissions\":[],\"role_permissions\":[]}".toArray())
+    let before = String.fromUtf8(File.readFrom(emptyPath))
+    let stEmpty = RbacStore(emptyPath)
+    let after = String.fromUtf8(File.readFrom(emptyPath))
+    t.eqi("RbacStore：roles 为空的既有文件 → 不灌种子（角色数 0）", stEmpty.listRoles().size, 0)
+    t.ok("RbacStore：roles 为空的既有文件 → 内容未被覆盖", before == after)
+    stEmpty.close()
+    if (exists(emptyDir)) {
+        remove(emptyDir, recursive: true)
+    }
+
     if (exists(dir)) {
         remove(dir, recursive: true)
     }
@@ -1372,8 +1693,12 @@ func testTokenPrune(t: TR): Unit {
     }
     let s = Store(dir)
     let now: Int64 = 1789898400
-    /* 用 2286 年当"永不过期"，避免测试依赖真实时钟（issueToken 内部会取 nowEpoch） */
-    let far = 9999999999999
+    /* 用 2286 年当"永不过期"，避免测试依赖真实时钟（issueToken 内部会取 nowEpoch）。
+     * 2026-09-16 订正：原先写的是 9999999999999（13 个 9，约公元 318857 年），
+     * 与注释里的 2286 年对不上，而且超出了 .NET DateTimeOffset 的表示范围 ——
+     * 本项目的时间换算虽是自实现、跑得动，但一个"注释说 2286、实际是 31 万年"的常量
+     * 迟早会误导人。10 个 9 = 9999999999 ≈ 2286-11-21，才是注释说的那个值。 */
+    let far = 9999999999
 
     for (i in 1..=3) {
         let r = TokenRecord()

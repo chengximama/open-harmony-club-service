@@ -8,36 +8,46 @@ package qingzhou
  * Copyright (c) 2026 guowei
  * BIT Foundational Software And Systems Lab
  *
- * 无状态 token 鉴权（前后端分离友好）：
- *   - issueToken(userId, secret)  签发 HMAC-SHA256 签名的 token（"userId.sig"）
- *   - verifyToken(token, secret)  校验并取回 userId（防篡改）
- *   - authRequired(secret)        中间件：校验 Authorization: Bearer <token>
+ * 无状态 token 鉴权（前后端分离友好），基于标准 JWT（HS256，带 exp 过期）：
+ *   - issueToken(userId, secret)      签发 JWT（默认 2 小时有效）
+ *   - issueTokenTtl(userId, secret, ttlSeconds) 签发指定时长的 JWT
+ *   - verifyToken(token, secret)      校验签名 + 过期，取回 userId
+ *   - authRequired(secret)            中间件：校验 Authorization: Bearer <token>
  *
- * 依赖 security.cj 的 signValue / verifySigned（HMAC-SHA256）。
  * 校验通过后把 userId 写入 ctx.state["userId"]，业务代码用
  * ctx.getStateOr("userId", "") 读取。
  */
 
-/* 签发 token。userId 建议不含 "."（signValue 用最后一个 "." 分割签名）。 */
+/* 默认 token 有效期（秒）：2 小时。 */
+public let DEFAULT_TOKEN_TTL: Int64 = 7200
+
+/* 签发 token（默认 2 小时有效）。 */
 public func issueToken(userId: String, secret: String): String {
-    return signValue(userId, secret)
+    return jwtIssue(userId, secret, DEFAULT_TOKEN_TTL)
 }
 
-/* 校验 token，签名匹配返回原始 userId，否则返回 None。 */
+/* 签发指定时长的 token。 */
+public func issueTokenTtl(userId: String, secret: String, ttlSeconds: Int64): String {
+    return jwtIssue(userId, secret, ttlSeconds)
+}
+
+/* 校验 token（签名 + 过期），通过返回 userId，否则 None。 */
 public func verifyToken(token: String, secret: String): ?String {
-    return verifySigned(token, secret)
+    return jwtVerify(token, secret)
 }
 
 /*
  * 鉴权中间件：要求 Authorization: Bearer <token>。
- * 只保护 /api 开头的路径（静态资源、SPA 页面直接放行），
+ * 只保护 /api 与 /admin 开头的路径（静态资源、SPA 页面直接放行），
  * 校验通过 -> ctx.state["userId"] 写入并放行；否则 401 并短路（不调 next）。
  */
 public func authRequired(secret: String): Middleware {
     return { ctx: Context, next: () -> Unit =>
-        // 仅对 /api 路径做鉴权，其余（静态/页面）放行。
+        // 仅对 /api、/admin 路径做鉴权，其余（静态/页面）放行。
         let p = ctx.path()
-        if (!(p.size >= 4 && p[0..4] == "/api")) {
+        let isApi = p.size >= 4 && p[0..4] == "/api"
+        let isAdmin = p.size >= 6 && p[0..6] == "/admin"
+        if (!isApi && !isAdmin) {
             next()
             return
         }

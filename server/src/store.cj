@@ -70,6 +70,18 @@ public class Task {
     public var dept_id: Int64 = 0
     public var status: String = "todo"    /* todo / doing / blocked / done */
     public var blocker: String = ""
+    /*
+     * 「需要帮助」的求助对象（D-4，2026-09-16）。
+     *
+     * 设计规格 P03 的阻塞块里有一行「需要帮助 · 宣传部 陈屿」——求助指向
+     * **某个部门**（必填其一），可以具体到**某个人**。只在 status = blocked 时有意义：
+     * 离开 blocked 时与 blocker 一起清空（同一个信息块，不该留下半截状态）。
+     *
+     * help_dept_id 允许由 help_member_id 推导（只填人时按该成员所在部门补齐），
+     * 这样「部长首页看本部门被求助项」永远只需要比一个字段。
+     */
+    public var help_dept_id: Int64 = 0   /* 0 = 未指定求助部门 */
+    public var help_member_id: Int64 = 0 /* 0 = 只到部门，不指定到人 */
     public var due_at: Int64 = 0
     public var updated_at: Int64 = 0
     public var completed_at: Int64 = 0
@@ -290,6 +302,8 @@ func taskToJson(t: Task): JsonObject {
     jPutInt(o, "dept_id", t.dept_id)
     jPutStr(o, "status", t.status)
     jPutStr(o, "blocker", t.blocker)
+    jPutInt(o, "help_dept_id", t.help_dept_id)
+    jPutInt(o, "help_member_id", t.help_member_id)
     jPutInt(o, "due_at", t.due_at)
     jPutInt(o, "updated_at", t.updated_at)
     jPutInt(o, "completed_at", t.completed_at)
@@ -310,6 +324,9 @@ func taskFromJson(o: JsonObject): Task {
     t.dept_id = reqIntOr(o, "dept_id", 0)
     t.status = reqStrOr(o, "status", "todo")
     t.blocker = reqStrOr(o, "blocker", "")
+    /* D-4：老库没有这两个字段 → reqIntOr 取默认 0，无需迁移 */
+    t.help_dept_id = reqIntOr(o, "help_dept_id", 0)
+    t.help_member_id = reqIntOr(o, "help_member_id", 0)
     t.due_at = reqIntOr(o, "due_at", 0)
     t.updated_at = reqIntOr(o, "updated_at", 0)
     t.completed_at = reqIntOr(o, "completed_at", 0)
@@ -542,7 +559,17 @@ func linkArrFromJson(o: JsonObject, key: String): HashMap<String, DeptInviteLink
             case Some(v) =>
                 try {
                     let x = linkFromJson(v.asObject())
-                    m[x.token] = x
+                    /*
+                     * 空 token 记录**跳过不放进 map**（2026-09-16 修，与 tokens / idem 两张表对齐）。
+                     * 原先无条件 `m[x.token] = x`，于是 token 为空的记录会被塞进 `""` 键下 ——
+                     * 数组条数与 map 条数一致，`checkLoaded` 看不出问题，
+                     * 结果是一条**损坏记录被静默接受**（还能被 `GET /api/v1/join/` 命中）。
+                     * 跳过之后两者数量不等，`checkLoaded` 会按既定口径拒绝启动 ——
+                     * 这正是那三张表共同的语义："宁可起不来，也不带残缺数据继续写"。
+                     */
+                    if (x.token.size > 0) {
+                        m[x.token] = x
+                    }
                 } catch (e: Exception) {
                     ()
                 }
@@ -623,6 +650,11 @@ public class Snapshot {
  *   rename，合计约 **3 倍文件大小**的 IO。实测：1000 人 2.51 MB → 单次写占锁 56 ms；
  *   3000 人 7.55 MB → 124 ms，而这段时间**所有请求都在排队**。
  *   现在只有"序列化"留在锁内（几毫秒到十几毫秒），IO 挪到锁外由 save_lock 串行。
+ *
+ * ⚠ **引用性能数字前先看 `docs/capacity-baseline.md`**：上面这组（含本文件里那处
+ *   1017 ms）来自更早的**临时脚本**，`capacity-baseline.md` §6.5 已明确宣布 1017 ms 作废、
+ *   §1 给出的是 0.51 MB(1000 人) / 1.54 MB(3000 人)，§4.1 还说明排序改造"落在噪声内、
+ *   不要当性能成果宣传"。这里的数字只当**当时的设计动机**看，结论一律以那份文档为准。
  *
  * 语义没有变：调用方仍然是"先 writeSnapshot、再响应"，所以
  * **响应 200 依旧代表已落盘** —— 这条强语义正是 L-7 当初把 IO 放进锁里的理由，
@@ -840,7 +872,12 @@ public func activeTaskById(s: Store, id: Int64): ?Task {
     }
 }
 
-/* 会长人数：规则 10「系统必须始终至少有一个 president」。 */
+/*
+ * 会长人数：规则 10「系统必须始终至少有一个 president」。
+ * 口径 = `role == "president"` 且 `status != "disabled"`（**pending 也算**：
+ * 但 `pending` 且 `role = "president"` 在各写入路径上都不可达 —— 注册给空角色、
+ * `assign`/PATCH 同时改 role 与 status、移交要求目标 active —— 所以这一条不影响判定）。
+ */
 public func presidentCount(s: Store): Int64 {
     var n: Int64 = 0
     for ((_k, m) in s.members) {
@@ -943,6 +980,20 @@ func siftDown<T>(arr: Array<T>, root0: Int64, end: Int64, key: (T) -> Int64): Un
 public let SORT_MIN: Int64 = 0
 public let SORT_MAX: Int64 = 10000
 
+/*
+ * 「未分配部门」（`dept_id = 0`，或部门已被删除）在成员排序里的哨兵值。
+ *
+ * ⚠ 必须**严格大于 `SORT_MAX`**（2026-09-16 修）。原先 `sortedMembers` 里写死 999，
+ * 而 sort 的合法上界是 10000 —— 只要有一个部门的 `sort ≥ 999`，
+ * 未分配成员就会排到那个部门**前面**，与"未分配部门排最后"的注释相反。
+ * （默认建的部门 sort 是 0、1、2…，所以这个裂缝平时看不见；但 `POST /depts` 允许
+ *   客户端显式传 sort，最大 10000，一传就暴露。）
+ *
+ * 取 `SORT_MAX + 1` 而不是更大的数：排序键是 `ds * 1000000 + id`，
+ * 这个量级离 Int64 上界还很远，不会溢出。
+ */
+public let SORT_UNASSIGNED: Int64 = SORT_MAX + 1
+
 func sortKeyClamp(v: Int64): Int64 {
     if (v < SORT_MIN) {
         return SORT_MIN
@@ -968,12 +1019,12 @@ public func sortedDepartments(s: Store): Array<Department> {
 public func sortedMembers(s: Store, list: ArrayList<Member>): Array<Member> {
     let arr = list.toArray()
     sortByKey<Member>(arr, { m: Member =>
-        var ds: Int64 = 999
+        var ds: Int64 = SORT_UNASSIGNED
         match (s.departments.get(m.dept_id)) {
-            case Some(d) => ds = d.sort
-            case None => ds = 999
+            case Some(d) => ds = sortKeyClamp(d.sort)
+            case None => ds = SORT_UNASSIGNED
         }
-        sortKeyClamp(ds) * 1000000 + m.id
+        ds * 1000000 + m.id
     })
     return arr
 }

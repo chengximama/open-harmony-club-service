@@ -40,6 +40,74 @@ public let REG_FAIL_LOCK_MAX: Int64 = 3600
 public let MAX_PBKDF2_INFLIGHT: Int64 = 8
 
 /*
+ * 密码长度口径（D-6，2026-09-16 定稿）：**8–32 字节**。
+ *
+ * 三个口径曾各不相同：
+ *   · UI 设计规格 P12 写「长度按字节计：6-32 位，中文一字 3 字节」
+ *   · api-design §2.3 注 5 写「≥ 8 字节」
+ *   · 实现是 `size >= 8`，**且没有上限** —— 超长密码随便进，与注册口令（6–32）不对称
+ * 定稿取两者的并集下界与设计稿的上界：**下限 8（沿用既有口令强度口径）、上限 32（采纳设计稿）**。
+ *
+ * ⚠ 按**字节**计（Cangjie 的 `String.size` 就是字节数）。
+ * 三个调用点（注册 / 本人改密 / init-admin）一律走 `passwordError`，
+ * 避免多处各写一遍而漂移（L-10 的教训：同一上限写死在多处，改的时候必漏）。
+ *
+ * 2026-09-16 追加**字符集**约束（见下）：只允许数字、英文与符号。
+ * 加了这条之后，"中文一字 3 字节"只影响**长度**怎么算；中文密码本身会被字符集挡掉。
+ */
+public let PASSWORD_MIN_BYTES: Int64 = 8
+public let PASSWORD_MAX_BYTES: Int64 = 32
+
+/*
+ * 允许的密码字符：**数字、英文、符号**（2026-09-16 追加）。
+ *
+ * 判定 = 每个字节都是**可见 ASCII**（0x21–0x7E）。于是：
+ *   · 中文（UTF-8 多字节）、全角字符一律被拒 —— 顺带避免输入法全角/半角造成
+ *     "看起来一模一样、登录却失败"这类最难排查的问题
+ *   · 空格（0x20）、TAB、换行也被排除：它们在表单里不可见，打错了用户看不出来
+ *
+ * 允许的符号就是这一区间里的可见 ASCII，例如 `._/\-!@#$%^&*()[]{}<>?~` 等。
+ */
+public func isAllowedPasswordChar(b: UInt8): Bool {
+    /* 33 = '!'，126 = '~'；只比字面量，不走 stdx（strx.cj 开头那条纪律） */
+    return b >= 33 && b <= 126
+}
+
+/* 字符集校验：返回空串表示合法，否则返回字段级提示。 */
+public func passwordCharsetError(pw: String): String {
+    for (b in pw.toArray()) {
+        if (!isAllowedPasswordChar(b)) {
+            return "密码只能使用数字、英文和符号（._/\\ 等），不能有空格、中文或全角字符"
+        }
+    }
+    return ""
+}
+
+/*
+ * 密码校验的**唯一入口**：长度（8–32 字节）+ 字符集（数字/英文/符号）。
+ * 返回空串表示合法，否则返回给用户看的字段级提示。
+ * 重置密码签发的临时密码是 8 位 ASCII（ids.cj 的 `randCode(8)`），落在区间内。
+ */
+public func passwordError(pw: String): String {
+    let lenErr = passwordLenError(pw)
+    if (lenErr.size > 0) {
+        return lenErr
+    }
+    return passwordCharsetError(pw)
+}
+
+/* 长度校验（被 passwordError 调用；单独公开是为了单测能分别钉住上下界）。 */
+public func passwordLenError(pw: String): String {
+    if (pw.size < PASSWORD_MIN_BYTES) {
+        return "密码至少 ${PASSWORD_MIN_BYTES} 位（按字节计）"
+    }
+    if (pw.size > PASSWORD_MAX_BYTES) {
+        return "密码最多 ${PASSWORD_MAX_BYTES} 位（按字节计）"
+    }
+    return ""
+}
+
+/*
  * 登录失败表清理（P1 M-3）。
  * 原先只增不减：每个被试过的手机号都留一条记录，锁定过期也不回收。
  * 这里把"窗口已过且锁定已解除"的记录删掉；平时（表很小）直接返回，不做无谓遍历。
@@ -174,13 +242,27 @@ func pbkdf2Leave(s: Store): Unit {
  * 实现已上移到 `ipFailBump`（N-21 让登录也复用同一套），这里只留说明。
  */
 
-/* 登录/注册成功的统一响应体。 */
-func respondLogin(ctx: Context, s: Store, m: Member, token: String, expiresAt: Int64, created: Bool): Unit {
+/*
+ * 登录/注册成功的统一响应体。
+ *
+ * `deptHintId`（D-16，2026-09-16）：注册时**实际采纳**的部门预填。
+ * 为什么要在响应里回显：预填的优先级有两条来源（招募链接 token / 客户端自报 dept_id），
+ * 若 token 恰好已停用，客户端自报的那个会**静默失效** —— 回显让"到底采纳了什么"
+ * 是可观察的，而不是让调用方自己猜（本项目一贯纪律：不静默忽略）。
+ * 登录不采纳预填，恒为 0 → `dept_hint: null`。
+ */
+func respondLogin(ctx: Context, s: Store, m: Member, token: String, expiresAt: Int64, created: Bool,
+                  deptHintId: Int64): Unit {
     let data = JsonObject()
     jPutStr(data, "token", token)
     jPutStr(data, "expires_at", isoLocal(expiresAt))
     jPutObj(data, "member", memberBrief(s, m))
     jPutObj(data, "permissions", permissionsOf(m))
+    if (deptHintId > 0) {
+        jPutObj(data, "dept_hint", deptBriefObj(s, deptHintId))
+    } else {
+        jPutNull(data, "dept_hint")
+    }
     if (created) {
         sendCreated(ctx, data)
     } else {
@@ -192,6 +274,12 @@ func respondLogin(ctx: Context, s: Store, m: Member, token: String, expiresAt: I
  * POST /api/v1/auth/register
  * 注册即登录，但账号是 pending、权限全 false，客户端应跳「等待管理员分配」页。
  * 请求体**不接受 role**——任何角色都必须由会长授予（api-design §2.3 注 4）。
+ *
+ * D-16（2026-09-16）：部门预填有**两条来源**，优先级如下：
+ *   ① `invite_token`（招募链接）→ 服务端自己解析，**优先**
+ *   ② `dept_id`（客户端自报）  → 仅在 token 缺失/无效/已停用时才采纳
+ * 链接仍只是"便利"：它不免除注册口令，也不赋予任何角色（api-design §3.7）。
+ * 采纳结果在响应 `data.dept_hint` 里回显，避免"客户端以为预填生效了"。
  */
 public func handleRegister(ctx: Context, s: Store): Unit {
     let body = reqObj(ctx)
@@ -204,14 +292,18 @@ public func handleRegister(ctx: Context, s: Store): Unit {
         v.check("phone", isPhone(phone), "手机号格式不正确")
     }
     if (pw.size > 0) {
-        v.check("password", pw.size >= 8, "密码至少 8 位")
+        /* D-6：8–32 字节 + 只用数字/英文/符号（原先只校验下限，超长与非 ASCII 一律放行） */
+        let pwErr = passwordError(pw)
+        v.check("password", pwErr.size == 0, pwErr)
     }
     v.done()
 
-    let deptHint = reqIntOr(body, "dept_id", 0)
+    let bodyDept = reqIntOr(body, "dept_id", 0)
+    let inviteToken = reqStrOr(body, "invite_token", "").trimAscii()
 
-    /* ---------- ① 锁内（极短）：口令存在性 + 按 IP 限流；只把口令拷出来 ---------- */
+    /* ---------- ① 锁内（极短）：口令存在性 + 按 IP 限流 + 解析招募链接；只把标量拷出来 ---------- */
     var expectedCode = ""
+    var invitedDept: Int64 = 0
     s.lock.lock()
     try {
         if (s.register_code.size == 0) {
@@ -236,6 +328,8 @@ public func handleRegister(ctx: Context, s: Store): Unit {
             throw apiErr("TOO_MANY_ATTEMPTS")
         }
         expectedCode = s.register_code
+        /* D-16：链接由服务端解析（停用/不存在 → 0，自动退回客户端自报的 dept_id） */
+        invitedDept = resolveInviteDept(s, inviteToken)
     } finally {
         s.lock.unlock()
     }
@@ -272,15 +366,25 @@ public func handleRegister(ctx: Context, s: Store): Unit {
         m.status = "pending"
         m.role = ""
         m.dept_id = 0
-        if (deptHint > 0 && s.departments.contains(deptHint)) {
-            m.dept_hint = deptHint
+        /*
+         * D-16 的优先级落地：链接解析出来的部门**优先于**客户端自报的 dept_id。
+         * 两条都不可用时预填为空（不阻断注册 —— 链接只是便利，口令才是准入）。
+         */
+        var hintTaken: Int64 = 0
+        if (invitedDept > 0 && s.departments.contains(invitedDept)) {
+            hintTaken = invitedDept
+        } else if (bodyDept > 0 && s.departments.contains(bodyDept)) {
+            hintTaken = bodyDept
+        }
+        if (hintTaken > 0) {
+            m.dept_hint = hintTaken
         }
         m.joined_at = nowEpoch()
         s.members[m.id] = m
 
         let issued = issueToken(s, m.id)
         storeSave(s)
-        respondLogin(ctx, s, m, issued[0], issued[1], true)
+        respondLogin(ctx, s, m, issued[0], issued[1], true, hintTaken)
     } finally {
         s.lock.unlock()
     }
@@ -429,7 +533,8 @@ public func handleLogin(ctx: Context, s: Store): Unit {
          */
         let issued = issueToken(s, m.id)
         storeSave(s)
-        respondLogin(ctx, s, m, issued[0], issued[1], false)
+        /* 登录不采纳部门预填 → dept_hint 恒为 null */
+        respondLogin(ctx, s, m, issued[0], issued[1], false, 0)
     } finally {
         s.lock.unlock()
     }
@@ -473,7 +578,9 @@ public func handleChangePassword(ctx: Context, s: Store): Unit {
     let oldPw = v.need("old_password", reqStrOr(body, "old_password", ""), "请输入原密码")
     let newPw = v.need("new_password", reqStrOr(body, "new_password", ""), "请输入新密码")
     if (newPw.size > 0) {
-        v.check("new_password", newPw.size >= 8, "密码至少 8 位")
+        /* D-6：与注册同一口径（8–32 字节 + 数字/英文/符号），走同一个纯函数 */
+        let pwErr = passwordError(newPw)
+        v.check("new_password", pwErr.size == 0, pwErr)
     }
     v.done()
 

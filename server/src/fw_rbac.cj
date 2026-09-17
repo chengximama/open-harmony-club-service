@@ -21,6 +21,20 @@ package qingzhou
  *   判定逻辑（方法 + 路径前缀匹配、其余透传）与原版逐行一致。
  *
  * 依赖 authRequired() 先把用户 id 写进 ctx.state["userId"]（与原版同约定）。
+ *
+ * ⚠ **本文件当前没有被使用，别照字面以为它生效**（2026-09-16 核实并记下）
+ *   · 全仓只有 2 处 `requirePermission` 定义：这里，以及 vendored 轻舟的 `src/rbac.cj`。
+ *     `main.cj` 的中间件链里**没有它**；`RbacStore` 只在 `tests.cj` 的
+ *     `testRbacAdaptation` 里被构造过。
+ *   · 本项目的授权走的是自己那一套：`perms.cj` 的 `can(member, action, target)`
+ *     （README 的设计原则"权限判定收敛到一个函数"）。
+ *   · 真要把它挂上，**必须先有东西往 `ctx.state["userId"]` 写值** ——
+ *     `server/src` 里没有任何 `setState`，而 vendored 轻舟的 `authRequired(secret)`
+ *     （third_party/qingzhou/src/auth.cj）是无状态 HMAC 签名令牌，与我们的
+ *     服务端令牌表（`auth.cj` 的 `issueToken`）不是一套。
+ *     直接挂上去的结果是**所有受保护请求 100% 401**。
+ *   · 所以它的定位是：编译接缝（保证与上游同名同签名、升级时能对齐）+ 反面教材。
+ *     拿到可用的 CangDB、决定改用轻舟 RBAC 时，才按 fw_rbac_store.cj 文件头的三步回退。
  */
 
 import std.convert.*

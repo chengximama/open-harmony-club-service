@@ -930,6 +930,177 @@ public func runAllUnitTests(): Int64 {
         checkTrue(threw)
     })
 
+    // ============  JWT scenarios ============
+    failed += runCase("jwt_issue_is_three_part_standard", { =>
+        let t = jwtIssue("42", "secret", 3600)
+        checkTrue(t.split(".", 3, removeEmpty: false).size == 3)
+    })
+
+    failed += runCase("jwt_verify_roundtrip_returns_sub", { =>
+        let t = jwtIssue("42", "secret", 3600)
+        match (jwtVerify(t, "secret")) {
+            case Some(sub) => checkTrue(sub == "42")
+            case None => checkTrue(false)
+        }
+    })
+
+    failed += runCase("jwt_verify_rejects_tampered_payload", { =>
+        let t = jwtIssue("42", "secret", 3600)
+        let parts = t.split(".", 3, removeEmpty: false)
+        let tampered = parts[0] + "." + parts[1] + "X" + "." + parts[2]
+        checkTrue(jwtVerify(tampered, "secret").isNone())
+    })
+
+    failed += runCase("jwt_verify_rejects_wrong_secret", { =>
+        let t = jwtIssue("42", "secret", 3600)
+        checkTrue(jwtVerify(t, "other-secret").isNone())
+    })
+
+    failed += runCase("jwt_verify_rejects_expired", { =>
+        let t = jwtIssue("42", "secret", -60)   // 60 秒前已过期
+        checkTrue(jwtVerify(t, "secret").isNone())
+    })
+
+    failed += runCase("jwt_verify_rejects_malformed", { =>
+        checkTrue(jwtVerify("not-a-jwt", "secret").isNone())
+        checkTrue(jwtVerify("a.b", "secret").isNone())
+    })
+
+    // ============  RateLimit / SecurityHeaders scenarios ============
+    failed += runCase("ratelimit_allows_under_limit", { =>
+        let mw = rateLimit(5, 60)
+        let callCount = ArrayList<String>()
+        mw(Context(), { => callCount.add("x") })
+        mw(Context(), { => callCount.add("x") })
+        mw(Context(), { => callCount.add("x") })
+        checkEq(Int64(callCount.size), Int64(3))
+    })
+
+    failed += runCase("ratelimit_blocks_over_limit", { =>
+        let mw = rateLimit(2, 60)
+        let callCount = ArrayList<String>()
+        mw(Context(), { => callCount.add("x") })
+        mw(Context(), { => callCount.add("x") })
+        mw(Context(), { => callCount.add("x") })   // 第 3 次应被限流短路
+        checkEq(Int64(callCount.size), Int64(2))
+    })
+
+    failed += runCase("securityheaders_sets_default_headers", { =>
+        let ctx = Context()
+        securityHeaders()(ctx, { => () })
+        let headers = ctx._peekHeaders()
+        match (headers.get("X-Content-Type-Options")) {
+            case Some(v) => checkEq(v, "nosniff")
+            case None => checkTrue(false)
+        }
+        match (headers.get("X-Frame-Options")) {
+            case Some(v) => checkEq(v, "DENY")
+            case None => checkTrue(false)
+        }
+    })
+
+    failed += runCase("securityheaders_optional_csp", { =>
+        let opts = SecurityHeadersOptions()
+        opts.contentSecurityPolicy = "default-src 'self'"
+        let ctx = Context()
+        securityHeadersOpts(opts)(ctx, { => () })
+        match (ctx._peekHeaders().get("Content-Security-Policy")) {
+            case Some(v) => checkEq(v, "default-src 'self'")
+            case None => checkTrue(false)
+        }
+    })
+
+    failed += runCase("context_remote_addr_empty_without_http", { =>
+        let ctx = Context()
+        checkEq(ctx.remoteAddr(), "")
+        checkEq(ctx.remoteIp(), "")
+    })
+
+    // ============  CircuitBreaker scenarios ============
+    failed += runCase("circuit_opens_after_max_failures", { =>
+        let cb = CircuitBreaker(3, 60)
+        cb.onFailure()
+        cb.onFailure()
+        checkEq(cb.stateName(), "closed")
+        cb.onFailure()
+        checkEq(cb.stateName(), "open")
+        checkTrue(!cb.isAllowed())
+    })
+
+    failed += runCase("circuit_success_resets", { =>
+        let cb = CircuitBreaker(3, 60)
+        cb.onFailure()
+        cb.onFailure()
+        cb.onSuccess()
+        checkEq(cb.stateName(), "closed")
+    })
+
+    failed += runCase("circuit_half_open_after_cooldown", { =>
+        let cb = CircuitBreaker(2, 0)   // 冷却 0 秒，立即可试探
+        cb.onFailure()
+        cb.onFailure()
+        checkEq(cb.stateName(), "open")
+        checkTrue(cb.isAllowed())
+        checkEq(cb.stateName(), "half-open")
+    })
+
+    failed += runCase("circuit_half_open_failure_reopens", { =>
+        let cb = CircuitBreaker(2, 0)
+        cb.onFailure()
+        cb.onFailure()
+        checkTrue(cb.isAllowed())
+        cb.onFailure()
+        checkEq(cb.stateName(), "open")
+    })
+
+    failed += runCase("circuit_half_open_success_closes", { =>
+        let cb = CircuitBreaker(2, 0)
+        cb.onFailure()
+        cb.onFailure()
+        checkTrue(cb.isAllowed())
+        cb.onSuccess()
+        checkEq(cb.stateName(), "closed")
+    })
+
+    // ============  WebSocket scenarios ============
+    failed += runCase("websocket_upgrade_none_without_http", { =>
+        checkTrue(upgradeWebSocket(Context()).isNone())
+    })
+
+    // ============  Hybrid auth scenarios ============
+    failed += runCase("resolve_identity_from_session", { =>
+        let store = SessionStore()
+        let sid = store.create()
+        store.set(sid, "userId", "42")
+        let ctx = Context()
+        ctx.setState("sid", sid)
+        match (resolveIdentity(ctx, "secret", store)) {
+            case Some(u) => checkEq(u, "42")
+            case None => checkTrue(false)
+        }
+    })
+
+    failed += runCase("resolve_identity_none", { =>
+        let store = SessionStore()
+        checkTrue(resolveIdentity(Context(), "secret", store).isNone())
+    })
+
+    failed += runCase("require_session_blocks_without_sid", { =>
+        let store = SessionStore()
+        let calls = ArrayList<String>()
+        requireSession("secret", store)(Context(), { => calls.add("x") })
+        checkEq(Int64(calls.size), Int64(0))
+    })
+
+    // ============  HttpClient helper scenarios ============
+    failed += runCase("http_isSuccess_boundaries", { =>
+        checkTrue(isSuccess(UInt16(200)))
+        checkTrue(isSuccess(UInt16(299)))
+        checkTrue(!isSuccess(UInt16(199)))
+        checkTrue(!isSuccess(UInt16(300)))
+        checkTrue(!isSuccess(UInt16(404)))
+    })
+
     println("---")
     if (failed == 0) {
         println("All ${g_total} unit-test scenarios PASSED")

@@ -73,6 +73,23 @@ public class Target {
  */
 func roleRank(role: String): Int64 {
     if (role == "president") { return 5 }
+    /*
+     * 运维（ops）—— 2026-09-16 新增的内置身份，**与会长同档**。
+     *
+     * 为什么需要它：运维不该由会长本人执行（职责分离）。运维人员用后台自己的
+     * 账号（admin/admin123）登录运维台，后台再用这个专用账号去调 club-server；
+     * 审计里 actor 就是运维账号，一眼能看出"这是运维做的、不是会长做的"。
+     *
+     * 权限口径（用户 2026-09-16 定）：**除「移交会长」外与会长同权**。
+     * 同档的直接后果是 checkAccess 里那道"不可作用于同档或更高档"的闸会拦住
+     * 运维处置会长 —— 而"会长忘口令、运维帮他重置"正是要支持的场景，
+     * 所以那里对运维单独放行（见 checkAccess 的 isOps 分支）。
+     *
+     * 这一档**不可由 API 分配**（views.cj 的 isKnownRole 里没有它），
+     * 只能由本机命令 `club-server init-ops` 创建 —— 否则会长就能造出
+     * 一个权限略高于自己的账号，等于绕过"会长只能通过移交产生"这条约束。
+     */
+    if (role == "ops") { return 5 }
     if (role == "vice_president") { return 4 }
     if (role == "lead") { return 3 }
     if (role == "vice_lead") { return 3 }
@@ -96,6 +113,10 @@ func outranks(actor_role: String, target_role: String): Bool {
     if (actor_role == "president") {
         return true
     }
+    /* 运维与会长同档：同样"可处置任何人"（其余约束由 roleAllows 与 checkAccess 管） */
+    if (actor_role == "ops") {
+        return true
+    }
     /* 目标档位未知（空串）：宁拒不放过，避免将来某个新 handler 忘填 target_role
      * 就把这条规则悄悄绕过。 */
     if (target_role == "") {
@@ -108,6 +129,20 @@ func outranks(actor_role: String, target_role: String): Bool {
 func roleAllows(role: String, a: Action, t: Target): Bool {
     if (role == "president") {
         return true
+    }
+    if (role == "ops") {
+        /*
+         * 运维：除「移交会长」外**与会长同权**（2026-09-16）。
+         *
+         * 移交会长是治理动作 —— 谁当会长由会长自己决定，运维不参与。
+         * 这也是这一档相对会长**唯一**的减法：部门增删改、改注册口令、
+         * 处置任何成员（含会长与其他运维账号）都放行。
+         * （用 match 而不是 `a == TransferPresidency`：这个枚举没有派生 == 运算符。）
+         */
+        match (a) {
+            case TransferPresidency => return false
+            case _ => return true
+        }
     }
     if (role == "vice_president") {
         /* 与会长同权，只有这几处例外 */
@@ -165,12 +200,26 @@ func roleAllows(role: String, a: Action, t: Target): Bool {
 
 /* 部门范围维度。 */
 func scopeAllows(m: Member, a: Action, t: Target): Bool {
-    /* 名录全社团可见——这是"社团里有哪些人"这个问题的答案（api-design §3.2） */
+    /*
+     * **读**范围对全体 active 成员开放（2026-09-16，按 UI 设计规格 D-3）。
+     *
+     * 名录（ViewMembers）与任务 / 课题（ViewTasks）都是「全社团可见」：
+     *   · P06 成员名录副行「共 42 位 · 全社团可见」；
+     *   · P02 任务列表副行「共 38 项 · 全社团范围可见」，卡片本身是别的部门的任务；
+     *   · P04 课题树用「全部」筛出**非本部门**的课题；
+     *   · P03「部长在首页即可看到这条」——跨部门可见。
+     * 原先只有名录放开（v1-scope §3.4.3 写「任务/课题：部长及以下本部门」），
+     * 本次按设计稿放开，两份文档已同步。
+     *
+     * ⚠ 放开的只是**读**。写（改状态 / 编辑 / 删除 / 移动 / 分配）仍走下面的
+     *   部门、创建人、负责人判定 —— 否则会推翻 P05/P07 的「处置动作按档位」模型。
+     */
     match (a) {
         case ViewMembers => return true
+        case ViewTasks => return true
         case _ => ()
     }
-    if (m.role == "president" || m.role == "vice_president") {
+    if (m.role == "president" || m.role == "vice_president" || m.role == "ops") {
         return true
     }
     /* 自己的任务状态：与部门无关（跨部门被指派时也要能更新） */
@@ -260,7 +309,15 @@ public func checkAccess(m: Member, a: Action, t: Target): ?String {
         case _ => false
     }
     let isSelf = t.is_self || (t.member_id > 0 && t.member_id == m.id)
-    if (peerForbidden && !isSelf) {
+    /*
+     * 运维（ops）不受"同档或更高档"这道闸的限制（2026-09-16）：
+     * 它的权限口径是"除移交会长外与会长同权"，而会长能处置自己以外的任何人 ——
+     * 运维要能重置会长的口令（会长忘口令是典型运维场景）、要能处置其他运维账号。
+     * 下面那条"重置密码连自己也不许"对它**照旧生效**（那不是档位问题，
+     * 而是"作废自己全部令牌 = 响应 200 后自己当场掉线"）。
+     */
+    let isOps = (m.role == "ops")
+    if (peerForbidden && !isSelf && !isOps) {
         if (roleRank(t.target_role) >= roleRank(m.role)) {
             return Some("FORBIDDEN_ROLE")
         }

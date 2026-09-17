@@ -23,7 +23,7 @@ $env:DEVECO_SDK_HOME = "$ds\sdk"; $env:JAVA_HOME = "$ds\jbr"; $env:PATH = "$ds\j
 cd server
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 cd build
-.\club-server.exe init-admin 13800000000 你的口令 dev-data
+.\club-server.exe init-admin 13800000000 ClubPass2026 dev-data
 .\club-server.exe serve 8080 dev-data
 ```
 

@@ -58,13 +58,19 @@ public func deptBriefObj(s: Store, deptId: Int64): JsonObject {
 public func permissionsOf(m: Member): JsonObject {
     let p = JsonObject()
     let active = m.status == "active"
-    let global = active && (m.role == "president" || m.role == "vice_president")
+    let global = active && (m.role == "president" || m.role == "vice_president" || m.role == "ops")
     let deptAdmin = active && (m.role == "lead" || m.role == "vice_lead")
+    /*
+     * view_scope：**active 成员一律 all**（2026-09-16，D-3）。
+     *
+     * 原文在 global / deptAdmin 上分档（all / dept），那是"任务与课题按部门可见"时代的产物。
+     * 现在读范围已全社团开放（perms.cj 的 scopeAllows），再下发 dept 会让客户端在 P02
+     * 渲染成「本部门范围可见」，与设计稿的「全社团范围可见」不符。
+     * 角色之间的差别体现在**动作布尔**上，不再体现在可见范围上。
+     */
     var scope = "none"
-    if (global) {
+    if (active) {
         scope = "all"
-    } else if (deptAdmin || (active && m.role == "member")) {
-        scope = "dept"
     }
     jPutStr(p, "view_scope", scope)
     jPutBool(p, "manage_members", global)
@@ -81,6 +87,23 @@ public func permissionsOf(m: Member): JsonObject {
     jPutBool(p, "create_plan", global || deptAdmin)
     jPutBool(p, "create_task", global || deptAdmin)
     jPutBool(p, "update_any_task", global || deptAdmin)
+    /*
+     * 「管理」页四张分区卡按权限显示（D-1，2026-09-16）。
+     *
+     * 设计规格 P10 要求「按权限显示的管理入口」，P09 的管理页是四张分区卡：
+     *   部门与组织 / 注册口令 / 招募链接 / 会长移交。
+     * 只下发 manage_members 是不够的 —— 副会长 manage_members 为真，会看到
+     * 「部门与组织」入口，点下去却被 403（部门增删改是会长独占）。这正是设计稿
+     * 要避免的"看得到点不动"。
+     *
+     * 五个布尔**全部由 can() 推导**，不在这里手写角色判断（权限判定只有一处）。
+     */
+    let none = Target()
+    jPutBool(p, "manage_depts", active && can(m, Action.ManageDept, none))
+    jPutBool(p, "view_register_code", active && can(m, Action.ViewRegisterCode, none))
+    jPutBool(p, "change_register_code", active && can(m, Action.ChangeRegisterCode, none))
+    jPutBool(p, "manage_invite_links", active && can(m, Action.ManageInviteLink, none))
+    jPutBool(p, "transfer_presidency", active && can(m, Action.TransferPresidency, none))
     return p
 }
 
@@ -88,6 +111,9 @@ public func permissionsOf(m: Member): JsonObject {
 public func roleLabel(role: String): String {
     if (role == "president") {
         return "会长"
+    }
+    if (role == "ops") {
+        return "运维"
     }
     if (role == "vice_president") {
         return "副会长"
@@ -167,19 +193,35 @@ public func deptListView(s: Store): JsonObject {
     return data
 }
 
-/* 成员详情：MemberBrief + 计数摘要（只给计数，明细属于 Part 4 的列表接口）。 */
-public func memberDetailView(s: Store, m: Member): JsonObject {
+/*
+ * 成员详情：MemberBrief + 计数摘要（只给计数，明细属于 Part 4 的列表接口）。
+ *
+ * D-7（2026-09-16）：设计规格 P07 的身份卡是
+ * 「2025-09 加入 · 未完成 5 · 逾期 1 · 已完成 12」——**四个数**。
+ * 原先只给 owned_tasks（含已完成的总数）与 open_tasks，于是
+ *   ① 「已完成」客户端能用 owned-open 凑出来，但 ② 「逾期」凑不出来，
+ *      只能再打一次 GET /tasks?owner_id=X&overdue=true 去读 total。
+ * 现在两个数都在这里一次算完（同一次遍历，成本为零）。
+ */
+public func memberDetailView(s: Store, m: Member, now: Int64): JsonObject {
     let o = JsonObject()
     jPutObj(o, "member", memberBrief(s, m))
     var owned: Int64 = 0
     var open: Int64 = 0
+    var done: Int64 = 0
+    var overdue: Int64 = 0
     for ((_k, t) in s.tasks) {
         if (t.deleted_at > 0 || t.owner_id != m.id) {
             continue
         }
         owned += 1
-        if (t.status != "done") {
-            open += 1
+        if (t.status == "done") {
+            done += 1
+            continue
+        }
+        open += 1
+        if (isTaskOverdue(t, now)) {
+            overdue += 1
         }
     }
     var plans: Int64 = 0
@@ -191,6 +233,8 @@ public func memberDetailView(s: Store, m: Member): JsonObject {
     let st = JsonObject()
     jPutInt(st, "owned_tasks", owned)
     jPutInt(st, "open_tasks", open)
+    jPutInt(st, "done_tasks", done)
+    jPutInt(st, "overdue_tasks", overdue)
     jPutInt(st, "owned_plans", plans)
     jPutObj(o, "stats", st)
     return o
@@ -274,7 +318,54 @@ public func planPath(s: Store, planId: Int64): JsonArray {
     return arr
 }
 
-/* TaskBrief（api-design §4.9）。`is_overdue` 与 `blocked` 都是服务端算好的派生量。 */
+/*
+ * 逾期**天数**（D-5，2026-09-16）。
+ *
+ * 设计规格 P01 卡片「逾期 2 天」、P03 提示条「已逾期 2 天 · 该判断由服务端算出，
+ * 客户端不重算」——所以天数也必须由服务端下发，不能让客户端拿 due_at 和本地时钟比。
+ *
+ * 口径 = **本地日界的整数差**（不是 24 小时取整）：
+ *   09-12 18:00 截止、09-14 09:00 现在 → 2 天（设计稿的示例正是这个数）
+ *   今天 09:00 截止、今天 18:00 现在 → 0 天（is_overdue=true 且 days=0 表示"今天逾期"，
+ *   客户端据此显示「已逾期」而不是「逾期 0 天」）
+ * 未逾期一律 0。
+ */
+public func overdueDaysOf(t: Task, now: Int64): Int64 {
+    if (!isTaskOverdue(t, now)) {
+        return 0
+    }
+    let d = (startOfLocalDay(now) - startOfLocalDay(t.due_at)) / DAY_SECONDS
+    if (d < 0) {
+        return 0
+    }
+    return d
+}
+
+/*
+ * 「需要帮助」视图（D-4，2026-09-16）。
+ *
+ * 设计规格 P03 的阻塞原因块里有一行「需要帮助 · 宣传部 陈屿」——求助对象是
+ * **部门 + 人**（人到可选）。没有求助对象时给 null，客户端据此决定渲不渲染这一行。
+ */
+public func needsHelpObj(s: Store, t: Task): JsonObject {
+    let h = JsonObject()
+    if (t.help_dept_id > 0) {
+        jPutObj(h, "dept", deptBriefObj(s, t.help_dept_id))
+    } else {
+        jPutNull(h, "dept")
+    }
+    if (t.help_member_id > 0) {
+        match (s.members.get(t.help_member_id)) {
+            case Some(hm) => jPutObj(h, "member", memberBrief(s, hm))
+            case None => jPutNull(h, "member")
+        }
+    } else {
+        jPutNull(h, "member")
+    }
+    return h
+}
+
+/* TaskBrief（api-design §4.9）。`is_overdue` / `overdue_days` / `blocked` 都是服务端算好的派生量。 */
 public func taskBrief(s: Store, t: Task, now: Int64): JsonObject {
     let o = JsonObject()
     jPutInt(o, "id", t.id)
@@ -299,20 +390,35 @@ public func taskBrief(s: Store, t: Task, now: Int64): JsonObject {
     }
     jPutTime(o, "due_at", t.due_at)
     jPutBool(o, "is_overdue", isTaskOverdue(t, now))
+    jPutInt(o, "overdue_days", overdueDaysOf(t, now))
     jPutBool(o, "blocked", t.status == "blocked")
-    jPutTime(o, "updated_at", t.updated_at)
-    return o
-}
-
-/* TaskDetail = TaskBrief + desc / blocker / plan_path / created_by / created_at / completed_at */
-public func taskDetail(s: Store, t: Task, now: Int64): JsonObject {
-    let o = taskBrief(s, t, now)
-    jPutStr(o, "desc", t.desc)
+    /*
+     * blocker 必须进 TaskBrief（2026-09-16，队友复验 P0）。
+     *
+     * 设计规格 P01 的「阻塞中」分组卡片里**直接渲染阻塞原因高亮块**
+     * （「阻塞原因（进入 blocked 必填）」+ 原因原文）。原先 blocker 只在 TaskDetail 里，
+     * 首页想让这张卡显示原因，就得为每张卡再打一次 GET /tasks/{id} ——
+     * 而 P01 的原话正是「服务端已排好序，客户端只渲染、不重算」，
+     * 首页本来就该一次拿全。非阻塞任务给 null（不是空串）。
+     */
     if (t.blocker.size > 0) {
         jPutStr(o, "blocker", t.blocker)
     } else {
         jPutNull(o, "blocker")
     }
+    if (t.help_dept_id > 0 || t.help_member_id > 0) {
+        jPutObj(o, "needs_help", needsHelpObj(s, t))
+    } else {
+        jPutNull(o, "needs_help")
+    }
+    jPutTime(o, "updated_at", t.updated_at)
+    return o
+}
+
+/* TaskDetail = TaskBrief + desc / plan_path / created_by / created_at / completed_at */
+public func taskDetail(s: Store, t: Task, now: Int64): JsonObject {
+    let o = taskBrief(s, t, now)
+    jPutStr(o, "desc", t.desc)
     o.put("plan_path", planPath(s, t.plan_id))
     match (s.members.get(t.created_by)) {
         case Some(m) => jPutObj(o, "created_by", memberBrief(s, m))

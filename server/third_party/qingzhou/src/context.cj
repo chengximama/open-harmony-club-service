@@ -168,6 +168,29 @@ public class Context {
         }
     }
 
+    /*
+     * 客户端地址（stdx HttpRequest.remoteAddr，格式 "ip:port"）。
+     * 无 http ctx 时返回 ""。限流等场景可用 remoteIp() 取纯 IP。
+     */
+    public func remoteAddr(): String {
+        match (http) {
+            case Some(h) => h.request.remoteAddr
+            case None => ""
+        }
+    }
+
+    /*
+     * 客户端 IP（从 "ip:port" 中剥离端口）。处理可能的 "ip: port" 空格
+     * 与 IPv6（取最后一个 ':' 之前的部分）。无地址时返回 ""。
+     */
+    public func remoteIp(): String {
+        let addr = remoteAddr()
+        match (addr.lastIndexOf(":")) {
+            case Some(i) => return addr[0..i].trimAscii()
+            case None => return addr.trimAscii()
+        }
+    }
+
     /* ---------- query string (v0.2 P1) ---------- */
 
     /*

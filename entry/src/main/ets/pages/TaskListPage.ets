@@ -30,6 +30,9 @@ export default struct TaskListPage {
   @State members: MemberBrief[] = []
   @State plansFlat: PlanRef[] = []
 
+  // 由外层 TabBar 注入：切换 Tab / 从子页返回时 +1，触发重新拉取
+  @Prop @Watch('onRefreshSignal') refreshSignal: number = 0
+
   private taskApi: TaskApi = new TaskApi()
   private deptApi: DeptApi = new DeptApi()
   private memberApi: MemberApi = new MemberApi()
@@ -46,6 +49,10 @@ export default struct TaskListPage {
   aboutToAppear(): void {
     this.loadTasks()
     this.loadOptions()
+  }
+
+  onRefreshSignal(): void {
+    this.loadTasks()
   }
 
   private buildParams(): TaskListParams {
