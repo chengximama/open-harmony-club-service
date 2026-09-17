@@ -527,6 +527,21 @@ struct DeptManageSection {
     .alignItems(HorizontalAlign.Center)
   }
 
+  @Builder
+  deptDialogBuilder() {
+    if (this.showCreateDialog) {
+      this.createDialogBuilder()
+    } else if (this.showEditDialog) {
+      this.editDialogBuilder()
+    } else if (this.showSortDialog) {
+      this.sortDialogBuilder()
+    } else if (this.showDeleteBlocked) {
+      this.deleteBlockedBuilder()
+    } else if (this.showDeleteConfirm) {
+      this.deleteConfirmBuilder()
+    }
+  }
+
   build() {
     Column() {
       Row() {
@@ -633,11 +648,11 @@ struct DeptManageSection {
     .backgroundColor(Color.surface)
     .border({ width: 1, color: Color.divider })
     .borderRadius(Radius.card)
-    .bindContentCover(this.showCreateDialog, this.createDialogBuilder)
-    .bindContentCover(this.showEditDialog, this.editDialogBuilder)
-    .bindContentCover(this.showSortDialog, this.sortDialogBuilder)
-    .bindContentCover(this.showDeleteBlocked, this.deleteBlockedBuilder)
-    .bindContentCover(this.showDeleteConfirm, this.deleteConfirmBuilder)
+    .bindContentCover(
+      this.showCreateDialog || this.showEditDialog || this.showSortDialog ||
+        this.showDeleteBlocked || this.showDeleteConfirm,
+      this.deptDialogBuilder
+    )
   }
 }
 
