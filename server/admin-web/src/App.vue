@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 const route = useRoute()
@@ -7,9 +7,25 @@ const router = useRouter()
 
 const isLogin = computed(() => route.path === '/login')
 
-const me = JSON.parse(localStorage.getItem('qz_me') || '{}')
-// 运维页只放给 admin 角色（后端 /api/club/** 也是这个口径，这里只是别让入口误导人）
-const canOps = computed(() => me.can_ops === true || me.role === 'admin')
+/*
+ * me 必须是**响应式**的：登录成功走的是 SPA 跳转（router.push('/')），不会刷新页面，
+ * 而本组件只挂载一次 —— 原先写成 `const me = JSON.parse(...)`（一次性快照），
+ * 于是"刚登录完"这一刻读到的还是登录前的空对象：侧边栏不会出现「社团管理」入口，
+ * 必须手动刷新一次才有。这里改成 ref + 跟随路由重读。
+ */
+const me = ref(JSON.parse(localStorage.getItem('qz_me') || '{}'))
+watch(() => route.path, () => {
+  me.value = JSON.parse(localStorage.getItem('qz_me') || '{}')
+})
+
+// 运维页放给 admin 角色，或"直接用运维账号登录"的身份（后端 /api/club/** 同口径）
+const canOps = computed(() => me.value.can_ops === true || me.value.role === 'admin')
+/*
+ * 运维账号登录的身份不在后台的 rbac.json 里，后台管理接口（/api/users 等）对它一律 401，
+ * 而 api.js 遇到 401 会跳回登录页 —— 所以这里直接把入口藏掉，
+ * 免得点一下「用户管理」就被弹回登录页（看着像"登录失效了"）。
+ */
+const isOpsAccount = computed(() => me.value.is_ops_account === true)
 
 function logout() {
   localStorage.removeItem('qz_token')
@@ -26,7 +42,7 @@ function logout() {
       <div class="brand">轻舟后台</div>
       <nav>
         <router-link to="/">仪表盘</router-link>
-        <router-link to="/users">用户管理</router-link>
+        <router-link v-if="!isOpsAccount" to="/users">用户管理</router-link>
         <router-link v-if="canOps" to="/club">社团管理</router-link>
       </nav>
       <div class="who">

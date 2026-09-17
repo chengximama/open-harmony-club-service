@@ -62,7 +62,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1     # 容�
 cd server
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target admin   # 编运维台（会带上 server\admin-web\dist）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\admin-check.ps1     # 后台自身（RBAC + JSON 数据层）29 项
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\ops-check.ps1       # 「社团管理」运维页 52 项（含运维账号的写路径）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\ops-check.ps1       # 「社团管理」运维页 64 项（含运维账号登录 / 写路径）
 ```
 
 > 改了前端源码（`server\admin-web\src`）要重建 `dist`（需要 Node）：
@@ -164,20 +164,25 @@ cd build\admin
   （PBKDF2，存在 `data\db.json`）**不是一套**，两边不能互用。
 - **后台自身的数据层是本地 JSON 文件**（`build\admin\admin-data\rbac.json`）：沧海 CangDB 尚未公开，
   所以复用我们的 `server/src/fw_rbac_store.cj` —— 内存 `Store` + 写时原子落盘（先 `.tmp` 再 `rename`）。
-- 运维页 `/club` 只放给**后台的 admin 角色**（后端 `/api/club/**` 同口径，`user` 角色拿到 403）。
+- 运维页 `/club` 放给**后台的 admin 角色**，或**直接用运维账号登录进来的身份**
+  （后端 `/api/club/**` 同口径；后台的 `user` 角色拿到 403）。
   它**读**社团库文件（`admin.env` 的 `club_data`，默认 `../data`），club-server 不在跑也能看；
-  **写**在 club-server 侧的身份是**专用运维账号**（`role = ops`）—— 运维人员**只登录后台一次**
-  （后台账号，口令见 `build\admin\admin.env`），页面上不出现任何社团账号的口令：
+  **写**在 club-server 侧的身份是**专用运维账号**（`role = ops`）—— 所以运维人员
+  **不需要知道任何会长口令**，页面上也不出现任何社团账号的口令：
   1. 先在 club-server 建运维账号（一次性）：`club-server init-ops <手机号> <口令> [数据目录]`
      → 权限 = **除「移交会长」外与会长同权**；退役用 `club-server retire-ops <手机号>`。
      它**不可由 API 分配**（否则会长能造出权限略高于自己的账号），只能这样建。
-  2. 把手机号/口令填进 `admin.env` 的 `club_user` / `club_pass`（留空 = 运维页只能看不能改，页面会提示）。
-  3. 运维页启动时由后台用它换一个令牌（内存缓存 6 小时）交给页面，页面直连 club-server 做写操作。
+  2. **直接用这个手机号 + 口令登录运维台**（2026-09-17 起登录框两种凭据都认）——
+     不用改任何配置文件，写操作就是该账号的身份。
+     也可以改用「后台代持」：把手机号/口令填进 `admin.env` 的 `club_user` / `club_pass`
+     （留空 = 运维页只能看不能改，页面会提示），但**改完必须重启 `admin.exe`**。
+  3. 页面直连 club-server 做写操作（令牌由后台代持，内存缓存 6 小时）。
   → 于是 club-server 的**审计里 actor 是"运维"**，与会长做的操作分得清清楚楚（职责分离）。
+     会长 / 成员账号登运维台会被 **403**（运维不该由会长执行）。
 - 运维页能做的写操作：分配/改派、停用、重置口令（含**会长的**口令）、换注册口令、
   **部门增删改**、优雅停服 club-server；**移交会长是会长专属，运维不参与**（按钮会明确提示）。
   另带概览、任务/课题/招募链接、**审计日志**（解析 `audit.log`）与**一键备份**。
-- 验证：`tests\admin-check.ps1`（**29 / 0**，后台自身）+ `tests\ops-check.ps1`（**52 / 0**，运维页含写路径）。
+- 验证：`tests\admin-check.ps1`（**29 / 0**，后台自身）+ `tests\ops-check.ps1`（**64 / 0**，运维页含运维账号登录与写路径）。
 - **上游那个状态码特性已在我们自己的入口修掉**：上游 `respondOk/respondErr` 只写 body 的 `code`，
   而 `passOnNotFound` 路由 miss 时会先把 `ctx.status` 置成 404 → "成功响应带 404"。
   我们的 `src/ops/admin_main.cj` 加了一个链尾 `statusNormalizer()` 按 `code` 回写状态码

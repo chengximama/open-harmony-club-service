@@ -355,9 +355,11 @@ onMounted(async () => {
           <template v-else>
             <span class="err inline" v-if="sessionErr">{{ sessionErr }}</span>
             <span class="muted" v-else-if="opsConfigured === false">
-              未配置运维账号 → 只能看不能改。在 club-server 跑
-              <code>club-server init-ops &lt;手机号&gt; &lt;口令&gt; &lt;数据目录&gt;</code>，
-              再把手机号/口令填进 admin.env 的 club_user / club_pass。
+              还没有运维会话 → 只能看不能改。两种做法（任选其一）：
+              ① 退出后**用运维账号重新登录一次本后台**（手机号 + 运维口令）；
+              ② 或把手机号/口令填进 admin.env 的 club_user / club_pass，再重启本后台。
+              运维账号由
+              <code>club-server init-ops &lt;手机号&gt; &lt;口令&gt; &lt;数据目录&gt;</code> 创建。
             </span>
             <span class="muted" v-else>正在获取运维会话…</span>
             <button class="btn ghost sm" @click="ensureSession(true)">重试</button>

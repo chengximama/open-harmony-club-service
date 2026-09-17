@@ -206,7 +206,8 @@ func cmdInitOps(phone: String, pw: String, dir: String): Int64 {
                 println("已创建运维账号：${phone}（成员 id=${m.id}，角色 ops）")
         }
         println("权限：除「移交会长」外与会长同权；不可由 API 分配，只能用本命令创建")
-        println("下一步：把手机号与口令填进 build\\admin\\admin.env 的 club_user / club_pass")
+        println("下一步：用这个手机号 + 口令直接登录运维台（http://127.0.0.1:3000/）就行")
+        println("        （也可以把凭据填进 build\\admin\\admin.env 的 club_user / club_pass 让后台代持，二选一）")
         println("数据目录：${s.dir}（db.json）")
         /*
          * 2026-09-17 加这段告警：本命令改的是 **db.json 文件**，而 club-server 只在**启动时**
