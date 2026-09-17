@@ -117,7 +117,13 @@ struct Index {
       .height(52)
       .padding({ left: Space.page, right: Space.page })
 
-      MemberDetailPage({ memberId: this.selectedMemberId })
+      MemberDetailPage({
+        memberId: this.selectedMemberId,
+        onChanged: () => {
+          // 改名 / 移出社团后让名录重新拉取（详情页自己是最新的）
+          this.refreshSignal += 1;
+        }
+      })
         .layoutWeight(1)
     }
     .width('100%')
@@ -148,7 +154,8 @@ struct Index {
           onMemberClick: (id: number) => {
             this.selectedMemberId = id;
             this.showDetail = true;
-          }
+          },
+          refreshSignal: this.refreshSignal
         })
       }
       .tabBar(this.tabBarBuilder('名录', 3, $r('app.media.tab_members')))

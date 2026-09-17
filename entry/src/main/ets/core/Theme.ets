@@ -266,3 +266,41 @@ export function statusBg(status: string): string {
   if (status === 'pending') return StatusColor.pending.bg
   return StatusColor.todo.bg
 }
+
+/**
+ * 成员角色标签 —— 与服务端 5 档角色枚举一一对应。
+ * 注意：角色枚举里**没有「会长」**（会长只能由会长移交产生，不能在分配/编辑里指定），
+ * 所以这里只映射可被指派的 4 档 + 「未分配」（pending 账号 role 为 null）。
+ */
+export function roleLabel(role: string | null | undefined): string {
+  if (role === 'president') return '会长'
+  if (role === 'vice_president') return '副会长'
+  if (role === 'lead') return '部长'
+  if (role === 'vice_lead') return '副部长'
+  if (role === 'member') return '成员'
+  return '未分配'
+}
+
+/** 成员状态标签：active / pending / disabled 三种语义（P06 默认只列 active）。 */
+export function memberStatusLabel(status: string): string {
+  if (status === 'active') return '正常'
+  if (status === 'pending') return '待分配'
+  if (status === 'disabled') return '已退出'
+  return status
+}
+
+/** 成员状态色：只有 active 用「正常」绿，pending 用待分配紫，disabled 用灰。 */
+export function memberStatusFg(status: string): string {
+  if (status === 'active') return StatusColor.done.fg
+  if (status === 'pending') return StatusColor.pending.fg
+  return Color.textTertiary
+}
+
+/** 角色对应的头像底色（名录/详情共用，避免两处各写一份色值）。 */
+export function roleAvatarColor(role: string | null | undefined): string {
+  if (role === 'president') return StatusColor.overdue.fg
+  if (role === 'vice_president') return StatusColor.blocked.fg
+  if (role === 'lead') return Color.primary
+  if (role === 'vice_lead') return StatusColor.done.fg
+  return StatusColor.pending.fg
+}

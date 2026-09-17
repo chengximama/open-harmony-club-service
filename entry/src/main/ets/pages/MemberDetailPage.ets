@@ -1,246 +1,433 @@
-// 成员详情页面（B同学负责）
-// 点击成员名录里的卡片跳转进来，按 memberId 展示对应成员
-// 含：编辑姓名（PATCH /members/{id}）、重置密码、移出社团
-// 权限规则：同权保护（canActOn）、自己不能重置自己、最后会长禁用移出
-// 工程化：Theme token 化、bindContentCover 化、操作按钮按权限显隐
+/**
+ * 成员详情页 MemberDetailPage（D 同学负责）—— 设计规格 P07
+ *
+ * 读：
+ *   GET /api/v1/members/{id}                → member + stats
+ *                                             （owned_tasks / open_tasks / done_tasks / overdue_tasks / owned_plans）
+ *   GET /api/v1/tasks?owner_id={id}         → 该成员负责的任务（P07 注释「用 owner_id 反查」）
+ *   GET /api/v1/members?role=president&status=active → 仅供「是否唯一会长」判断用
+ *
+ * 写（全部权限驱动显隐，服务端仍会做最终校验）：
+ *   PATCH /api/v1/members/{id}               → 编辑姓名（需 manage_members + 同权保护）
+ *   POST  /api/v1/members/{id}/reset-password → 一次性临时密码（P07 含此按钮，接口与 B 的管理页共用）
+ *   POST  /api/v1/members/{id}/disable       → 移出社团（名下有未完成任务 → 409 MEMBER_HAS_OPEN_TASKS）
+ *
+ * 权限铁律（P07：「不能对同权限或更高权限的人执行上述操作，会长也不能重置自己」）：
+ *   判定只走 store/PermissionStore 的 can() / isLastPresident()，本页不自己比角色档位。
+ *
+ * 隐私：**详情页不显示手机号** —— MemberBrief 不下发 phone（api-design §3.2「名录不含手机号」）。
+ */
+import { promptAction } from '@kit.ArkUI'
+import { MemberApi, MemberStats } from '../api/MemberApi'
+import type { MemberBrief, MemberSelf } from '../api/AuthApi'
+import { TaskApi, TaskBrief } from '../api/TaskApi'
+import { can, isLastPresident, PermissionStore } from '../store/PermissionStore'
+import { StatusChip } from '../components/StatusChip'
+import {
+  Color, FontSize, Radius, Shadow, Space, StatusColor,
+  memberStatusFg, memberStatusLabel, roleAvatarColor, roleLabel
+} from '../core/Theme'
 
-import type { MemberBrief, MemberSelf, UserPermissions } from '../api/AuthApi';
-import { can, isLastPresident } from '../store/PermissionStore';
-import { Color, StatusColor, Space, Radius, FontSize, statusLabel, statusFg, statusBg } from '../core/Theme';
-
-// ─── 本地 interface（保留 upstream 原始结构，接 API 后改 import）───
-interface Task {
-  id: number;
-  title: string;
-  status: string;   // todo / doing / blocked / done
-  dueAt: string;
-}
-
-interface MemberDetail {
-  id: number;
-  name: string;
-  role: string;
-  roleLabel: string;
-  deptId: number;
-  deptName: string;
-  status: 'active' | 'pending' | 'disabled';
-  joinedAt: string;
-  phone: string;
-  tasks: Task[];
-}
-
-// ─── 假数据（接 API 后删除）───
-const ROLE_LABEL: Record<string, string> = {
-  'president': '会长',
-  'vice_president': '副会长',
-  'lead': '部长',
-  'vice_lead': '副部长',
-  'member': '成员',
-};
-
-const MEMBER_DETAIL: MemberDetail = {
-  id: 1,
-  name: '王会长',
-  role: 'president',
-  roleLabel: '会长',
-  deptId: 0,
-  deptName: '主席团',
-  status: 'active',
-  joinedAt: '2026-09-01',
-  phone: '138****0000',
-  tasks: [
-    { id: 101, title: '社团招新总体方案', status: 'doing', dueAt: '2026-09-20' },
-    { id: 102, title: '与指导老师沟通', status: 'todo', dueAt: '2026-09-18' },
-    { id: 103, title: '第一次全体大会', status: 'todo', dueAt: '2026-09-25' },
-  ],
-};
-
-// 当前登录用户的 mock（接 API 后改为 PermissionStore.getInstance().userInfo）
-const MOCK_CURRENT_USER: MemberSelf = {
-  id: 2,
-  name: '李副会长',
-  role: 'vice_president',
-  dept: { id: 0, name: '主席团' },
-  status: 'active',
-  joined_at: '2026-09-01',
-  phone: '138****1111',
-};
-
-const MOCK_CURRENT_PERMISSIONS: UserPermissions = {
-  view_scope: 'all',
-  manage_members: true,
-  set_role: true,
-  create_plan: true,
-  create_task: true,
-  update_any_task: true,
-};
-
-// 全部成员的 mock（用于 isLastPresident 判断；接 API 后改为 MemberApi.list() 加载）
-const MOCK_ALL_MEMBERS: MemberBrief[] = [
-  { id: 1, name: '王会长', role: 'president', dept: { id: 0, name: '主席团' }, status: 'active', joined_at: '2026-09-01' },
-  { id: 2, name: '李副会长', role: 'vice_president', dept: { id: 0, name: '主席团' }, status: 'active', joined_at: '2026-09-01' },
-];
-
-@Component
-struct TaskRow {
-  task: Task = { id: 0, title: '', status: 'todo', dueAt: '' };
-
-  build() {
-    Row() {
-      Column() {
-        Text(this.task.title)
-          .fontSize(FontSize.body)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(Color.textPrimary)
-
-        Text(`截止 ${this.task.dueAt}`)
-          .fontSize(FontSize.caption)
-          .fontColor(Color.textTertiary)
-          .margin({ top: 2 })
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-
-      Text(statusLabel(this.task.status))
-        .fontSize(FontSize.caption)
-        .fontColor(statusFg(this.task.status))
-        .padding({ left: Space.xs * 2, right: Space.xs * 2, top: 2, bottom: 2 })
-        .backgroundColor(statusBg(this.task.status))
-        .borderRadius(Radius.pill)
-    }
-    .width('100%')
-    .padding(Space.card)
-    .backgroundColor(Color.surface)
-    .margin({ bottom: 1 })
-  }
-}
+/** 一次拉全「本部门/全社团」的会长，只为唯一会长判定；50 足够 */
+const PRESIDENT_QUERY_SIZE: number = 50
+/** 该成员名下任务的拉取上限（服务端单页上限 200） */
+const TASK_QUERY_SIZE: number = 200
+/** 移出确认弹窗里最多列几条未完成任务 */
+const BLOCKER_PREVIEW_LIMIT: number = 3
 
 @Component
 export default struct MemberDetailPage {
-  memberId: number = 0;
-  @State member: MemberDetail = MEMBER_DETAIL;
+  @Prop @Watch('onMemberIdChange') memberId: number = 0
+  /** 改名 / 移出成功后通知 Index 刷新名录 */
+  onChanged?: () => void
 
-  // 弹窗显隐状态
-  @State showEditNameDialog: boolean = false;
-  @State showResetPasswordDialog: boolean = false;
-  @State showDisableDialog: boolean = false;
-  // 编辑姓名输入值
-  @State editingName: string = '';
-  // 重置密码生成的临时密码（mock）
-  @State tempPassword: string = '';
+  @State member: MemberBrief | null = null
+  @State stats: MemberStats | null = null
+  @State tasks: TaskBrief[] = []
+  @State taskTotal: number = 0
+  @State loading: boolean = true
+  @State errorMsg: string = ''
 
-  // ─── 权限判断方法（用方法不用 getter，ArkTS 兼容）───
-  // 把 @State member 转为 MemberBrief 给 canActOn / isLastPresident 用
-  toBrief(): MemberBrief {
-    return {
-      id: this.member.id,
-      name: this.member.name,
-      role: this.member.role,
-      dept: { id: this.member.deptId, name: this.member.deptName },
-      status: this.member.status,
-      joined_at: this.member.joinedAt,
-    };
+  // 弹窗态
+  @State showEditNameDialog: boolean = false
+  @State showResetPasswordDialog: boolean = false
+  @State showDisableDialog: boolean = false
+  @State editingName: string = ''
+  @State tempPassword: string = ''
+  /** 弹窗内的内联错误（比 toast 更容易看懂失败原因） */
+  @State actionError: string = ''
+  /** 提交中，防手抖重复点 */
+  @State submitting: boolean = false
+  /** 移出弹窗里预展示的未完成任务 */
+  @State blockerTasks: TaskBrief[] = []
+
+  private memberApi: MemberApi = new MemberApi()
+  private taskApi: TaskApi = new TaskApi()
+  private permissionStore: PermissionStore = PermissionStore.getInstance()
+  /** active 会长列表（唯一会长判定） */
+  private presidents: MemberBrief[] = []
+
+  aboutToAppear(): void {
+    this.load()
   }
 
-  // 编辑姓名：需要 set_role 权限 + 同权保护
-  canEditName(): boolean {
-    if (!MOCK_CURRENT_PERMISSIONS.set_role) return false;
-    return can(MOCK_CURRENT_USER, 'EditName', this.toBrief());
+  /** memberId 变化时重新拉取（正常情况下 Index 会重建本组件，这里是兜底） */
+  onMemberIdChange(): void {
+    this.load()
   }
 
-  // 重置密码：需要 manage_members + 自己不能重置自己 + 同权保护
-  canResetPassword(): boolean {
-    if (this.member.id === MOCK_CURRENT_USER.id) return false;
-    if (!MOCK_CURRENT_PERMISSIONS.manage_members) return false;
-    return can(MOCK_CURRENT_USER, 'ResetPassword', this.toBrief());
+  // ─── 数据 ───
+
+  private async load(): Promise<void> {
+    if (this.memberId <= 0) {
+      this.loading = false
+      this.errorMsg = '缺少成员 id'
+      return
+    }
+    this.loading = true
+    this.errorMsg = ''
+    await this.loadDetail()
+    if (this.member !== null) {
+      await this.loadTasks()
+      await this.loadPresidents()
+    }
+    this.loading = false
   }
 
-  // 移出社团：需要 manage_members + 自己不能移出自己 + 同权保护 + 最后会长保护
-  canDisable(): boolean {
-    if (this.member.id === MOCK_CURRENT_USER.id) return false;
-    if (!MOCK_CURRENT_PERMISSIONS.manage_members) return false;
-    if (!can(MOCK_CURRENT_USER, 'DisableMember', this.toBrief())) return false;
-    if (isLastPresident(MOCK_ALL_MEMBERS, this.toBrief())) return false;
-    return true;
-  }
-
-  // 弹窗显隐派生状态（重置密码弹窗有两种态：确认 / 结果）
-  shouldShowResetConfirm(): boolean {
-    return this.showResetPasswordDialog && this.tempPassword.length === 0;
-  }
-  shouldShowResetResult(): boolean {
-    return this.showResetPasswordDialog && this.tempPassword.length > 0;
-  }
-
-  getAvatarColor(): string {
-    switch (this.member.role) {
-      case 'president': return StatusColor.overdue.fg;
-      case 'vice_president': return StatusColor.blocked.fg;
-      case 'lead': return Color.primary;
-      case 'vice_lead': return StatusColor.done.fg;
-      default: return StatusColor.pending.fg;
+  private async loadDetail(): Promise<void> {
+    const resp = await this.memberApi.detail(this.memberId)
+    if (resp.ok && resp.data !== undefined) {
+      this.member = resp.data.member
+      this.stats = resp.data.stats
+    } else {
+      this.errorMsg = resp.error?.message ?? '加载成员详情失败'
     }
   }
 
-  // ─── 弹窗 Builder（用 bindContentCover 挂载为整窗模态浮层）───
+  /** 名下任务：未完成在前、已完成在后（P07「查看某人负责的任务」） */
+  private async loadTasks(): Promise<void> {
+    const resp = await this.taskApi.list({ owner_id: this.memberId, size: TASK_QUERY_SIZE })
+    if (resp.ok && resp.data !== undefined) {
+      const items: TaskBrief[] = resp.data.items
+      const open: TaskBrief[] = items.filter((t: TaskBrief): boolean => t.status !== 'done')
+      const done: TaskBrief[] = items.filter((t: TaskBrief): boolean => t.status === 'done')
+      this.tasks = open.concat(done)
+      this.taskTotal = resp.data.total
+    }
+  }
+
+  /** 只要会长，用于 isLastPresident —— 别为了判断一个人拉全社团名单 */
+  private async loadPresidents(): Promise<void> {
+    const resp = await this.memberApi.list({ role: 'president', status: 'active', size: PRESIDENT_QUERY_SIZE })
+    if (resp.ok && resp.data !== undefined) {
+      this.presidents = resp.data.items
+    }
+  }
+
+  private openTasks(): TaskBrief[] {
+    return this.tasks.filter((t: TaskBrief): boolean => t.status !== 'done')
+  }
+
+  // ─── 权限判定（唯一入口）───
+
+  private currentUser(): MemberSelf | null {
+    return this.permissionStore.userInfo
+  }
+
+  /** 编辑姓名：manage_members + 同权保护（部长/副部长还限本部门） */
+  canEditName(): boolean {
+    const user: MemberSelf | null = this.currentUser()
+    const target: MemberBrief | null = this.member
+    if (user === null || target === null) {
+      return false
+    }
+    return can(user, 'EditName', target)
+  }
+
+  /** 重置密码：manage_members + 同权保护；can() 已保证「自己不能重置自己」 */
+  canResetPassword(): boolean {
+    const user: MemberSelf | null = this.currentUser()
+    const target: MemberBrief | null = this.member
+    if (user === null || target === null) {
+      return false
+    }
+    return can(user, 'ResetPassword', target)
+  }
+
+  /** 移出社团：manage_members + 同权保护 + 不是「最后一位会长」 */
+  canDisable(): boolean {
+    const user: MemberSelf | null = this.currentUser()
+    const target: MemberBrief | null = this.member
+    if (user === null || target === null) {
+      return false
+    }
+    if (!can(user, 'DisableMember', target)) {
+      return false
+    }
+    return !isLastPresident(this.presidents, target)
+  }
+
+  /** 已是退出状态的人不再提供任何写操作 */
+  private isActionable(): boolean {
+    return this.member !== null && this.member.status !== 'disabled'
+  }
+
+  private hasAnyAction(): boolean {
+    return this.isActionable() && (this.canEditName() || this.canResetPassword() || this.canDisable())
+  }
+
+  private lastPresidentBlocked(): boolean {
+    const target: MemberBrief | null = this.member
+    if (target === null) {
+      return false
+    }
+    return this.member !== null && isLastPresident(this.presidents, target)
+  }
+
+  // ─── 展示辅助 ───
+
+  /** P07 身份卡：「2025-09 加入 · 未完成 5 · 逾期 1 · 已完成 12」 */
+  private identityLine(): string {
+    const parts: string[] = []
+    const joined: string = this.joinedMonth()
+    if (joined.length > 0) {
+      parts.push(`${joined} 加入`)
+    }
+    const s: MemberStats | null = this.stats
+    if (s !== null) {
+      parts.push(`未完成 ${s.open_tasks}`)
+      if (s.overdue_tasks > 0) {
+        parts.push(`逾期 ${s.overdue_tasks}`)
+      }
+      parts.push(`已完成 ${s.done_tasks}`)
+    }
+    return parts.join(' · ')
+  }
+
+  /** ISO 8601 → 「YYYY-MM」；拿不到就返回空串（整段不显示） */
+  private joinedMonth(): string {
+    const raw: string | null | undefined = this.member?.joined_at
+    if (raw === null || raw === undefined || raw.length < 7) {
+      return ''
+    }
+    return raw.substring(0, 7)
+  }
+
+  private joinedDate(): string {
+    const raw: string | null | undefined = this.member?.joined_at
+    if (raw === null || raw === undefined || raw.length < 10) {
+      return '—'
+    }
+    return raw.substring(0, 10)
+  }
+
+  private initial(): string {
+    const name: string = this.member?.name ?? ''
+    if (name.length === 0) {
+      return '?'
+    }
+    return name.substring(0, 1)
+  }
+
+  private dueText(task: TaskBrief): string {
+    if (task.is_overdue) {
+      return `逾期 ${task.overdue_days ?? 0} 天`
+    }
+    const due: string | null = task.due_at
+    if (due === null || due.length < 10) {
+      return '无截止时间'
+    }
+    const month: number = Number(due.substring(5, 7))
+    const day: number = Number(due.substring(8, 10))
+    return `${month}-${day} 截止`
+  }
+
+  private openTasksHint(): string {
+    const s: MemberStats | null = this.stats
+    if (s === null) {
+      return ''
+    }
+    return `名下还有 ${s.open_tasks} 项未完成任务，移出社团前需先转交。`
+  }
+
+  // ─── 写操作 ───
+
+  private openEditNameDialog(): void {
+    this.editingName = this.member?.name ?? ''
+    this.actionError = ''
+    this.showEditNameDialog = true
+  }
+
+  private async saveName(): Promise<void> {
+    const name: string = this.editingName.trim()
+    const target: MemberBrief | null = this.member
+    if (target === null || this.submitting) {
+      return
+    }
+    if (name.length === 0) {
+      this.actionError = '姓名不能为空'
+      return
+    }
+    if (name === target.name) {
+      this.showEditNameDialog = false
+      return
+    }
+    this.submitting = true
+    this.actionError = ''
+    const resp = await this.memberApi.update(this.memberId, { name: name })
+    this.submitting = false
+    if (resp.ok && resp.data !== undefined) {
+      this.member = resp.data
+      this.showEditNameDialog = false
+      this.editingName = ''
+      promptAction.showToast({ message: '姓名已更新', duration: 2000 })
+      this.notifyChanged()
+    } else {
+      this.actionError = resp.error?.message ?? '保存失败，请重试'
+    }
+  }
+
+  private openResetPasswordDialog(): void {
+    this.tempPassword = ''
+    this.actionError = ''
+    this.showResetPasswordDialog = true
+  }
+
+  private async doResetPassword(): Promise<void> {
+    if (this.submitting) {
+      return
+    }
+    this.submitting = true
+    this.actionError = ''
+    const resp = await this.memberApi.resetPassword(this.memberId)
+    this.submitting = false
+    if (resp.ok && resp.data !== undefined) {
+      this.tempPassword = resp.data.temporary_password
+    } else {
+      this.actionError = resp.error?.message ?? '重置失败，请重试'
+    }
+  }
+
+  private openDisableDialog(): void {
+    this.actionError = ''
+    const open: TaskBrief[] = this.openTasks()
+    this.blockerTasks = open.length > BLOCKER_PREVIEW_LIMIT
+      ? open.slice(0, BLOCKER_PREVIEW_LIMIT)
+      : open
+    this.showDisableDialog = true
+  }
+
+  private async doDisable(): Promise<void> {
+    if (this.submitting) {
+      return
+    }
+    this.submitting = true
+    this.actionError = ''
+    const resp = await this.memberApi.disable(this.memberId)
+    this.submitting = false
+    if (resp.ok && resp.data !== undefined) {
+      this.member = resp.data
+      this.showDisableDialog = false
+      promptAction.showToast({ message: '已移出社团（账号与历史记录保留）', duration: 2000 })
+      this.notifyChanged()
+    } else {
+      /*
+       * MEMBER_HAS_OPEN_TASKS：后端把清单放在 error.fields.tasks（数组），
+       * 客户端不解析那段 JSON —— 任务明细本页已经列出来了，直接给可执行的提示。
+       */
+      if (resp.error?.code === 'MEMBER_HAS_OPEN_TASKS') {
+        this.actionError = this.openTasksHint()
+      } else {
+        this.actionError = resp.error?.message ?? '移出失败，请重试'
+      }
+    }
+  }
+
+  private notifyChanged(): void {
+    if (this.onChanged !== undefined) {
+      this.onChanged()
+    }
+  }
+
+  // ─── 弹窗 Builder ───
+  // 说明：ArkUI 的 @Builder 不支持把「builder 函数」当参数传（本仓无先例），
+  // 所以每个弹窗自包含外壳；外壳 12 行，换来的是与 ManagePage 一致的已验证写法。
+
+  @Builder
+  inlineError() {
+    if (this.actionError.length > 0) {
+      Text(this.actionError)
+        .fontSize(FontSize.caption)
+        .fontColor(StatusColor.overdue.fg)
+        .backgroundColor(StatusColor.overdue.bg)
+        .borderRadius(Radius.input)
+        .padding({ left: Space.md, right: Space.md, top: Space.sm, bottom: Space.sm })
+        .width('100%')
+    }
+  }
+
   @Builder
   editNameDialogBuilder() {
     Column() {
-      Column() {
+      Column({ space: Space.md }) {
         Text('编辑姓名')
           .fontSize(FontSize.title)
           .fontWeight(FontWeight.Bold)
           .fontColor(Color.textPrimary)
-          .margin({ bottom: Space.lg })
+          .width('100%')
+
+        Text(`当前：${this.member?.name ?? ''} · ${roleLabel(this.member?.role)}`)
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textTertiary)
+          .width('100%')
 
         TextInput({ text: this.editingName, placeholder: '输入新姓名' })
           .fontSize(FontSize.body)
           .fontColor(Color.textPrimary)
-          .backgroundColor(Color.canvas)
+          .backgroundColor(Color.surface)
           .borderRadius(Radius.input)
+          .border({ width: 1, color: Color.inputBorder })
           .padding({ left: Space.md, right: Space.md })
-          .height(40)
+          .height(44)
           .width('100%')
-          .margin({ bottom: Space.lg })
-          .onChange((v: string) => { this.editingName = v; })
+          .onChange((value: string) => {
+            this.editingName = value
+          })
+
+        Text('角色只有 5 档预设，没有「会长」（会长只能由会长移交产生）；改名只影响显示名。')
+          .fontSize(FontSize.micro)
+          .fontColor(Color.textTertiary)
+          .width('100%')
+
+        this.inlineError()
 
         Row() {
           Button('取消')
             .type(ButtonType.Normal)
             .backgroundColor(StatusColor.todo.bg)
             .fontColor(Color.textSecondary)
+            .fontSize(FontSize.body)
             .layoutWeight(1)
+            .height(44)
             .borderRadius(Radius.button)
             .onClick(() => {
-              this.editingName = '';
-              this.showEditNameDialog = false;
+              this.editingName = ''
+              this.actionError = ''
+              this.showEditNameDialog = false
             })
 
-          Button('保存')
+          Button(this.submitting ? '保存中…' : '保存')
             .type(ButtonType.Capsule)
             .backgroundColor(Color.primary)
             .fontColor(Color.onPrimary)
+            .fontSize(FontSize.body)
             .layoutWeight(1)
+            .height(44)
             .margin({ left: Space.md })
             .borderRadius(Radius.button)
+            .enabled(!this.submitting)
             .onClick(() => {
-              if (this.editingName.length === 0) return;
-              // TODO: 接入 PATCH /members/{id} — MemberApi.update(this.memberId, { name: this.editingName })
-              // mock：直接修改本地 state
-              this.member = {
-                id: this.member.id,
-                name: this.editingName,
-                role: this.member.role,
-                roleLabel: this.member.roleLabel,
-                deptId: this.member.deptId,
-                deptName: this.member.deptName,
-                status: this.member.status,
-                joinedAt: this.member.joinedAt,
-                phone: this.member.phone,
-                tasks: this.member.tasks,
-              };
-              this.editingName = '';
-              this.showEditNameDialog = false;
+              this.saveName()
             })
         }
         .width('100%')
@@ -249,6 +436,7 @@ export default struct MemberDetailPage {
       .padding(Space.xl)
       .backgroundColor(Color.surface)
       .borderRadius(Radius.card)
+      .shadow(Shadow.L3)
     }
     .width('100%')
     .height('100%')
@@ -260,47 +448,51 @@ export default struct MemberDetailPage {
   @Builder
   resetPasswordConfirmBuilder() {
     Column() {
-      Column() {
+      Column({ space: Space.md }) {
         Text('重置密码')
           .fontSize(FontSize.title)
           .fontWeight(FontWeight.Bold)
           .fontColor(Color.textPrimary)
-          .margin({ bottom: Space.md })
+          .width('100%')
 
-        Text(`将为 ${this.member.name} 生成一次性临时密码，原密码立即失效。确认？`)
+        Text(`将为 ${this.member?.name ?? ''} 签发新的临时密码，其原密码立即失效。确认重置？`)
           .fontSize(FontSize.body)
           .fontColor(Color.textSecondary)
-          .textAlign(TextAlign.Center)
           .width('100%')
-          .margin({ bottom: Space.lg })
+
+        Text('重置只影响登录口令，不改变部门与角色。')
+          .fontSize(FontSize.micro)
+          .fontColor(Color.textTertiary)
+          .width('100%')
+
+        this.inlineError()
 
         Row() {
           Button('取消')
             .type(ButtonType.Normal)
             .backgroundColor(StatusColor.todo.bg)
             .fontColor(Color.textSecondary)
+            .fontSize(FontSize.body)
             .layoutWeight(1)
+            .height(44)
             .borderRadius(Radius.button)
             .onClick(() => {
-              this.showResetPasswordDialog = false;
+              this.actionError = ''
+              this.showResetPasswordDialog = false
             })
 
-          Button('确认重置')
+          Button(this.submitting ? '签发中…' : '确认重置')
             .type(ButtonType.Capsule)
             .backgroundColor(StatusColor.blocked.bg)
             .fontColor(StatusColor.blocked.fg)
+            .fontSize(FontSize.body)
             .layoutWeight(1)
+            .height(44)
             .margin({ left: Space.md })
             .borderRadius(Radius.button)
+            .enabled(!this.submitting)
             .onClick(() => {
-              // mock：生成 8 位临时密码
-              // TODO: 接入 POST /members/{id}/reset-password 后用后端返回的密码
-              const chars: string = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-              let p: string = '';
-              for (let i = 0; i < 8; i++) {
-                p += chars.charAt(Math.floor(Math.random() * chars.length));
-              }
-              this.tempPassword = p;
+              this.doResetPassword()
             })
         }
         .width('100%')
@@ -309,6 +501,7 @@ export default struct MemberDetailPage {
       .padding(Space.xl)
       .backgroundColor(Color.surface)
       .borderRadius(Radius.card)
+      .shadow(Shadow.L3)
     }
     .width('100%')
     .height('100%')
@@ -320,51 +513,53 @@ export default struct MemberDetailPage {
   @Builder
   resetPasswordResultBuilder() {
     Column() {
-      Column() {
-        Text('重置成功')
+      Column({ space: Space.md }) {
+        Text('已签发临时密码')
           .fontSize(FontSize.title)
           .fontWeight(FontWeight.Bold)
           .fontColor(StatusColor.done.fg)
-          .margin({ bottom: Space.md })
+          .width('100%')
 
-        Text(`${this.member.name} 的临时密码：`)
+        Text(`${this.member?.name ?? ''} 的临时密码：`)
           .fontSize(FontSize.caption)
           .fontColor(Color.textTertiary)
-          .margin({ bottom: Space.xs })
+          .width('100%')
 
         Text(this.tempPassword)
-          .fontSize(20)
+          .fontSize(FontSize.headline)
           .fontWeight(FontWeight.Bold)
+          .fontFamily('Inter')
           .fontColor(StatusColor.blocked.fg)
           .textAlign(TextAlign.Center)
           .width('100%')
           .padding({ top: Space.md, bottom: Space.md })
-          .backgroundColor(Color.canvas)
+          .backgroundColor(Color.primarySoft)
           .borderRadius(Radius.input)
-          .margin({ bottom: Space.md })
 
-        Text('请立即告知成员，首次登录后会强制改密。')
-          .fontSize(FontSize.caption)
+        // 语义按服务端实况写：口令只在本次响应里可见，但**没有**「首次登录强制改密」
+        Text('该口令只在本次响应里出现，之后看不到；原密码已失效。请立即告知本人，并提醒尽快在「我的」页自行修改密码。')
+          .fontSize(FontSize.micro)
           .fontColor(Color.textSecondary)
-          .textAlign(TextAlign.Center)
           .width('100%')
-          .margin({ bottom: Space.lg })
 
         Button('知道了')
           .type(ButtonType.Capsule)
           .backgroundColor(StatusColor.done.bg)
           .fontColor(StatusColor.done.fg)
+          .fontSize(FontSize.body)
           .width('100%')
+          .height(44)
           .borderRadius(Radius.button)
           .onClick(() => {
-            this.tempPassword = '';
-            this.showResetPasswordDialog = false;
+            this.tempPassword = ''
+            this.showResetPasswordDialog = false
           })
       }
       .width('85%')
       .padding(Space.xl)
       .backgroundColor(Color.surface)
       .borderRadius(Radius.card)
+      .shadow(Shadow.L3)
     }
     .width('100%')
     .height('100%')
@@ -376,42 +571,70 @@ export default struct MemberDetailPage {
   @Builder
   disableConfirmBuilder() {
     Column() {
-      Column() {
+      Column({ space: Space.md }) {
         Text('移出社团')
           .fontSize(FontSize.title)
           .fontWeight(FontWeight.Bold)
           .fontColor(StatusColor.overdue.fg)
-          .margin({ bottom: Space.md })
+          .width('100%')
 
-        Text(`将 ${this.member.name} 移出社团。若该成员仍有未完成任务，后端会拒绝。确认移出？`)
+        Text(`将 ${this.member?.name ?? ''} 移出社团。账号与历史记录全部保留，日后可由管理员恢复。`)
           .fontSize(FontSize.body)
           .fontColor(Color.textSecondary)
-          .textAlign(TextAlign.Center)
           .width('100%')
-          .margin({ bottom: Space.lg })
+
+        if (this.blockerTasks.length > 0) {
+          Column({ space: Space.xs }) {
+            Text(this.openTasksHint())
+              .fontSize(FontSize.caption)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(StatusColor.overdue.fg)
+              .width('100%')
+
+            ForEach(this.blockerTasks, (task: TaskBrief) => {
+              Text(`· [${task.status}] ${task.title}`)
+                .fontSize(FontSize.micro)
+                .fontColor(Color.textSecondary)
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .width('100%')
+            }, (task: TaskBrief): string => `${task.id}`)
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+          .padding(Space.md)
+          .backgroundColor(StatusColor.overdue.bg)
+          .borderRadius(Radius.input)
+        }
+
+        this.inlineError()
 
         Row() {
           Button('取消')
             .type(ButtonType.Normal)
             .backgroundColor(StatusColor.todo.bg)
             .fontColor(Color.textSecondary)
+            .fontSize(FontSize.body)
             .layoutWeight(1)
+            .height(44)
             .borderRadius(Radius.button)
             .onClick(() => {
-              this.showDisableDialog = false;
+              this.actionError = ''
+              this.showDisableDialog = false
             })
 
-          Button('确认移出')
+          Button(this.submitting ? '处理中…' : '确认移出')
             .type(ButtonType.Capsule)
             .backgroundColor(StatusColor.overdue.bg)
             .fontColor(StatusColor.overdue.fg)
+            .fontSize(FontSize.body)
             .layoutWeight(1)
+            .height(44)
             .margin({ left: Space.md })
             .borderRadius(Radius.button)
+            .enabled(!this.submitting)
             .onClick(() => {
-              // TODO: 接入 POST /members/{id}/disable
-              // mock：关闭弹窗
-              this.showDisableDialog = false;
+              this.doDisable()
             })
         }
         .width('100%')
@@ -420,6 +643,7 @@ export default struct MemberDetailPage {
       .padding(Space.xl)
       .backgroundColor(Color.surface)
       .borderRadius(Radius.card)
+      .shadow(Shadow.L3)
     }
     .width('100%')
     .height('100%')
@@ -428,180 +652,341 @@ export default struct MemberDetailPage {
     .alignItems(HorizontalAlign.Center)
   }
 
-  build() {
-    Scroll() {
-      Column() {
-        // 顶部个人信息卡
+  // ─── 页面区块 ───
+
+  @Builder
+  identityCard() {
+    Column({ space: Space.xs }) {
+      Text(this.initial())
+        .fontSize(30)
+        .fontColor(Color.onPrimary)
+        .width(64)
+        .height(64)
+        .borderRadius(32)
+        .backgroundColor(roleAvatarColor(this.member?.role))
+        .textAlign(TextAlign.Center)
+        .margin({ bottom: Space.sm })
+
+      Row() {
+        Text(this.member?.name ?? '')
+          .fontSize(FontSize.headline)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(Color.textPrimary)
+
+        if (this.member !== null && this.member.status !== 'active') {
+          Text(memberStatusLabel(this.member.status))
+            .fontSize(FontSize.micro)
+            .fontColor(memberStatusFg(this.member.status))
+            .backgroundColor(Color.canvas)
+            .borderRadius(Radius.pill)
+            .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+            .margin({ left: Space.sm })
+        }
+      }
+
+      Text(`${this.member?.dept?.name ?? '未分配部门'} · ${roleLabel(this.member?.role)}`)
+        .fontSize(FontSize.body)
+        .fontColor(Color.textSecondary)
+
+      if (this.identityLine().length > 0) {
+        Text(this.identityLine())
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textTertiary)
+          .margin({ top: Space.xs })
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Center)
+    .padding(Space.xl)
+    .backgroundColor(Color.surface)
+    .borderRadius(Radius.card)
+    .shadow(Shadow.card)
+  }
+
+  @Builder
+  infoRow(label: string, value: string, valueColor: string) {
+    Row() {
+      Text(label)
+        .fontSize(FontSize.body)
+        .fontColor(Color.textSecondary)
+        .width(72)
+      Text(value)
+        .fontSize(FontSize.body)
+        .fontColor(valueColor)
+        .layoutWeight(1)
+        .textAlign(TextAlign.End)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    .width('100%')
+    .padding({ left: Space.lg, right: Space.lg, top: Space.md, bottom: Space.md })
+  }
+
+  @Builder
+  infoCard() {
+    Column() {
+      Text('基本信息')
+        .fontSize(FontSize.caption)
+        .fontColor(Color.textTertiary)
+        .width('100%')
+        .padding({ left: Space.lg, top: Space.md, bottom: Space.sm })
+
+      this.infoRow('部门', this.member?.dept?.name ?? '未分配部门', Color.textPrimary)
+      Divider().color(Color.divider).margin({ left: Space.lg })
+
+      this.infoRow('角色', roleLabel(this.member?.role), Color.textPrimary)
+      Divider().color(Color.divider).margin({ left: Space.lg })
+
+      this.infoRow('加入时间', this.joinedDate(), Color.textPrimary)
+      Divider().color(Color.divider).margin({ left: Space.lg })
+
+      this.infoRow('状态', memberStatusLabel(this.member?.status ?? ''), memberStatusFg(this.member?.status ?? ''))
+      Divider().color(Color.divider).margin({ left: Space.lg })
+
+      this.infoRow('负责课题', `${this.stats?.owned_plans ?? 0} 项`, Color.textPrimary)
+
+      // 名录与详情都不含手机号：把这条隐私约束写在界面上，免得被当成漏字段
+      Text('手机号属于个人信息，名录与详情均不下发 —— 这是隐私最小化。')
+        .fontSize(FontSize.micro)
+        .fontColor(Color.textTertiary)
+        .width('100%')
+        .padding({ left: Space.lg, right: Space.lg, top: Space.sm, bottom: Space.lg })
+    }
+    .width('100%')
+    .backgroundColor(Color.surface)
+    .borderRadius(Radius.card)
+    .shadow(Shadow.card)
+  }
+
+  @Builder
+  taskRow(task: TaskBrief) {
+    Row() {
+      Column({ space: 2 }) {
+        Text(task.title)
+          .fontSize(FontSize.body)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(task.is_overdue ? StatusColor.overdue.fg : Color.textPrimary)
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+
+        Text(`${task.dept?.name ?? '未分配部门'} · ${this.dueText(task)}`)
+          .fontSize(FontSize.micro)
+          .fontColor(task.is_overdue ? StatusColor.overdue.fg : Color.textTertiary)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      StatusChip({ status: task.status, isOverdue: task.is_overdue })
+        .margin({ left: Space.sm })
+    }
+    .width('100%')
+    .alignItems(VerticalAlign.Top)
+    .padding({ left: Space.lg, right: Space.lg, top: Space.md, bottom: Space.md })
+  }
+
+  @Builder
+  tasksCard() {
+    Column() {
+      Row() {
+        Text('负责的任务')
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textTertiary)
+
+        Blank()
+
+        Text(`共 ${this.taskTotal} 项 · 未完成 ${this.stats?.open_tasks ?? 0}`)
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textTertiary)
+      }
+      .width('100%')
+      .padding({ left: Space.lg, right: Space.lg, top: Space.md, bottom: Space.sm })
+
+      if (this.tasks.length === 0) {
+        Text('暂无任务')
+          .fontSize(FontSize.body)
+          .fontColor(Color.textTertiary)
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .padding(Space.xl)
+      } else {
         Column() {
-          Text(this.member.name.substring(0, 1))
-            .fontSize(36)
-            .fontColor(Color.onPrimary)
-            .width(72)
-            .height(72)
-            .borderRadius(36)
-            .backgroundColor(this.getAvatarColor())
-            .textAlign(TextAlign.Center)
-            .margin({ bottom: Space.md })
-
-          Text(this.member.name)
-            .fontSize(FontSize.headline)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(Color.textPrimary)
-
-          Text(`${this.member.deptName} · ${this.member.roleLabel}`)
-            .fontSize(FontSize.body)
-            .fontColor(Color.textSecondary)
-            .margin({ top: Space.xs })
+          ForEach(this.tasks, (task: TaskBrief) => {
+            this.taskRow(task)
+          }, (task: TaskBrief): string => `${task.id}`)
         }
         .width('100%')
-        .padding(Space.xl)
-        .backgroundColor(Color.surface)
-        .borderRadius(Radius.card)
-        .margin({ left: Space.page, right: Space.page, top: Space.page })
 
-        // 基本信息
-        Column() {
-          Text('基本信息')
-            .fontSize(FontSize.caption)
+        if (this.taskTotal > this.tasks.length) {
+          Text(`仅显示前 ${this.tasks.length} 项，去「任务」页按人筛选可看全部。`)
+            .fontSize(FontSize.micro)
             .fontColor(Color.textTertiary)
             .width('100%')
-            .padding({ left: Space.lg, top: Space.md, bottom: Space.sm })
-
-          Row() {
-            Text('手机号')
-              .fontSize(FontSize.body)
-              .fontColor(Color.textSecondary)
-              .width(80)
-            Text(this.member.phone)
-              .fontSize(FontSize.body)
-              .fontColor(Color.textPrimary)
-          }
-          .width('100%')
-          .padding({ left: Space.lg, right: Space.lg, top: Space.sm, bottom: Space.sm })
-
-          Divider().color(Color.divider).margin({ left: Space.lg })
-
-          Row() {
-            Text('加入时间')
-              .fontSize(FontSize.body)
-              .fontColor(Color.textSecondary)
-              .width(80)
-            Text(this.member.joinedAt)
-              .fontSize(FontSize.body)
-              .fontColor(Color.textPrimary)
-          }
-          .width('100%')
-          .padding({ left: Space.lg, right: Space.lg, top: Space.sm, bottom: Space.sm })
-
-          Divider().color(Color.divider).margin({ left: Space.lg })
-
-          Row() {
-            Text('状态')
-              .fontSize(FontSize.body)
-              .fontColor(Color.textSecondary)
-              .width(80)
-            Text(this.member.status === 'active' ? '正常' : this.member.status)
-              .fontSize(FontSize.body)
-              .fontColor(this.member.status === 'active' ? StatusColor.done.fg : StatusColor.overdue.fg)
-          }
-          .width('100%')
-          .padding({ left: Space.lg, right: Space.lg, top: Space.sm, bottom: Space.md })
+            .padding({ left: Space.lg, right: Space.lg, bottom: Space.md })
         }
-        .width('100%')
-        .backgroundColor(Color.surface)
-        .borderRadius(Radius.card)
-        .margin({ left: Space.page, right: Space.page, top: Space.md })
-
-        // 负责的任务
-        Column() {
-          Row() {
-            Text('负责的任务')
-              .fontSize(FontSize.caption)
-              .fontColor(Color.textTertiary)
-
-            Blank()
-
-            Text(`${this.member.tasks.length} 项`)
-              .fontSize(FontSize.caption)
-              .fontColor(Color.textTertiary)
-          }
-          .width('100%')
-          .padding({ left: Space.lg, right: Space.lg, top: Space.lg, bottom: Space.sm })
-
-          Column() {
-            ForEach(this.member.tasks, (task: Task) => {
-              TaskRow({ task: task })
-            }, (task: Task) => task.id.toString())
-
-            if (this.member.tasks.length === 0) {
-              Text('暂无任务')
-                .fontSize(FontSize.body)
-                .fontColor(Color.textTertiary)
-                .width('100%')
-                .textAlign(TextAlign.Center)
-                .padding(Space.xl)
-            }
-          }
-        }
-        .width('100%')
-        .backgroundColor(Color.surface)
-        .borderRadius(Radius.card)
-        .margin({ left: Space.page, right: Space.page, top: Space.md })
-
-        // 操作按钮区（权限驱动显隐）
-        Column() {
-          if (this.canEditName()) {
-            Button('编辑姓名')
-              .type(ButtonType.Normal)
-              .backgroundColor(StatusColor.todo.bg)
-              .fontColor(Color.textPrimary)
-              .width('100%')
-              .borderRadius(Radius.button)
-              .margin({ bottom: Space.md })
-              .onClick(() => {
-                this.editingName = this.member.name;
-                this.showEditNameDialog = true;
-              })
-          }
-
-          if (this.canResetPassword()) {
-            Button('重置密码')
-              .type(ButtonType.Normal)
-              .backgroundColor(StatusColor.blocked.bg)
-              .fontColor(StatusColor.blocked.fg)
-              .width('100%')
-              .borderRadius(Radius.button)
-              .margin({ bottom: Space.md })
-              .onClick(() => {
-                this.tempPassword = '';
-                this.showResetPasswordDialog = true;
-              })
-          }
-
-          if (this.canDisable()) {
-            Button('移出社团')
-              .type(ButtonType.Normal)
-              .backgroundColor(StatusColor.overdue.bg)
-              .fontColor(StatusColor.overdue.fg)
-              .width('100%')
-              .borderRadius(Radius.button)
-              .onClick(() => {
-                this.showDisableDialog = true;
-              })
-          }
-        }
-        .width('100%')
-        .padding(Space.lg)
-        .margin({ left: Space.page, right: Space.page, top: Space.xl, bottom: Space.page })
       }
+    }
+    .width('100%')
+    .backgroundColor(Color.surface)
+    .borderRadius(Radius.card)
+    .shadow(Shadow.card)
+  }
+
+  @Builder
+  actionCard() {
+    Column({ space: Space.md }) {
+      if (this.canEditName()) {
+        Button('编辑姓名')
+          .type(ButtonType.Normal)
+          .backgroundColor(StatusColor.todo.bg)
+          .fontColor(Color.textPrimary)
+          .fontSize(FontSize.body)
+          .width('100%')
+          .height(44)
+          .borderRadius(Radius.button)
+          .onClick(() => {
+            this.openEditNameDialog()
+          })
+      }
+
+      if (this.canResetPassword()) {
+        Button('重置密码')
+          .type(ButtonType.Normal)
+          .backgroundColor(StatusColor.blocked.bg)
+          .fontColor(StatusColor.blocked.fg)
+          .fontSize(FontSize.body)
+          .width('100%')
+          .height(44)
+          .borderRadius(Radius.button)
+          .onClick(() => {
+            this.openResetPasswordDialog()
+          })
+      }
+
+      if (this.canDisable()) {
+        Button('移出社团')
+          .type(ButtonType.Normal)
+          .backgroundColor(StatusColor.overdue.bg)
+          .fontColor(StatusColor.overdue.fg)
+          .fontSize(FontSize.body)
+          .width('100%')
+          .height(44)
+          .borderRadius(Radius.button)
+          .onClick(() => {
+            this.openDisableDialog()
+          })
+      }
+    }
+    .width('100%')
+    .padding(Space.lg)
+    .backgroundColor(Color.surface)
+    .borderRadius(Radius.card)
+    .shadow(Shadow.card)
+  }
+
+  /** 为什么一个按钮都没有：把原因说出来，别让页面看起来像坏了 */
+  @Builder
+  noActionHint() {
+    Column({ space: Space.xs }) {
+      if (this.member !== null && this.member.status === 'disabled') {
+        Text('该成员已退出社团（账号与历史记录仍保留）。')
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textTertiary)
+          .width('100%')
+        Text('如需恢复，请先在管理页重新分配部门与角色。')
+          .fontSize(FontSize.micro)
+          .fontColor(Color.textTertiary)
+          .width('100%')
+      } else {
+        Text('你对这位成员没有可执行的操作。')
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textTertiary)
+          .width('100%')
+        if (this.lastPresidentBlocked()) {
+          Text('TA 是社团唯一在任的会长 —— 社团必须始终保留至少一位会长，不能移出。')
+            .fontSize(FontSize.micro)
+            .fontColor(Color.textTertiary)
+            .width('100%')
+        } else {
+          Text('不能对同权限或更高权限的人执行操作；会长也不能重置自己。')
+            .fontSize(FontSize.micro)
+            .fontColor(Color.textTertiary)
+            .width('100%')
+        }
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .padding(Space.lg)
+    .backgroundColor(Color.surface)
+    .borderRadius(Radius.card)
+    .shadow(Shadow.card)
+  }
+
+  @Builder
+  statusHint() {
+    if (this.loading && this.member === null) {
+      Column({ space: Space.md }) {
+        LoadingProgress().width(32).height(32).color(Color.primary)
+        Text('正在加载成员详情…')
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textTertiary)
+      }
+      .width('100%')
+      .padding({ top: Space.xxl * 2, bottom: Space.xxl })
+    } else if (this.errorMsg.length > 0) {
+      Column({ space: Space.md }) {
+        Text(this.errorMsg)
+          .fontSize(FontSize.caption)
+          .fontColor(StatusColor.overdue.fg)
+          .textAlign(TextAlign.Center)
+          .width('100%')
+
+        Button('重试')
+          .height(36)
+          .fontSize(FontSize.body)
+          .fontColor(Color.onPrimary)
+          .backgroundColor(Color.primary)
+          .borderRadius(Radius.button)
+          .onClick(() => {
+            this.load()
+          })
+      }
+      .width('100%')
+      .padding({ top: Space.xxl, bottom: Space.xxl, left: Space.page, right: Space.page })
+    }
+  }
+
+  build() {
+    Scroll() {
+      Column({ space: Space.md }) {
+        this.statusHint()
+
+        if (this.member !== null) {
+          this.identityCard()
+          this.infoCard()
+          this.tasksCard()
+
+          if (this.hasAnyAction()) {
+            this.actionCard()
+          } else if (!this.loading) {
+            this.noActionHint()
+          }
+        }
+      }
+      .width('100%')
+      .padding({ left: Space.page, right: Space.page, top: Space.md, bottom: Space.xxl })
     }
     .width('100%')
     .height('100%')
     .backgroundColor(Color.canvas)
     .scrollBar(BarState.Off)
     .bindContentCover(this.showEditNameDialog, this.editNameDialogBuilder)
-    .bindContentCover(this.shouldShowResetConfirm(), this.resetPasswordConfirmBuilder)
-    .bindContentCover(this.shouldShowResetResult(), this.resetPasswordResultBuilder)
+    .bindContentCover(this.showResetPasswordDialog && this.tempPassword.length === 0, this.resetPasswordConfirmBuilder)
+    .bindContentCover(this.showResetPasswordDialog && this.tempPassword.length > 0, this.resetPasswordResultBuilder)
     .bindContentCover(this.showDisableDialog, this.disableConfirmBuilder)
   }
 }
