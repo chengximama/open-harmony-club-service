@@ -8,18 +8,24 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 const LOG_DOMAIN = 0x0000;
 const LOG_TAG = 'RouterUtils';
 
-export function replaceTo(url: string): void {
+export function replaceTo(url: string, params?: Object): void {
   try {
     const opt: router.RouterOptions = { url: url };
+    if (params !== undefined) {
+      opt.params = params;
+    }
     router.replaceUrl(opt);
   } catch (err) {
     hilog.error(LOG_DOMAIN, LOG_TAG, 'replaceTo failed: %{public}s', JSON.stringify(err));
   }
 }
 
-export function pushTo(url: string): void {
+export function pushTo(url: string, params?: Object): void {
   try {
     const opt: router.RouterOptions = { url: url };
+    if (params !== undefined) {
+      opt.params = params;
+    }
     router.pushUrl(opt);
   } catch (err) {
     hilog.error(LOG_DOMAIN, LOG_TAG, 'pushTo failed: %{public}s', JSON.stringify(err));

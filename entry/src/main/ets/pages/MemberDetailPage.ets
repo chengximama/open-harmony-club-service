@@ -5,7 +5,7 @@
 // 工程化：Theme token 化、bindContentCover 化、操作按钮按权限显隐
 
 import type { MemberBrief, MemberSelf, UserPermissions } from '../api/AuthApi';
-import { PermissionStore, canActOn, isLastPresident } from '../store/PermissionStore';
+import { can, isLastPresident } from '../store/PermissionStore';
 import { Color, StatusColor, Space, Radius, FontSize, statusLabel, statusFg, statusBg } from '../core/Theme';
 
 // ─── 本地 interface（保留 upstream 原始结构，接 API 后改 import）───
@@ -145,21 +145,21 @@ export default struct MemberDetailPage {
   // 编辑姓名：需要 set_role 权限 + 同权保护
   canEditName(): boolean {
     if (!MOCK_CURRENT_PERMISSIONS.set_role) return false;
-    return canActOn(MOCK_CURRENT_USER, this.toBrief());
+    return can(MOCK_CURRENT_USER, 'EditName', this.toBrief());
   }
 
   // 重置密码：需要 manage_members + 自己不能重置自己 + 同权保护
   canResetPassword(): boolean {
     if (this.member.id === MOCK_CURRENT_USER.id) return false;
     if (!MOCK_CURRENT_PERMISSIONS.manage_members) return false;
-    return canActOn(MOCK_CURRENT_USER, this.toBrief());
+    return can(MOCK_CURRENT_USER, 'ResetPassword', this.toBrief());
   }
 
   // 移出社团：需要 manage_members + 自己不能移出自己 + 同权保护 + 最后会长保护
   canDisable(): boolean {
     if (this.member.id === MOCK_CURRENT_USER.id) return false;
     if (!MOCK_CURRENT_PERMISSIONS.manage_members) return false;
-    if (!canActOn(MOCK_CURRENT_USER, this.toBrief())) return false;
+    if (!can(MOCK_CURRENT_USER, 'DisableMember', this.toBrief())) return false;
     if (isLastPresident(MOCK_ALL_MEMBERS, this.toBrief())) return false;
     return true;
   }

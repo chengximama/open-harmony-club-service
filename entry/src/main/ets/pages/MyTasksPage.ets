@@ -1,9 +1,9 @@
-// 首页「我的任务」。服务端已分组，直接渲染，别自己算逾期。
-// 接接口后：GET /tasks/mine。
-
+// 首页「我的任务」：服务端分组直接渲染，客户端不做逾期判断。
+import router from '@ohos.router'
 import { TaskApi, MineGroups, TaskBrief } from '../api/TaskApi'
-import { TaskCard } from '../components/TaskCard'
+import { StatusChip } from '../components/StatusChip'
 import { Color, FontSize, Radius, Shadow, Space, StatusColor } from '../core/Theme'
+import { PermissionStore } from '../store/PermissionStore'
 
 const EMPTY_MINE_GROUPS: MineGroups = {
   overdue: [], blocked: [], due_today: [], due_week: [], later: [], no_due: [],
@@ -15,13 +15,13 @@ export default struct MyTasksPage {
   @State myTasks: MineGroups = EMPTY_MINE_GROUPS
   @State loading: boolean = true
   @State errorMsg: string = ''
+  @State syncedAt: string = '--:--'
 
-  // 由外层 TabBar 注入：点击顶部「课题」时切到课题 tab
   onOpenPlans?: () => void
-  // 由外层 TabBar 注入：切换 Tab / 从子页返回时 +1，触发重新拉取
   @Prop @Watch('onRefreshSignal') refreshSignal: number = 0
 
   private taskApi: TaskApi = new TaskApi()
+  private permissionStore: PermissionStore = PermissionStore.getInstance()
 
   aboutToAppear(): void {
     this.load()
@@ -37,99 +37,257 @@ export default struct MyTasksPage {
     const resp = await this.taskApi.mine()
     if (resp.ok && resp.data) {
       this.myTasks = resp.data
+      this.syncedAt = this.clockText()
     } else {
       this.errorMsg = resp.error?.message ?? '加载失败'
     }
     this.loading = false
   }
 
-  private planLabel(t: TaskBrief): string {
-    if (t.plan !== null) {
-      return `课题：${t.plan.title}`
-    }
-    return '独立任务'
+  private clockText(): string {
+    const d = new Date()
+    const h = d.getHours() < 10 ? `0${d.getHours()}` : `${d.getHours()}`
+    const m = d.getMinutes() < 10 ? `0${d.getMinutes()}` : `${d.getMinutes()}`
+    return `${h}:${m}`
   }
 
-  private dueLabel(t: TaskBrief): string {
-    if (t.due_at !== null) {
-      return `截止：${t.due_at}`
-    }
-    return '无截止时间'
+  private todayKey(): string {
+    const d = new Date()
+    const m = d.getMonth() + 1
+    const day = d.getDate()
+    return `${d.getFullYear()}-${m < 10 ? '0' : ''}${m}-${day < 10 ? '0' : ''}${day}`
   }
 
-  private subtitle(t: TaskBrief): string {
-    return `${this.planLabel(t)} · ${this.dueLabel(t)}`
+  private dueText(task: TaskBrief): string {
+    if (task.is_overdue) {
+      return `逾期 ${task.overdue_days ?? 0} 天`
+    }
+    if (task.due_at === null || task.due_at.length < 10) {
+      return '无截止时间'
+    }
+    const datePart = task.due_at.substring(0, 10)
+    const month = Number(datePart.substring(5, 7))
+    const day = Number(datePart.substring(8, 10))
+    if (datePart === this.todayKey() && task.due_at.length >= 16) {
+      return `今天 ${task.due_at.substring(11, 16)}`
+    }
+    return `${month}-${day} 截止`
+  }
+
+  private ownerText(task: TaskBrief): string {
+    const dept = task.dept?.name ?? '未分配部门'
+    const owner = task.owner?.name ?? '未指派'
+    return `${dept} · 负责人 ${owner}`
+  }
+
+  private roleLabel(role: string | null | undefined): string {
+    if (role === 'president') return '会长'
+    if (role === 'vice_president') return '副会长'
+    if (role === 'lead') return '部长'
+    if (role === 'vice_lead') return '副部长'
+    if (role === 'member') return '成员'
+    return '未分配'
+  }
+
+  private currentUserLine(): string {
+    const user = this.permissionStore.userInfo
+    if (user === null) return ''
+    const dept = user.dept?.name ?? '未分配部门'
+    return `${user.name} · ${dept} · ${this.roleLabel(user.role)}`
   }
 
   @Builder
-  sectionHeader(title: string, hint: string, count: number) {
-    Row() {
-      Text(title)
-        .fontSize(FontSize.subtitle)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(Color.textPrimary)
-      if (hint.length > 0) {
-        Text(hint)
-          .fontSize(FontSize.caption)
-          .fontColor(Color.textTertiary)
-          .margin({ left: Space.sm })
-      }
-      Blank()
-      Text(`${count}`)
-        .fontSize(FontSize.caption)
-        .fontColor(Color.textSecondary)
-    }
-    .width('100%')
-    .padding({ left: Space.xs, right: Space.xs })
-  }
-
-  @Builder
-  statCell(label: string, value: number, color: string) {
-    Column() {
-      Text(`${value}`)
+  header() {
+    Column({ space: 2 }) {
+      Text('我的任务')
         .fontSize(FontSize.headline)
         .fontWeight(FontWeight.Bold)
+        .fontColor(Color.textPrimary)
+      if (this.currentUserLine().length > 0) {
+        Text(this.currentUserLine())
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textTertiary)
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  statCell(value: number, label: string, color: string) {
+    Column({ space: 2 }) {
+      Text(`${value}`)
+        .fontSize(FontSize.numL)
+        .fontWeight(FontWeight.Bold)
+        .fontFamily('Inter')
+        .fontFeature('"tnum" 1')
         .fontColor(color)
       Text(label)
-        .fontSize(FontSize.caption)
-        .fontColor(Color.textSecondary)
-        .margin({ top: Space.xs })
+        .fontSize(FontSize.micro)
+        .fontColor(Color.textTertiary)
     }
-    .layoutWeight(1)
+    .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
   statsBar() {
     Row() {
-      this.statCell('逾期', this.myTasks.counts.overdue, StatusColor.overdue.fg)
-      this.statCell('阻塞', this.myTasks.counts.blocked, StatusColor.blocked.fg)
-      this.statCell('未完成', this.myTasks.counts.open_total, Color.textPrimary)
+      Row({ space: 22 }) {
+        this.statCell(this.myTasks.counts.overdue, '逾期', StatusColor.overdue.fg)
+        this.statCell(this.myTasks.counts.blocked, '阻塞', StatusColor.blocked.fg)
+        this.statCell(this.myTasks.counts.open_total, '未完成', Color.primary)
+      }
+      Blank()
+      Column({ space: 2 }) {
+        Text('下拉刷新')
+          .fontSize(FontSize.micro)
+          .fontColor(Color.textTertiary)
+        Text(`${this.syncedAt} 已同步`)
+          .fontSize(FontSize.micro)
+          .fontFamily('Inter')
+          .fontFeature('"tnum" 1')
+          .fontColor(Color.textTertiary)
+      }
+      .alignItems(HorizontalAlign.End)
     }
     .width('100%')
-    .padding(Space.card)
+    .height(76)
+    .padding({ left: 16, right: 16 })
     .backgroundColor(Color.surface)
+    .border({ width: 1, color: Color.divider })
     .borderRadius(Radius.card)
-    .shadow(Shadow.card)
+    .shadow(Shadow.L2)
+    .onClick(() => {
+      this.load()
+    })
   }
 
   @Builder
-  group(title: string, hint: string, tasks: TaskBrief[]) {
-    Column() {
-      this.sectionHeader(title, hint, tasks.length)
-      Column({ space: Space.cardGap }) {
-        ForEach(tasks, (t: TaskBrief) => {
-          TaskCard({ task: t, subtitle: this.subtitle(t) })
-        }, (t: TaskBrief) => `${t.id}`)
+  sectionHeader(title: string, belowHint: string, rightHint: string) {
+    Column({ space: 4 }) {
+      Row() {
+        Text(title)
+          .fontSize(FontSize.body)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(Color.textPrimary)
+        Blank()
+        if (rightHint.length > 0) {
+          Text(rightHint)
+            .fontSize(FontSize.micro)
+            .fontColor(Color.textTertiary)
+        }
       }
       .width('100%')
-      .margin({ top: Space.sm })
+      if (belowHint.length > 0) {
+        Text(belowHint)
+          .fontSize(FontSize.micro)
+          .fontColor(Color.textTertiary)
+          .width('100%')
+      }
+    }
+    .width('100%')
+    .padding({ left: 2, right: 2 })
+  }
+
+  @Builder
+  taskRow(task: TaskBrief) {
+    Column({ space: 6 }) {
+      Row() {
+        Text(task.title)
+          .fontSize(FontSize.body)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(task.is_overdue ? StatusColor.overdue.fg : Color.textPrimary)
+          .layoutWeight(1)
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        StatusChip({ status: task.status, isOverdue: task.is_overdue })
+          .margin({ left: Space.sm })
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Top)
+
+      Row() {
+        Text(this.ownerText(task))
+          .fontSize(FontSize.micro)
+          .fontColor(Color.textTertiary)
+          .layoutWeight(1)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.dueText(task))
+          .fontSize(FontSize.micro)
+          .fontWeight(task.is_overdue ? FontWeight.Medium : FontWeight.Normal)
+          .fontColor(task.is_overdue ? StatusColor.overdue.fg : Color.textSecondary)
+          .margin({ left: Space.sm })
+      }
+      .width('100%')
+
+      if (task.status === 'blocked' && task.blocker !== undefined && task.blocker !== null && task.blocker.length > 0) {
+        Column({ space: 2 }) {
+          Text('阻塞原因（进入 blocked 必填）')
+            .fontSize(FontSize.micro)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(StatusColor.blocked.fg)
+          Text(task.blocker)
+            .fontSize(FontSize.micro)
+            .fontColor(Color.blockedText)
+            .lineHeight(18)
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+        .padding(10)
+        .backgroundColor(StatusColor.blocked.bg)
+        .borderRadius(9)
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .padding({ left: 14, right: 14, top: 12, bottom: 12 })
+    .backgroundColor(Color.surface)
+    .onClick(() => {
+      router.pushUrl({ url: 'pages/TaskDetailPage', params: { task_id: task.id } })
+    })
+  }
+
+  @Builder
+  taskList(tasks: TaskBrief[]) {
+    Column({ space: 1 }) {
+      ForEach(tasks, (task: TaskBrief) => {
+        this.taskRow(task)
+      }, (task: TaskBrief): string => `${task.id}`)
+    }
+    .width('100%')
+    .backgroundColor(Color.divider)
+    .borderRadius(Radius.card)
+    .clip(true)
+    .border({ width: 1, color: Color.divider })
+  }
+
+  @Builder
+  emptyRow(text: string) {
+    Text(text)
+      .width('100%')
+      .fontSize(FontSize.caption)
+      .fontColor(Color.textTertiary)
+      .padding({ left: 14, right: 14, top: 16, bottom: 16 })
+      .backgroundColor(Color.surface)
+  }
+
+  @Builder
+  taskSection(title: string, belowHint: string, rightHint: string, tasks: TaskBrief[]) {
+    Column({ space: 8 }) {
+      this.sectionHeader(title, belowHint, rightHint)
+      if (tasks.length > 0) {
+        this.taskList(tasks)
+      } else {
+        this.emptyRow('这里暂时没有任务。')
+      }
     }
     .width('100%')
   }
 
   @Builder
   statusHint() {
-    if (this.loading) {
+    if (this.loading && this.myTasks.counts.open_total === 0) {
       Row() {
         LoadingProgress().width(28).height(28).color(Color.primary)
       }
@@ -137,7 +295,7 @@ export default struct MyTasksPage {
       .justifyContent(FlexAlign.Center)
       .padding({ top: Space.xxl, bottom: Space.xxl })
     } else if (this.errorMsg.length > 0) {
-      Column() {
+      Column({ space: Space.sm }) {
         Text(this.errorMsg)
           .fontSize(FontSize.caption)
           .fontColor(StatusColor.overdue.fg)
@@ -147,7 +305,6 @@ export default struct MyTasksPage {
           .height(36)
           .backgroundColor(Color.primary)
           .fontColor(Color.surface)
-          .margin({ top: Space.sm })
           .onClick(() => {
             this.load()
           })
@@ -159,37 +316,25 @@ export default struct MyTasksPage {
 
   build() {
     Column() {
-      Row() {
-        Text('我的任务')
-          .fontSize(FontSize.headline)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(Color.textPrimary)
-        Blank()
-        Text('课题')
-          .fontSize(FontSize.body)
-          .fontColor(Color.primary)
-          .onClick(() => {
-            if (this.onOpenPlans) {
-              this.onOpenPlans()
-            }
-          })
+      Column() {
+        this.header()
       }
       .width('100%')
-      .padding({ left: Space.page, right: Space.page, top: Space.lg, bottom: Space.md })
+      .padding({ left: Space.page, right: Space.page, top: 16, bottom: 12 })
 
       Scroll() {
-        Column({ space: Space.section }) {
+        Column({ space: 20 }) {
           this.statusHint()
           this.statsBar()
-          this.group('已逾期', '距截止已过，请尽快处理', this.myTasks.overdue)
-          this.group('阻塞中', '阻塞项同时也会出现在下面的时间里', this.myTasks.blocked)
-          this.group('今天到期', '', this.myTasks.due_today)
-          this.group('本周内', `本周内还有 ${this.myTasks.due_week.length} 项`, this.myTasks.due_week)
-          this.group('以后', '', this.myTasks.later)
-          this.group('无截止时间', '', this.myTasks.no_due)
+          this.taskSection(`已逾期 · ${this.myTasks.overdue.length}`, '距截止已过，请尽快处理', '', this.myTasks.overdue)
+          this.taskSection(`阻塞中 · ${this.myTasks.blocked.length}`, '', '阻塞项同时也会出现在下面的时间里', this.myTasks.blocked)
+          this.taskSection(`今天到期 · ${this.myTasks.due_today.length}`, '', `本周内还有 ${this.myTasks.due_week.length} 项`, this.myTasks.due_today)
+          this.taskSection(`本周内 · ${this.myTasks.due_week.length}`, '', '', this.myTasks.due_week)
+          this.taskSection(`以后 · ${this.myTasks.later.length}`, '', '', this.myTasks.later)
+          this.taskSection(`无截止时间 · ${this.myTasks.no_due.length}`, '', '', this.myTasks.no_due)
         }
         .width('100%')
-        .padding({ left: Space.page, right: Space.page, bottom: Space.xl })
+        .padding({ left: Space.page, right: Space.page, bottom: 110 })
       }
       .layoutWeight(1)
     }

@@ -13,6 +13,12 @@ export interface PlanRef {
   title: string;
 }
 
+/** 阻塞任务的求助对象（部门和具体成员均可为空）。 */
+export interface NeedsHelp {
+  dept: DeptBrief | null;
+  member: MemberBrief | null;
+}
+
 // ─── 任务类型 ───
 
 export type TaskStatus = 'todo' | 'doing' | 'blocked' | 'done';
@@ -27,7 +33,10 @@ export interface TaskBrief {
   plan: PlanRef | null;
   due_at: string | null;  // ISO 8601，null = 无截止时间
   is_overdue: boolean;    // 服务端计算的派生量
+  overdue_days?: number;  // 逾期天数，未逾期为 0
   blocked: boolean;       // 服务端计算的派生量 (status === 'blocked')
+  blocker?: string | null; // blocked 时的原因
+  needs_help?: NeedsHelp | null; // 求助对象；无求助对象时为 null
   updated_at: string;     // 服务端生成
 }
 
@@ -65,6 +74,10 @@ export interface UpdateTaskStatusRequest {
   status: TaskStatus;
   /** status=blocked 时必填 */
   blocker?: string;
+  /** status=blocked 时可选：求助部门 id，或与 help_member_id 二选一 */
+  help_dept_id?: number;
+  /** status=blocked 时可选：求助成员 id（服务端会补齐其部门） */
+  help_member_id?: number;
 }
 
 export interface TaskLookupRequest {
@@ -100,6 +113,8 @@ export interface MineCounts {
   overdue: number;
   blocked: number;
   open_total: number;
+  /** 本部门别人负责、但被阻塞的任务数量（部长/副部长首页）。 */
+  borrowed_blocked?: number;
 }
 
 export interface MineGroups {
@@ -150,7 +165,7 @@ export class TaskApi {
 
   /** POST /api/v1/tasks — 创建任务（响应在 data.task 下） */
   async create(data: CreateTaskRequest): Promise<ApiResponse<CreateTaskResponse>> {
-    return this.client.post<CreateTaskResponse>('/tasks', data);
+    return this.client.post<CreateTaskResponse>('/tasks', data, { label: '新建任务' });
   }
 
   /** PATCH /api/v1/tasks/{id} — 更新任务（只改传了的值） */
