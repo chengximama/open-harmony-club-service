@@ -53,6 +53,13 @@ export interface CreateLinkRequest {
   dept_id: number;
 }
 
+/** POST /api/v1/dept-invite-links 响应 —— 后端把完整视图包在 data.link 里，另附 token/url */
+export interface CreateLinkResponse {
+  link: InviteLinkView;
+  token: string;
+  url: string;
+}
+
 // ─── API 类 ───
 
 export class DeptApi {
@@ -87,10 +94,10 @@ export class DeptApi {
     return this.client.get<DeptLinksResponse>('/dept-invite-links');
   }
 
-  /** POST /api/v1/dept-invite-links — 创建招募链接 */
-  async createLink(deptId: number): Promise<ApiResponse<InviteLinkView>> {
+  /** POST /api/v1/dept-invite-links — 创建招募链接（响应 data 为 {link, token, url}） */
+  async createLink(deptId: number): Promise<ApiResponse<CreateLinkResponse>> {
     const data: CreateLinkRequest = { dept_id: deptId };
-    return this.client.post<InviteLinkView>('/dept-invite-links', data);
+    return this.client.post<CreateLinkResponse>('/dept-invite-links', data);
   }
 
   /** DELETE /api/v1/dept-invite-links/{token} — 停用招募链接 */

@@ -4,87 +4,102 @@
 //   - 部门 CRUD / 会长移交 / 重置密码 只对会长可见（副会长及以下不可见）
 //   - 部门非空拦截：memberCount > 0 时禁止删除
 // 工程化：Theme token 化、bindContentCover 化、注册口令"复制"对接 pasteboard
+// 已接真接口：DeptApi / MemberApi（注册口令、招募链接、会长移交、重置密码），权限读 PermissionStore
 
-import type { MemberBrief, MemberSelf, UserPermissions } from '../api/AuthApi';
+import type { MemberBrief } from '../api/AuthApi';
+import { MemberApi } from '../api/MemberApi';
+import { DeptApi, DeptView, InviteLinkView } from '../api/DeptApi';
+import { PermissionStore } from '../store/PermissionStore';
 import { Color, StatusColor, Space, Radius, FontSize, Shadow } from '../core/Theme';
 import { pasteboard } from '@kit.BasicServicesKit';
 
 interface Dept {
   id: number;
   name: string;
-  memberCount: number;   // UI 衍生数据（接 API 后由成员列表计算）
+  memberCount: number;   // UI 衍生数据，来自 DeptView.member_count
 }
 
 interface InviteLink {
-  id: string;
+  id: string;            // 即后端 token
   deptName: string;
   url: string;
   enabled: boolean;
   createdAt: string;
 }
 
-// 批量分配结果条目（用于重置密码后的展示，复用 PendingApprovalPage 的同名 interface）
 interface MemberOption {
   id: number;
   name: string;
   deptName: string;
 }
 
-// ─── 假数据 ───
-const DEPTS: Dept[] = [
-  { id: 0, name: '主席团', memberCount: 3 },
-  { id: 1, name: '课题部', memberCount: 4 },
-  { id: 2, name: '运营部', memberCount: 3 },
-  { id: 3, name: '宣传部', memberCount: 3 },
-];
+// ─── 类型映射（后端视图 → 页面本地 UI 类型）───
 
-const INVITE_LINKS: InviteLink[] = [
-  { id: 'link001', deptName: '课题部', url: 'club.example.com/join/abc123', enabled: true, createdAt: '2026-09-10' },
-  { id: 'link002', deptName: '运营部', url: 'club.example.com/join/def456', enabled: true, createdAt: '2026-09-12' },
-  { id: 'link003', deptName: '宣传部', url: 'club.example.com/join/ghi789', enabled: false, createdAt: '2026-09-08' },
-];
+function deptViewToDept(d: DeptView): Dept {
+  return { id: d.id, name: d.name, memberCount: d.member_count };
+}
 
-const MEMBERS: MemberOption[] = [
-  { id: 1, name: '王会长', deptName: '主席团' },
-  { id: 2, name: '李副会长', deptName: '主席团' },
-  { id: 4, name: '赵部长', deptName: '课题部' },
-  { id: 5, name: '孙副部长', deptName: '课题部' },
-];
+function linkViewToInviteLink(l: InviteLinkView): InviteLink {
+  const created: string = l.created_at ?? '';
+  return {
+    id: l.token,
+    deptName: l.dept.name,
+    url: l.url,
+    enabled: l.enabled,
+    createdAt: created.length >= 10 ? created.slice(0, 10) : created,
+  };
+}
 
-// 当前登录用户的 mock（接 API 后改为 PermissionStore.getInstance().userInfo）
-const MOCK_CURRENT_USER: MemberSelf = {
-  id: 1,
-  name: '王会长',
-  role: 'president',
-  dept: { id: 0, name: '主席团' },
-  status: 'active',
-  joined_at: '2026-09-01',
-  phone: '138****0000',
-};
+function memberToMemberOption(m: MemberBrief): MemberOption {
+  return { id: m.id, name: m.name, deptName: m.dept !== null ? m.dept.name : '未分配' };
+}
 
-const MOCK_CURRENT_PERMISSIONS: UserPermissions = {
-  view_scope: 'all',
-  manage_members: true,
-  set_role: true,
-  create_plan: true,
-  create_task: true,
-  update_any_task: true,
-};
+// 复制文本到剪贴板
+function copyText(text: string): void {
+  const pasteData: pasteboard.PasteData = pasteboard.createData(
+    pasteboard.MIMETYPE_TEXT_PLAIN,
+    text
+  );
+  pasteboard.getSystemPasteboard().setData(pasteData)
+    .then((): void => {
+      console.info('copied to clipboard');
+    })
+    .catch((e: Error): void => {
+      console.error(`copy to clipboard failed: ${e.message}`);
+    });
+}
 
-// 权限判断（按 project_memory：副会长不可见部门 CRUD/密码重置/会长移交）
+// 当前登录用户 id（未登录时为 -1，仅用于过滤"自己"）
+function currentUserId(): number {
+  const u = PermissionStore.getInstance().userInfo;
+  return u !== null ? u.id : -1;
+}
+
+// 权限判断：读 PermissionStore 里 /auth/me 下发的 permissions 布尔（D-1，2026-09-16）。
+// 仅用于画界面显隐，绝不能用它替代服务端校验。
 function canManageDepts(): boolean {
-  return MOCK_CURRENT_USER.role === 'president';
+  return PermissionStore.getInstance().permissions?.manage_depts ?? false;
+}
+
+function canViewRegisterCode(): boolean {
+  return PermissionStore.getInstance().permissions?.view_register_code ?? false;
+}
+
+function canChangeRegisterCode(): boolean {
+  return PermissionStore.getInstance().permissions?.change_register_code ?? false;
+}
+
+function canManageInviteLinks(): boolean {
+  return PermissionStore.getInstance().permissions?.manage_invite_links ?? false;
 }
 
 function canTransferPresidency(): boolean {
-  return MOCK_CURRENT_USER.role === 'president';
+  return PermissionStore.getInstance().permissions?.transfer_presidency ?? false;
 }
 
+// 重置密码：会长 / 副会长可用（manage_members）；部长 / 副部长限本部门，走成员详情页，不在本页展示
 function canResetMemberPassword(): boolean {
-  if (!MOCK_CURRENT_PERMISSIONS.manage_members) return false;
-  if (MOCK_CURRENT_USER.role === 'vice_president') return false;
-  // 部长/副部长/普通成员没有 manage_members 权限，已被上一条拦掉
-  return true;
+  return PermissionStore.getInstance().permissions?.manage_members ?? false;
 }
 
 @Component
@@ -117,7 +132,8 @@ struct SectionHeader {
 // ====== 部门管理 ======
 @Component
 struct DeptManageSection {
-  @State depts: Dept[] = DEPTS;
+  @State depts: Dept[] = [];
+  @State loading: boolean = true;
   // 弹窗状态
   @State showCreateDialog: boolean = false;
   @State showEditDialog: boolean = false;
@@ -130,6 +146,76 @@ struct DeptManageSection {
   // 输入值
   @State newDeptName: string = '';
   @State editDeptName: string = '';
+  private deptApi: DeptApi = new DeptApi();
+
+  aboutToAppear(): void {
+    this.loadDepts();
+  }
+
+  async loadDepts(): Promise<void> {
+    this.loading = true;
+    const resp = await this.deptApi.list();
+    if (resp.ok && resp.data) {
+      this.depts = resp.data.items.map((d: DeptView): Dept => deptViewToDept(d));
+    }
+    this.loading = false;
+  }
+
+  async submitCreate(): Promise<void> {
+    if (this.newDeptName.length === 0) return;
+    const resp = await this.deptApi.create({ name: this.newDeptName });
+    if (resp.ok && resp.data) {
+      this.depts = [...this.depts, deptViewToDept(resp.data)];
+      this.newDeptName = '';
+      this.showCreateDialog = false;
+    } else {
+      AlertDialog.show({
+        title: '创建失败',
+        message: resp.error?.message ?? '请重试',
+        primaryButton: { value: '知道了', action: () => {} }
+      });
+    }
+  }
+
+  async submitEdit(): Promise<void> {
+    if (this.editDeptName.length === 0) return;
+    const resp = await this.deptApi.update(this.editingDeptId, { name: this.editDeptName });
+    if (resp.ok && resp.data) {
+      const updated: DeptView = resp.data;
+      const next: Dept[] = [];
+      for (let i = 0; i < this.depts.length; i++) {
+        if (this.depts[i].id === updated.id) {
+          next.push(deptViewToDept(updated));
+        } else {
+          next.push(this.depts[i]);
+        }
+      }
+      this.depts = next;
+      this.editDeptName = '';
+      this.showEditDialog = false;
+    } else {
+      AlertDialog.show({
+        title: '保存失败',
+        message: resp.error?.message ?? '请重试',
+        primaryButton: { value: '知道了', action: () => {} }
+      });
+    }
+  }
+
+  async submitDelete(): Promise<void> {
+    const resp = await this.deptApi.delete_(this.deletingDeptId);
+    if (resp.ok) {
+      this.depts = this.depts.filter((d: Dept): boolean => d.id !== this.deletingDeptId);
+      this.showDeleteConfirm = false;
+    } else {
+      this.showDeleteConfirm = false;
+      AlertDialog.show({
+        title: '删除失败',
+        message: resp.error?.message ?? '请重试',
+        primaryButton: { value: '知道了', action: () => {} }
+      });
+    }
+  }
 
   @Builder
   createDialogBuilder() {
@@ -171,20 +257,7 @@ struct DeptManageSection {
             .layoutWeight(1)
             .margin({ left: Space.md })
             .borderRadius(Radius.button)
-            .onClick(() => {
-              if (this.newDeptName.length === 0) return;
-              // TODO: 接入 DeptApi.create({ name: this.newDeptName })
-              // mock：本地追加
-              let maxId: number = 0;
-              for (let i = 0; i < this.depts.length; i++) {
-                if (this.depts[i].id > maxId) maxId = this.depts[i].id;
-              }
-              const nextId: number = maxId + 1;
-              const newDept: Dept = { id: nextId, name: this.newDeptName, memberCount: 0 };
-              this.depts = [...this.depts, newDept];
-              this.newDeptName = '';
-              this.showCreateDialog = false;
-            })
+            .onClick(() => { this.submitCreate(); })
         }
         .width('100%')
       }
@@ -240,22 +313,7 @@ struct DeptManageSection {
             .layoutWeight(1)
             .margin({ left: Space.md })
             .borderRadius(Radius.button)
-            .onClick(() => {
-              if (this.editDeptName.length === 0) return;
-              // TODO: 接入 DeptApi.update(this.editingDeptId, { name: this.editDeptName })
-              const updated: Dept[] = [];
-              for (let i = 0; i < this.depts.length; i++) {
-                const d = this.depts[i];
-                if (d.id === this.editingDeptId) {
-                  updated.push({ id: d.id, name: this.editDeptName, memberCount: d.memberCount });
-                } else {
-                  updated.push(d);
-                }
-              }
-              this.depts = updated;
-              this.editDeptName = '';
-              this.showEditDialog = false;
-            })
+            .onClick(() => { this.submitEdit(); })
         }
         .width('100%')
       }
@@ -345,11 +403,7 @@ struct DeptManageSection {
             .layoutWeight(1)
             .margin({ left: Space.md })
             .borderRadius(Radius.button)
-            .onClick(() => {
-              // TODO: 接入 DeptApi.delete(this.deletingDeptId)
-              this.depts = this.depts.filter((d: Dept): boolean => d.id !== this.deletingDeptId);
-              this.showDeleteConfirm = false;
-            })
+            .onClick(() => { this.submitDelete(); })
         }
         .width('100%')
       }
@@ -377,56 +431,71 @@ struct DeptManageSection {
       })
 
       Column() {
-        ForEach(this.depts, (dept: Dept) => {
+        if (this.loading) {
           Row() {
-            Column() {
-              Text(dept.name)
-                .fontSize(FontSize.body)
-                .fontWeight(FontWeight.Medium)
-                .fontColor(Color.textPrimary)
-              Text(`${dept.memberCount} 人`)
-                .fontSize(FontSize.caption)
-                .fontColor(Color.textTertiary)
-                .margin({ top: 2 })
-            }
-            .alignItems(HorizontalAlign.Start)
-            .layoutWeight(1)
-
-            if (canManageDepts()) {
-              Text('编辑')
-                .fontSize(FontSize.body)
-                .fontColor(Color.primary)
-                .margin({ right: Space.lg })
-                .onClick(() => {
-                  this.editingDeptId = dept.id;
-                  this.editDeptName = dept.name;
-                  this.showEditDialog = true;
-                })
-
-              Text('删除')
-                .fontSize(FontSize.body)
-                .fontColor(StatusColor.overdue.fg)
-                .onClick(() => {
-                  // 部门非空拦截：memberCount > 0 时弹拦截弹窗，否则弹确认删除
-                  if (dept.memberCount > 0) {
-                    this.deletingDeptId = dept.id;
-                    this.deletingDeptName = dept.name;
-                    this.deletingDeptCount = dept.memberCount;
-                    this.showDeleteBlocked = true;
-                  } else {
-                    this.deletingDeptId = dept.id;
-                    this.deletingDeptName = dept.name;
-                    this.deletingDeptCount = 0;
-                    this.showDeleteConfirm = true;
-                  }
-                })
-            }
+            LoadingProgress().width(24).height(24).color(Color.primary)
           }
           .width('100%')
           .padding(Space.card)
-          .backgroundColor(Color.surface)
-          .margin({ bottom: 1 })
-        }, (dept: Dept) => dept.id.toString())
+          .justifyContent(FlexAlign.Center)
+        } else if (this.depts.length === 0) {
+          Text('暂无部门')
+            .fontSize(FontSize.caption)
+            .fontColor(Color.textTertiary)
+            .width('100%')
+            .padding(Space.card)
+            .textAlign(TextAlign.Center)
+        } else {
+          ForEach(this.depts, (dept: Dept) => {
+            Row() {
+              Column() {
+                Text(dept.name)
+                  .fontSize(FontSize.body)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(Color.textPrimary)
+                Text(`${dept.memberCount} 人`)
+                  .fontSize(FontSize.caption)
+                  .fontColor(Color.textTertiary)
+                  .margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              if (canManageDepts()) {
+                Text('编辑')
+                  .fontSize(FontSize.body)
+                  .fontColor(Color.primary)
+                  .margin({ right: Space.lg })
+                  .onClick(() => {
+                    this.editingDeptId = dept.id;
+                    this.editDeptName = dept.name;
+                    this.showEditDialog = true;
+                  })
+
+                Text('删除')
+                  .fontSize(FontSize.body)
+                  .fontColor(StatusColor.overdue.fg)
+                  .onClick(() => {
+                    if (dept.memberCount > 0) {
+                      this.deletingDeptId = dept.id;
+                      this.deletingDeptName = dept.name;
+                      this.deletingDeptCount = dept.memberCount;
+                      this.showDeleteBlocked = true;
+                    } else {
+                      this.deletingDeptId = dept.id;
+                      this.deletingDeptName = dept.name;
+                      this.deletingDeptCount = 0;
+                      this.showDeleteConfirm = true;
+                    }
+                  })
+              }
+            }
+            .width('100%')
+            .padding(Space.card)
+            .backgroundColor(Color.surface)
+            .margin({ bottom: 1 })
+          }, (dept: Dept) => dept.id.toString())
+        }
       }
       .backgroundColor(Color.surface)
       .borderRadius(Radius.card)
@@ -443,10 +512,56 @@ struct DeptManageSection {
 // ====== 注册口令 ======
 @Component
 struct RegisterConfigSection {
-  @State code: string = 'CLUB-2026';
+  @State code: string = '';
+  @State loading: boolean = true;
   @State showRotateConfirm: boolean = false;
   @State showChangeDialog: boolean = false;
   @State newCode: string = '';
+  private memberApi: MemberApi = new MemberApi();
+
+  aboutToAppear(): void {
+    this.loadCode();
+  }
+
+  async loadCode(): Promise<void> {
+    this.loading = true;
+    const resp = await this.memberApi.getRegisterCode();
+    if (resp.ok && resp.data) {
+      this.code = resp.data.code;
+    }
+    this.loading = false;
+  }
+
+  async submitChange(): Promise<void> {
+    if (this.newCode.length === 0) return;
+    const resp = await this.memberApi.setRegisterCode({ code: this.newCode });
+    if (resp.ok && resp.data) {
+      this.code = resp.data.code;
+      this.newCode = '';
+      this.showChangeDialog = false;
+    } else {
+      AlertDialog.show({
+        title: '更换失败',
+        message: resp.error?.message ?? '请重试',
+        primaryButton: { value: '知道了', action: () => {} }
+      });
+    }
+  }
+
+  async submitRotate(): Promise<void> {
+    const resp = await this.memberApi.rotateRegisterCode();
+    if (resp.ok && resp.data) {
+      this.code = resp.data.code;
+      this.showRotateConfirm = false;
+    } else {
+      this.showRotateConfirm = false;
+      AlertDialog.show({
+        title: '轮换失败',
+        message: resp.error?.message ?? '请重试',
+        primaryButton: { value: '知道了', action: () => {} }
+      });
+    }
+  }
 
   @Builder
   changeDialogBuilder() {
@@ -488,13 +603,7 @@ struct RegisterConfigSection {
             .layoutWeight(1)
             .margin({ left: Space.md })
             .borderRadius(Radius.button)
-            .onClick(() => {
-              if (this.newCode.length === 0) return;
-              // TODO: 接入 MemberApi.setRegisterCode({ code: this.newCode })
-              this.code = this.newCode;
-              this.newCode = '';
-              this.showChangeDialog = false;
-            })
+            .onClick(() => { this.submitChange(); })
         }
         .width('100%')
       }
@@ -545,16 +654,7 @@ struct RegisterConfigSection {
             .layoutWeight(1)
             .margin({ left: Space.md })
             .borderRadius(Radius.button)
-            .onClick(() => {
-              // TODO: 接入 MemberApi.rotateRegisterCode()
-              const chars: string = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-              let s: string = '';
-              for (let i = 0; i < 6; i++) {
-                s += chars.charAt(Math.floor(Math.random() * chars.length));
-              }
-              this.code = `CLUB-${s}`;
-              this.showRotateConfirm = false;
-            })
+            .onClick(() => { this.submitRotate(); })
         }
         .width('100%')
       }
@@ -580,7 +680,7 @@ struct RegisterConfigSection {
             Text('当前口令')
               .fontSize(FontSize.caption)
               .fontColor(Color.textTertiary)
-            Text(this.code)
+            Text(this.loading ? '加载中…' : this.code)
               .fontSize(20)
               .fontWeight(FontWeight.Bold)
               .fontColor(Color.primary)
@@ -595,21 +695,8 @@ struct RegisterConfigSection {
             .height(32)
             .backgroundColor(Color.primarySoft)
             .fontColor(Color.primary)
-            .onClick(() => {
-              // 对接剪贴板（@kit.BasicServicesKit pasteboard）
-              // 官方 API：createData(MIMETYPE_TEXT_PLAIN, text) → setData(PasteData)
-              const pasteData: pasteboard.PasteData = pasteboard.createData(
-                pasteboard.MIMETYPE_TEXT_PLAIN,
-                this.code
-              );
-              pasteboard.getSystemPasteboard().setData(pasteData)
-                .then((): void => {
-                  console.info('register code copied to clipboard');
-                })
-                .catch((e: Error): void => {
-                  console.error(`copy to clipboard failed: ${e.message}`);
-                });
-            })
+            .enabled(!this.loading)
+            .onClick(() => { copyText(this.code); })
         }
         .width('100%')
         .padding(Space.lg)
@@ -617,7 +704,7 @@ struct RegisterConfigSection {
         Divider()
           .color(Color.divider)
 
-        if (canManageDepts()) {
+        if (canChangeRegisterCode()) {
           Row() {
             Button('更换口令')
               .layoutWeight(1)
@@ -656,6 +743,7 @@ struct RegisterConfigSection {
 // ====== 招募链接 ======
 @Component
 struct CreateLinkDialog {
+  depts: Dept[] = [];
   onConfirm: (deptIndex: number) => void = (_d: number) => {};
   onCancel: () => void = () => {};
   @State selectedDeptIndex: number = 0;
@@ -675,9 +763,9 @@ struct CreateLinkDialog {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(DEPTS.map((d: Dept): SelectOption => ({ value: d.name })))
+        Select(this.depts.map((d: Dept): SelectOption => ({ value: d.name })))
           .selected(this.selectedDeptIndex)
-          .value(DEPTS[this.selectedDeptIndex]?.name || DEPTS[0].name)
+          .value(this.depts.length > 0 ? this.depts[this.selectedDeptIndex].name : '')
           .onSelect((index: number) => { this.selectedDeptIndex = index; })
           .width('100%')
           .margin({ bottom: Space.xl })
@@ -717,37 +805,78 @@ struct CreateLinkDialog {
 
 @Component
 struct InviteLinkSection {
-  @State links: InviteLink[] = INVITE_LINKS;
+  @State links: InviteLink[] = [];
+  @State depts: Dept[] = [];
+  @State loading: boolean = true;
   @State showCreateDialog: boolean = false;
+  private deptApi: DeptApi = new DeptApi();
 
-  toggleEnabled(id: string): void {
-    const idx = this.links.findIndex((l: InviteLink): boolean => l.id === id);
-    if (idx >= 0) {
-      this.links[idx].enabled = !this.links[idx].enabled;
-      this.links = [...this.links];
+  aboutToAppear(): void {
+    this.loadLinks();
+    this.loadDepts();
+  }
+
+  async loadLinks(): Promise<void> {
+    this.loading = true;
+    const resp = await this.deptApi.listLinks();
+    if (resp.ok && resp.data) {
+      this.links = resp.data.items.map((l: InviteLinkView): InviteLink => linkViewToInviteLink(l));
+    }
+    this.loading = false;
+  }
+
+  async loadDepts(): Promise<void> {
+    const resp = await this.deptApi.list();
+    if (resp.ok && resp.data) {
+      this.depts = resp.data.items.map((d: DeptView): Dept => deptViewToDept(d));
+    }
+  }
+
+  // 停用链接（后端 DELETE 语义：enabled 置 false，不做重新启用）
+  async disableLink(id: string): Promise<void> {
+    const resp = await this.deptApi.toggleLink(id);
+    if (resp.ok && resp.data) {
+      const updated: InviteLinkView = resp.data;
+      const next: InviteLink[] = [];
+      for (let i = 0; i < this.links.length; i++) {
+        if (this.links[i].id === id) {
+          next.push(linkViewToInviteLink(updated));
+        } else {
+          next.push(this.links[i]);
+        }
+      }
+      this.links = next;
+    } else {
+      AlertDialog.show({
+        title: '操作失败',
+        message: resp.error?.message ?? '请重试',
+        primaryButton: { value: '知道了', action: () => {} }
+      });
+    }
+  }
+
+  async createLink(deptIndex: number): Promise<void> {
+    const dept: Dept = this.depts[deptIndex];
+    if (dept === undefined) return;
+    const resp = await this.deptApi.createLink(dept.id);
+    if (resp.ok && resp.data) {
+      this.links = [...this.links, linkViewToInviteLink(resp.data.link)];
+      this.showCreateDialog = false;
+    } else {
+      AlertDialog.show({
+        title: '生成失败',
+        message: resp.error?.message ?? '请重试',
+        primaryButton: { value: '知道了', action: () => {} }
+      });
     }
   }
 
   @Builder
   createDialogBuilder() {
     CreateLinkDialog({
+      depts: this.depts,
       onConfirm: (deptIndex: number): void => {
-        const dept: Dept = DEPTS[deptIndex];
-        // TODO: 接入 LinkApi.create({ dept_id: dept.id }) 后用后端返回的 url
-        const chars: string = 'abcdefghijklmnopqrstuvwxyz0123456789';
-        let token: string = '';
-        for (let i = 0; i < 6; i++) {
-          token += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
-        const newLink: InviteLink = {
-          id: `link${Date.now()}`,
-          deptName: dept.name,
-          url: `club.example.com/join/${token}`,
-          enabled: true,
-          createdAt: new Date().toISOString().slice(0, 10),
-        };
-        this.links = [...this.links, newLink];
-        this.showCreateDialog = false;
+        this.createLink(deptIndex);
       },
       onCancel: (): void => {
         this.showCreateDialog = false;
@@ -759,58 +888,74 @@ struct InviteLinkSection {
     Column() {
       SectionHeader({
         title: '招募链接',
-        actionText: canManageDepts() ? '+ 生成链接' : '',
+        actionText: canManageInviteLinks() ? '+ 生成链接' : '',
         onAction: () => {
           this.showCreateDialog = true;
         }
       })
 
       Column() {
-        ForEach(this.links, (link: InviteLink) => {
-          Column() {
-            Row() {
-              Text(link.deptName)
-                .fontSize(FontSize.body)
-                .fontWeight(FontWeight.Medium)
-                .fontColor(Color.textPrimary)
-
-              Blank()
-
-              Text(link.enabled ? '启用中' : '已停用')
-                .fontSize(FontSize.caption)
-                .fontColor(link.enabled ? StatusColor.done.fg : Color.textTertiary)
-                .padding({ left: Space.xs * 2, right: Space.xs * 2, top: 2, bottom: 2 })
-                .backgroundColor(link.enabled ? StatusColor.done.bg : StatusColor.todo.bg)
-                .borderRadius(Radius.pill)
-            }
-            .width('100%')
-
-            Text(link.url)
-              .fontSize(FontSize.caption)
-              .fontColor(Color.primary)
-              .margin({ top: Space.xs })
-
-            Row() {
-              Text(`创建于 ${link.createdAt}`)
-                .fontSize(FontSize.caption)
-                .fontColor(Color.textTertiary)
-
-              Blank()
-
-              if (canManageDepts()) {
-                Text(link.enabled ? '停用' : '启用')
-                  .fontSize(FontSize.caption)
-                  .fontColor(link.enabled ? StatusColor.overdue.fg : StatusColor.done.fg)
-                  .onClick(() => { this.toggleEnabled(link.id); })
-              }
-            }
-            .width('100%')
-            .margin({ top: Space.sm })
+        if (this.loading) {
+          Row() {
+            LoadingProgress().width(24).height(24).color(Color.primary)
           }
           .width('100%')
           .padding(Space.card)
-          .margin({ bottom: 1 })
-        }, (link: InviteLink) => link.id)
+          .justifyContent(FlexAlign.Center)
+        } else if (this.links.length === 0) {
+          Text('暂无招募链接')
+            .fontSize(FontSize.caption)
+            .fontColor(Color.textTertiary)
+            .width('100%')
+            .padding(Space.card)
+            .textAlign(TextAlign.Center)
+        } else {
+          ForEach(this.links, (link: InviteLink) => {
+            Column() {
+              Row() {
+                Text(link.deptName)
+                  .fontSize(FontSize.body)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(Color.textPrimary)
+
+                Blank()
+
+                Text(link.enabled ? '启用中' : '已停用')
+                  .fontSize(FontSize.caption)
+                  .fontColor(link.enabled ? StatusColor.done.fg : Color.textTertiary)
+                  .padding({ left: Space.xs * 2, right: Space.xs * 2, top: 2, bottom: 2 })
+                  .backgroundColor(link.enabled ? StatusColor.done.bg : StatusColor.todo.bg)
+                  .borderRadius(Radius.pill)
+              }
+              .width('100%')
+
+              Text(link.url)
+                .fontSize(FontSize.caption)
+                .fontColor(Color.primary)
+                .margin({ top: Space.xs })
+
+              Row() {
+                Text(`创建于 ${link.createdAt}`)
+                  .fontSize(FontSize.caption)
+                  .fontColor(Color.textTertiary)
+
+                Blank()
+
+                if (canManageInviteLinks() && link.enabled) {
+                  Text('停用')
+                    .fontSize(FontSize.caption)
+                    .fontColor(StatusColor.overdue.fg)
+                    .onClick(() => { this.disableLink(link.id); })
+                }
+              }
+              .width('100%')
+              .margin({ top: Space.sm })
+            }
+            .width('100%')
+            .padding(Space.card)
+            .margin({ bottom: 1 })
+          }, (link: InviteLink) => link.id)
+        }
       }
       .backgroundColor(Color.surface)
       .borderRadius(Radius.card)
@@ -821,14 +966,80 @@ struct InviteLinkSection {
   }
 }
 
-// ====== 危险操作区（按权限显隐：副会长不可见部门 CRUD/密码重置/会长移交）======
+// ====== 危险操作区（按权限显隐）======
 @Component
 struct DangerZoneSection {
+  @State members: MemberOption[] = [];
   @State showTransferDialog: boolean = false;
   @State showResetDialog: boolean = false;
   @State showTransferResult: boolean = false;
   @State transferResultMsg: string = '';
+  @State showResetResult: boolean = false;
+  @State resetResultMsg: string = '';
+  @State resetResultPassword: string = '';
   @State selectedTransferIndex: number = 0;
+  @State selectedResetIndex: number = 0;
+  private memberApi: MemberApi = new MemberApi();
+
+  aboutToAppear(): void {
+    this.loadMembers();
+  }
+
+  async loadMembers(): Promise<void> {
+    const resp = await this.memberApi.list();
+    if (resp.ok && resp.data) {
+      this.members = resp.data.items
+        .filter((m: MemberBrief): boolean => m.status === 'active')
+        .map((m: MemberBrief): MemberOption => memberToMemberOption(m));
+    }
+  }
+
+  // 移交给的候选（排除自己）
+  transferCandidates(): MemberOption[] {
+    return this.members.filter((m: MemberOption): boolean => m.id !== currentUserId());
+  }
+
+  // 重置密码的候选（排除自己）
+  resetCandidates(): MemberOption[] {
+    return this.members.filter((m: MemberOption): boolean => m.id !== currentUserId());
+  }
+
+  async submitTransfer(): Promise<void> {
+    const candidates: MemberOption[] = this.transferCandidates();
+    const target: MemberOption = candidates[this.selectedTransferIndex];
+    if (target === undefined) return;
+    const resp = await this.memberApi.transferPresidency(target.id);
+    if (resp.ok && resp.data) {
+      this.transferResultMsg = `已将会长权限移交至 ${target.name}（${target.deptName}）`;
+      this.showTransferDialog = false;
+      this.showTransferResult = true;
+    } else {
+      AlertDialog.show({
+        title: '移交失败',
+        message: resp.error?.message ?? '请重试',
+        primaryButton: { value: '知道了', action: () => {} }
+      });
+    }
+  }
+
+  async submitReset(): Promise<void> {
+    const candidates: MemberOption[] = this.resetCandidates();
+    const target: MemberOption = candidates[this.selectedResetIndex];
+    if (target === undefined) return;
+    const resp = await this.memberApi.resetPassword(target.id);
+    if (resp.ok && resp.data) {
+      this.resetResultMsg = `已为 ${target.name} 重置密码`;
+      this.resetResultPassword = resp.data.temporary_password;
+      this.showResetDialog = false;
+      this.showResetResult = true;
+    } else {
+      AlertDialog.show({
+        title: '重置失败',
+        message: resp.error?.message ?? '请重试',
+        primaryButton: { value: '知道了', action: () => {} }
+      });
+    }
+  }
 
   @Builder
   transferDialogBuilder() {
@@ -853,10 +1064,9 @@ struct DangerZoneSection {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(MEMBERS.filter((m: MemberOption): boolean => m.id !== MOCK_CURRENT_USER.id)
-          .map((m: MemberOption): SelectOption => ({ value: `${m.name}（${m.deptName}）` })))
+        Select(this.transferCandidates().map((m: MemberOption): SelectOption => ({ value: `${m.name}（${m.deptName}）` })))
           .selected(this.selectedTransferIndex)
-          .value(MEMBERS.filter((m: MemberOption): boolean => m.id !== MOCK_CURRENT_USER.id)[this.selectedTransferIndex]?.name || '请选择')
+          .value(this.transferCandidates().length > 0 ? this.transferCandidates()[this.selectedTransferIndex].name : '请选择')
           .onSelect((index: number) => { this.selectedTransferIndex = index; })
           .width('100%')
           .margin({ bottom: Space.xl })
@@ -879,16 +1089,7 @@ struct DangerZoneSection {
             .layoutWeight(1)
             .borderRadius(Radius.button)
             .margin({ left: Space.md })
-            .onClick(() => {
-              // TODO: 接入 MemberApi.transferPresidency(targetId)
-              const candidates: MemberOption[] = MEMBERS.filter((m: MemberOption): boolean => m.id !== MOCK_CURRENT_USER.id);
-              const target: MemberOption = candidates[this.selectedTransferIndex];
-              if (target) {
-                this.transferResultMsg = `已将会长权限移交至 ${target.name}（${target.deptName}）`;
-                this.showTransferDialog = false;
-                this.showTransferResult = true;
-              }
-            })
+            .onClick(() => { this.submitTransfer(); })
         }
         .width('100%')
       }
@@ -967,9 +1168,10 @@ struct DangerZoneSection {
           .width('100%')
           .margin({ bottom: Space.xs })
 
-        Select(MEMBERS.map((m: MemberOption): SelectOption => ({ value: `${m.name}（${m.deptName}）` })))
-          .selected(0)
-          .value(MEMBERS[0]?.name || '请选择')
+        Select(this.resetCandidates().map((m: MemberOption): SelectOption => ({ value: `${m.name}（${m.deptName}）` })))
+          .selected(this.selectedResetIndex)
+          .value(this.resetCandidates().length > 0 ? this.resetCandidates()[this.selectedResetIndex].name : '请选择')
+          .onSelect((index: number) => { this.selectedResetIndex = index; })
           .width('100%')
           .margin({ bottom: Space.xl })
 
@@ -979,17 +1181,7 @@ struct DangerZoneSection {
           .fontColor(StatusColor.blocked.fg)
           .width('100%')
           .borderRadius(Radius.button)
-          .onClick(() => {
-            // mock：生成 8 位临时密码
-            // TODO: 接入 POST /members/{id}/reset-password 后用后端返回的密码
-            const chars: string = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-            let p: string = '';
-            for (let i = 0; i < 8; i++) {
-              p += chars.charAt(Math.floor(Math.random() * chars.length));
-            }
-            console.info(`mock temp password: ${p}`);
-            this.showResetDialog = false;
-          })
+          .onClick(() => { this.submitReset(); })
       }
       .width('80%')
       .padding(Space.xl)
@@ -1003,10 +1195,69 @@ struct DangerZoneSection {
     .alignItems(HorizontalAlign.Center)
   }
 
+  @Builder
+  resetResultBuilder() {
+    Column() {
+      Column() {
+        Text('重置成功')
+          .fontSize(FontSize.title)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(StatusColor.done.fg)
+          .margin({ bottom: Space.sm })
+
+        Text(this.resetResultMsg)
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textSecondary)
+          .textAlign(TextAlign.Center)
+          .width('100%')
+          .margin({ bottom: Space.md })
+
+        Text('一次性临时密码')
+          .fontSize(FontSize.caption)
+          .fontColor(Color.textTertiary)
+          .margin({ bottom: Space.xs })
+
+        Text(this.resetResultPassword)
+          .fontSize(24)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(Color.primary)
+          .margin({ bottom: Space.lg })
+
+        Row() {
+          Button('复制密码')
+            .type(ButtonType.Capsule)
+            .backgroundColor(Color.primarySoft)
+            .fontColor(Color.primary)
+            .layoutWeight(1)
+            .onClick(() => { copyText(this.resetResultPassword); })
+
+          Button('知道了')
+            .type(ButtonType.Capsule)
+            .backgroundColor(StatusColor.done.bg)
+            .fontColor(StatusColor.done.fg)
+            .layoutWeight(1)
+            .margin({ left: Space.md })
+            .onClick(() => {
+              this.resetResultMsg = '';
+              this.resetResultPassword = '';
+              this.showResetResult = false;
+            })
+        }
+        .width('100%')
+      }
+      .width('85%')
+      .padding(Space.xl)
+      .backgroundColor(Color.surface)
+      .borderRadius(Radius.card)
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(Color.overlay)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
+  }
+
   build() {
-    // 危险操作区只对有相应权限的角色可见
-    // 会长移交：只会长可见
-    // 重置密码：会长可见，副会长不可见（project_memory 约束）
     if (canTransferPresidency() || canResetMemberPassword()) {
       Column() {
         SectionHeader({ title: '危险操作', actionText: '' })
@@ -1074,6 +1325,7 @@ struct DangerZoneSection {
       .bindContentCover(this.showTransferDialog, this.transferDialogBuilder)
       .bindContentCover(this.showTransferResult, this.transferResultBuilder)
       .bindContentCover(this.showResetDialog, this.resetDialogBuilder)
+      .bindContentCover(this.showResetResult, this.resetResultBuilder)
     }
   }
 }
@@ -1089,9 +1341,15 @@ export default struct ManagePage {
         TabContent() {
           Scroll() {
             Column() {
-              DeptManageSection()
-              RegisterConfigSection()
-              InviteLinkSection()
+              if (canManageDepts()) {
+                DeptManageSection()
+              }
+              if (canViewRegisterCode()) {
+                RegisterConfigSection()
+              }
+              if (canManageInviteLinks()) {
+                InviteLinkSection()
+              }
               DangerZoneSection()
             }
           }
