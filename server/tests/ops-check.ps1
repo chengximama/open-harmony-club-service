@@ -163,7 +163,17 @@ try {
     Check "GET / -> 200" ($r.Status -eq 200) "status=$($r.Status)"
 
     # ---------- 2) 后台 RBAC ----------
-    $r = Hit "POST" "/api/login" '{"username":"admin","password":"admin123"}' $null $null
+    # N-29（2026-09-17）：后台口令不再写死。本脚本删掉了自己的 rbac.json，所以这里
+    # **必然是首次建库** —— admin.exe 会随机生成口令并追加到 admin.env 的
+    # admin_pass / user_pass，因此必须在**面板启动之后**读它（回退值只为兼容老库）。
+    $adminPw = "admin123"
+    $userPw  = "user123"
+    foreach ($line in (Get-Content $envFile -Encoding UTF8)) {
+        $t = $line.Trim()
+        if ($t -match '^admin_pass\s*=\s*(\S+)') { $adminPw = $Matches[1] }
+        if ($t -match '^user_pass\s*=\s*(\S+)')  { $userPw  = $Matches[1] }
+    }
+    $r = Hit "POST" "/api/login" (ConvertTo-Json @{ username = "admin"; password = $adminPw } -Compress) $null $null
     Check "后台登录 -> code=0" ((BizCode $r) -eq 0) "body=$($r.Body)"
     $token = $null
     if ($r.Body -match '"token"\s*:\s*"([^"]+)"') { $token = $Matches[1] }
@@ -174,7 +184,7 @@ try {
     $r = Hit "GET" "/api/club/overview" $null $null $null
     Check "运维接口无 token -> HTTP 401 且 code=401" (($r.Status -eq 401) -and ((BizCode $r) -eq 401)) "status=$($r.Status) body=$($r.Body)"
 
-    $r = Hit "POST" "/api/login" '{"username":"user","password":"user123"}' $null $null
+    $r = Hit "POST" "/api/login" (ConvertTo-Json @{ username = "user"; password = $userPw } -Compress) $null $null
     $tokenUser = $null
     if ($r.Body -match '"token"\s*:\s*"([^"]+)"') { $tokenUser = $Matches[1] }
     $r = Hit "GET" "/api/club/overview" $null $tokenUser $null

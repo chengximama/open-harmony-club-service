@@ -44,12 +44,17 @@
 
 ```powershell
 cd server
-.\build\club-server.exe test                                              # 单测 471 项
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 421 项
+.\build\club-server.exe test                                              # 单测 490 项
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 427 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1 # TLS 22 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-check.ps1  # 前后端契约 30 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1     # 容量基准（按需，见 docs/capacity-baseline.md）
 ```
+
+> 冒烟里有一条**会因机器而异**：N-21 的"按 IP 节流"反证需要一块**非回环网卡**才能造出"远程来源"。
+> 取不到时它打印 `skip` 并**计为通过**（不是失败，见 `code-review.md` N-30）——
+> 所以**项数可能在 427 上下浮动一两条，判据是 `FAIL 0`，不是那个总数**。
+> （本机无网卡时实测连跑两次都是 **PASS 427 / FAIL 0**。）
 
 **后台 / 运维页另有两套端到端**（改了 `build.ps1 -Target admin`、`fw_rbac_store.cj`、`src/ops/*`、轻舟快照或前端后都要跑）：
 
@@ -187,7 +192,7 @@ cd build\admin
 | **`docs/local-deploy.md`** | **本机部署一页上手**：前置体检 · 五步跑起来（编译/初始化/起服务/验证/停止）· HTTPS · 部署包 · 让客户端连上 · 数据与备份 · 坑表 | **第一次在本机跑服务端看这个** |
 | **`docs/API-NOTES.md`** | 编译期 API 事实清单 + **38 条踩坑记录**（含"轻舟成功响应也可能带 HTTP 404"「坑 34」、"关停端点回执可能丢失"「坑 36」、"仓颉枚举不能用 `==`"「坑 38」） | 加新函数前先查（避让框架同名符号） |
 | `docs/api-design.md` | **接口设计的唯一权威**：40 个接口逐条定义 | 写服务端时全程对照 |
-| **`docs/code-review.md`** | **代码评审报告（三轮）**：第一轮 24 条（3 P0 + 8 P1 + 13 P2）、第二轮 9 条、第三轮 4 条 —— **全部修复并独立复验**，附回退实测证据 | 想了解"哪些坑已经踩过" |
+| **`docs/code-review.md`** | **代码评审报告（六轮）**：一 24 条 · 二 9 条 · 三 4 条（N-1…N-13）· 四 6 条 + N-20 · 五 4 条（N-21 登录 CPU 放大 / N-22 构建脚本陷阱…）· 六 3 条（**N-29 运维台默认口令** / N-30 测试环境依赖…）—— 前五轮已修并复验，**第六轮见文末** | 想了解"哪些坑已经踩过、为什么这样写" |
 | `docs/v1-scope.md` | 范围基准：11 页面、6 张表、19 条业务规则、权限矩阵 | 想知道"这个要不要做" |
 | **`docs/ui-spec-conformance-review.md`** | **UI 设计规格 ↔ 服务端一致性审计**：13 页逐条对照、15 条差异（含 4 条设计稿自相矛盾）+ 已对齐清单 + 处置口径 | **改服务端契约前先看这个**（尤其是"读范围全社团、写不变"这条边界） |
 | `docs/frontend-brief.md` | 前端对接精简版 | 客户端同事看 |

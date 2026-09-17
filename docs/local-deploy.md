@@ -215,8 +215,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\admin-check.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1
 ```
 
-- 后台账号 `admin / admin123`（角色 1）、`user / user123`（角色 2）；
-  端口 / 密钥 / 令牌时长在 `admin.env`（首次构建生成随机 `secret`，之后不覆盖）。
+> ⚠️ **运维台监听的是 `0.0.0.0:3000`，不是只绑本机。**
+> 轻舟的 `app.serve(port)` 把地址写死成 `0.0.0.0`（`src/app.cj`），**没有"只绑回环"的开关**，
+> 所以上面那个 `http://127.0.0.1:3000/` 只是"在本机怎么访问它"，
+> 并不意味着别人连不上 —— **同一局域网/公网能到 3000 端口的人都能打开这个页面**。
+> 它能看到整个社团库（含手机号与审计日志），因此请用防火墙只对运维机放行 3000，
+> 不要把它暴露出去。
+
+- **后台账号口令：首次启动时随机生成，不在仓库里、也不是任何固定值。**
+  第一次运行（建库）时 `admin.exe` 会生成一对口令（各 16 个十六进制字符），
+  **打印在控制台一次**并追加到 `build\admin\admin.env` 的 `admin_pass` / `user_pass`；
+  之后启动只提示"见 admin.env"，不再回显。想自己指定就把这两行取消注释后填值
+  （**别用 `admin123` 这类公开默认值** —— 2026-09-17 前它就是默认值，见 `code-review.md` N-29）。
+  账号是 `admin`（角色 1）与 `user`（角色 2）。
+- 若 `admin.env` 里仍是老库的 `admin123`，启动时会**醒目告警**；处置办法是删掉
+  `build\admin\admin-data\rbac.json` 后重启（会重新随机生成），或改成自己的口令再删库重建。
+- 端口 / 密钥 / 令牌时长在 `admin.env`（首次构建生成随机 `secret`，之后不覆盖）。
 - 后台自己的数据落在 `build\admin\admin-data\rbac.json`（原子写：先 `.tmp` 再 rename）。
 - 运维页 `/club` **只放给角色 1**（`user` 拿到 403）。它**读**社团库文件
   （`admin.env` 的 `club_data`，默认 `../data` —— 即从 `build\` 启动 club-server 时的数据目录），
@@ -226,7 +240,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\tests\ops-check.ps1
   cd build
   ..\build\club-server.exe init-ops 13800000009 admin123 data   # ① 建运维账号（一次性；生产换强口令）
   # ② 把手机号/口令填进 build\admin\admin.env 的 club_user / club_pass
-  # ③ 运维人员只用后台账号 admin/admin123 打开 /club —— 页面上不需要任何社团口令
+  # ③ 运维人员只用后台账号（见上一节：首次启动生成的随机口令）打开 /club —— 页面上不需要任何社团口令
   ```
   它的权限 = **除「移交会长」外与会长同权**（能重置会长的口令、能改部门、能换注册口令），
   **不可由 API 分配**；退役：`club-server retire-ops 13800000009 data`。

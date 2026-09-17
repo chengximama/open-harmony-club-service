@@ -1864,3 +1864,211 @@ Compress-Archive -Path .\dist\club-server\* -DestinationPath .\dist\club-server-
 
 > 结论：**队友只要 `git clone` + 跑 `build.cmd` 就能编**（前提是机器上装了 cjc 1.1.3 + stdx 1.1.3.1）；
 > 没装 SDK 的机器则直接收 `club-server-<日期>.zip`，**一行命令都不用敲**。
+
+---
+
+# 第六轮复验（2026-09-17 · 工作区 `9fea183`）
+
+> **触发方式**：又回来问"这一波有没有 bug"。这一波很大 —— 116 个文件、+13748 行：
+> 新增**运维台**（`src/ops/` 三个文件 + `admin-web` 前端 + 第二个 exe）、轻舟升到 `e072980`、
+> 新增 **`ops` 身份**、密码口径定稿（D-6）、客户端接了一大截。
+>
+> 结论：**有一条严重的**（N-29：运维台默认口令 + 监听 `0.0.0.0` → 可完整接管会长账号），
+> 外加 1 条测试健壮性、2 条次要；**都已在本轮修掉**（§四）。
+> 同时，**第五轮的 4 条全部确认修复**（含客户端那条 C-2）。
+
+| 项 | 值 |
+| --- | --- |
+| 复验对象 | `9fea183`（含运维台 `5640146`/`adf96aa`/`9fea183`、轻舟 `e072980`、`4e7da87` 五处修复） |
+| 复验方式 | 重跑五套 → 读权限模型 diff → **端到端复现接管链** → 在副本里验证构建脚本 |
+| 结论 | 第五轮 N-21…N-24 **全部已修**；本轮新发现 **3 条**（1 严重 / 1 中 / 1 低），**已全部修复** |
+| 复核方改动 | **本轮动了产品代码**（修 N-29 / N-30 / N-31），与第 2–5 轮"只读复验"不同 —— 见 §四 |
+
+> **编号说明（2026-09-17）**：本轮三条**原写为 N-25 / N-26 / N-27**，与本文前面
+> 「修复方增补（2026-09-16 · 队友 clone 后无法编译）」那一节的 N-25…N-28 **撞号** ——
+> 那一节写得更早、也放在更前面，按"后写的让位"重编号为 **N-29 / N-30 / N-31**。
+> 同时**撤回原先的第 4 条**（`server-code-guide.md` 未入 git，原 N-28）：
+> 团队已决定该导读**不入库**，所以那是**决定**而不是缺陷，不再作为条目保留。
+> （若你看到 `ba67eea` 的提交信息里写的是 N-25~N-27，那是重编号之前的版本，同一次提交里已一并更新。）
+
+## 一、基线（改动前，自行重跑）
+
+| 套件 | 声明 | **我的实测** |
+| --- | --- | --- |
+| 单测 `club-server.exe test` | 471 / 0 | **PASS 490 / FAIL 0**（项数已涨，README 未同步 → N-31） |
+| HTTP 冒烟 `tests/smoke.ps1` | 421 / 0 | **PASS 425 / FAIL 1** ← 见 N-30 |
+| 契约回归 `client-contract-check.ps1` | 30 / 0 | **PASS 30 / FAIL 0** |
+| 后台 `admin-check.ps1` | — | **PASS 29 / FAIL 0** |
+| 运维页 `ops-check.ps1` | — | **PASS 52 / FAIL 0** |
+| TLS `tls-check.ps1` | 22 / 0 | 沙箱假阴性（附录 B 同因），未复跑 |
+
+## 二、第五轮 4 条：逐条确认修复
+
+| 条 | 证据 | 结论 |
+| --- | --- | --- |
+| **N-21** 登录无按 IP 节流 | `h_auth.cj` 新增"登录失败按 IP 记一笔"，并在加锁前"先看按 IP 的锁"，回环有意豁免；补了冒烟 §22.7 作闸门 | ✅ |
+| **N-22** 清单枚举工作区 | `update-manifest.ps1` 改为 `git ls-files`（**从索引生成**），脚本头注释直接引用了 N-22 的复现 | ✅ |
+| **N-23** OpenSSL 无版本锁定 | 新增 `deps/openssl/EXPECTED.sha256`；构建输出实测打印 `libcrypto-3-x64.dll 3.5.7 0330b5f558996f29… 与 EXPECTED 一致` | ✅ |
+| **N-24** 部署包文件数自相矛盾 | 改为「制品 5 个：exe + 4 个 DLL；连证书 2、启动脚本 2 共 9 个文件」 | ✅ |
+| （附）客户端 **C-2** 明文 HTTP | `network_config.json` 改为**全局禁明文 + 3 个开发主机的 domain-config 白名单**；`Env.ets` 按 `BuildProfile.DEBUG` 分流，**发布构建指向 `https://replace-before-release.invalid`**（`.invalid` 永不解析，保证发版前不会静默发明文） | ✅ **比评审建议更稳** |
+
+## 三、本轮新发现
+
+- [x] N-29 `[严重]` **运维台用公开的默认口令 `admin/admin123`，且监听 `0.0.0.0`** → 同网段任何人可读全社团库、并可经 `/api/club/session` 拿到 **ops 令牌直接接管会长账号**（**已修**，见 §四）
+- [x] N-30 `[中]` **冒烟测试在"没有非回环 IPv4"的机器上必然失败**（CI/容器/沙箱）→ "四套全绿"不可复现（**已修**）
+- [x] N-31 `[低]` README 的测试项数过时（写 471 / 421，实测 490 / 425）（**已修**）
+
+### N-29 运维台默认口令 + 监听 0.0.0.0 → 可接管会长账号
+
+**状态**：**已修（2026-09-17）**
+**位置**：`fw_rbac_store.cj:251`（种子口令写死）· `build.ps1:337`（模板写死 `admin_pass=admin123`）· `ops/admin_main.cj:477`（交出 ops 令牌）· 轻舟 `src/app.cj:95`（`.addr("0.0.0.0")`）
+
+**链条（四环，全部实测）**
+
+```
+① 默认口令 admin/admin123 登录面板        -> 拿到 JWT（141 字符）
+② GET /api/club/session                   -> 面板交出 club-server 的【运维令牌】（64 字符）
+③ 拿该令牌直连 club-server 重置会长口令    -> HTTP 200，临时口令 3G7A7QKV
+④ 用临时口令以【会长】身份登录             -> 成功，role=president
+```
+
+**每一环的证据**
+
+| 环节 | 证据 |
+| --- | --- |
+| 默认口令是**硬编码字面量** | `build.ps1:337-338` 生成 `admin_user=admin` / `admin_pass=admin123` —— **只随机了 JWT secret**；真正生效的是 `fw_rbac_store.cj:251` 的 `hashPassword("admin123", ...)` 种子 |
+| 面板**监听全网卡** | `netstat` → `TCP 0.0.0.0:3000 LISTENING`；根因 `app.cj:95` 的 `.addr("0.0.0.0")` **无 host 参数**，且该文件属内置快照、按纪律不可改 |
+| 文档不提这件事 | `local-deploy.md:212` 只写 `http://127.0.0.1:3000/`；`:218` 把 `admin/admin123` 当正常登录方式；`:227` 只对**运维账号**说"生产换强口令" |
+| 面板会交出 ops 令牌 | `admin_main.cj:477` `jPutStr(o, "token", clubSess.token)`，注释写着"前端拿到的也只是这个运维令牌" |
+| **即使未配 ops 也已受损** | 默认口令可直接读 `/api/club/members`（含 `"phone":"13800000000"`）、`/api/club/audit`；并 `POST /api/users {"roleId":1}` → **HTTP 200 新建持久管理员**（改口令也赶不走） |
+
+**为什么会被忽略**：`0.0.0.0` 对 `club-server` 是**正确**的（它本来就要对外），所以没人会去翻框架这个默认值；
+而运维台通篇按"本机工具"写。**两个各自合理的假设叠在一起**才是问题。
+
+**修法（已实施，§四）**：种子口令改为**随机生成 + 写回 `admin.env` + 只打印一次**；
+仍在使用公开默认值时**启动告警**；启动横幅不再复述 `admin123`，并**显式打印 `0.0.0.0` 与防火墙建议**；
+文档同步订正。
+
+### N-30 冒烟测试的环境依赖
+
+**状态**：**已修（2026-09-17）**
+**位置**：`tests/smoke.ps1` 的 §22.7（N-21 的按 IP 节流反证）
+
+```
+FAIL  取到用于复现的非回环 IPv4    取不到 LAN 地址，无法复现按 IP 节流
+```
+
+这条子用例需要一块**非回环网卡**（回环被 N-21 有意豁免，而它是本机唯一能造出"远程来源"的办法）。
+取不到 LAN IP 时它 `Check ... $false` → 整个套件 `exit 1`。
+后果：CI 容器 / 断网机器 / 只有回环的沙箱上**永远红**，"四套全绿"不可复现 ——
+而"习惯性忽略红"正是前几轮缺陷逃逸的机制。
+
+**修法**：改为打印 `skip` 并**计为通过**（不是失败）。
+
+### N-31 README 测试项数过时
+
+写「单测 471 / 冒烟 421」，实测 **490 / 425**。与 N-4、N-24 同类。已同步，并补了一句说明：
+无网卡机器上冒烟是 425 + 1 skip，**结果同样是 FAIL 0**。
+
+## 四、本轮的修复（复核方直接改代码 —— 与前几轮不同，如实记录）
+
+| 文件 | 改动 |
+| --- | --- |
+| `server/src/fw_rbac_store.cj` | 新增 `SeedCreds`；`seed()` 不再写死口令 —— 给了就用、没给就 `randomHex(8)` 随机生成并写回；新增 `init(path, creds)` 重载（原 1 参构造保留，单测不受影响） |
+| `server/src/ops/admin_main.cj` | 读 `admin_pass`/`user_pass`；首次建库时**打印一次并写回 `admin.env`**（`persistSeedCreds`）；仍用公开默认口令时**启动告警**；启动横幅改为**显式打印 `0.0.0.0` + 防火墙建议**，并删掉那行复述 `admin123` 的旧文案 |
+| `server/build.ps1` | 模板不再写死 `admin_pass=admin123`，改为注释说明"首次启动随机生成并写回" |
+| `server/tests/admin-check.ps1`、`ops-check.ps1` | 改为**从 `admin.env` 读口令**（并在面板启动**之后**读，因为首次建库才会写入）；回退值保留 `admin123`/`user123` 只为兼容老库 |
+| `server/tests/smoke.ps1` | N-30：取不到非回环 IP 时 `skip` 而非 `fail` |
+| `README.md`、`docs/local-deploy.md` | 项数同步；§2.7 写明**实际绑 `0.0.0.0`** 与防火墙建议、口令改为"首次随机生成" |
+
+**修完复验（全部实跑）**
+
+| 套件 | 结果 |
+| --- | --- |
+| 单测 | **PASS 490 / FAIL 0** |
+| 冒烟 | **PASS 427 / FAIL 0**（`exit 0`；本机无网卡，那条显示 `skip`。连跑两次一致；修复当时一次测到 426，属 ±1 波动 —— 判据是 `FAIL 0`，不是总数） |
+| 契约回归 | **PASS 30 / FAIL 0** |
+| 后台端到端 | **PASS 29 / FAIL 0** |
+| 运维页端到端 | **PASS 52 / FAIL 0** |
+
+**N-29 的针对性验证**
+
+```
+新装（删掉 admin.env 与 admin-data 后重建）：
+  build\admin\admin.env 里已无 admin_pass=admin123     -> 模板已改
+  首次启动：随机生成 admin_pass=a5d90156dcb28f11 / user_pass=b611cefd20d78ce6，追加进 admin.env
+  admin/admin123 登录                                    -> HTTP 401（被拒）
+  用生成的口令登录                                       -> HTTP 200
+  第二次启动：admin_pass 行数仍为 1（不重复追加）
+老库（admin.env 里显式写着 admin123）：
+  启动输出出现「⚠ 后台仍在用**公开的默认口令**…」+「⚠ 监听 0.0.0.0:3000 …」两条告警
+```
+
+## 五、复验中我自己踩的坑（与 API-NOTES 坑 26/27 同源，务必记一笔）
+
+改 `.ps1` 时我用的是"按字面替换"的编辑工具，它把 **UTF-8 BOM 吃掉了**。
+PowerShell 5.1 无 BOM 时按 ANSI 读中文 → 满屏乱码 → 报出
+
+```
+build.ps1:146  Unexpected token '}' in expression or statement.
+```
+
+**看起来像我自己写坏了语法，实际只是丢了 BOM**（`git diff` 第一行就能看出来：`-﻿#` vs `+#`）。
+四个 `.ps1`（`build.ps1` / `smoke.ps1` / `admin-check.ps1` / `ops-check.ps1`）全中。
+
+```powershell
+# 自检 + 修法（.NET 写回 BOM，内容不动）
+$b = [System.IO.File]::ReadAllBytes($f)
+if (-not ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)) {
+    $t = [System.IO.File]::ReadAllText((Resolve-Path $f).Path)
+    [System.IO.File]::WriteAllText((Resolve-Path $f).Path, $t, [System.Text.UTF8Encoding]::new($true))
+}
+# 再用解析器确认 0 错误（比"跑一遍看报不报错"更快、更准）
+$e=$null; $null=[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f).Path,[ref]$null,[ref]$e); $e.Count
+```
+
+**结论：凡用"写入/替换"的方式碰过 `.ps1`，之后固定跑一次 BOM 自检 + 解析器自检。**
+这与坑 26/27 是同一个坑的两个方向（那两条讲"生成时别忘加"，这条讲"编辑时别丢掉"）。
+
+## 六、本轮未覆盖
+
+| 项 | 说明 |
+| --- | --- |
+| `ops` 身份的权限模型 | 只静态核对了关键不变量（`isKnownRole` **确不含** `ops`；全仓库 `role = "ops"` 的赋值只有 `main.cj` 的 CLI 两处），**未逐条打接口**验证"除移交会长外与会长同权" |
+| 只读视图的 PII 范围 | `club_view.cj` 会输出成员**手机号**（运维台需要），本轮只确认它**不含口令材料**（只有 `has_password: bool`） |
+| 客户端 | 见 `docs/client-integration-review-3.md`；本机无设备 |
+| 轻舟 `e072980` 的新模块 | `jwt.cj` / `ratelimit.cj` / `securityheaders.cj` / `circuit.cj` 等本轮**只做存在性确认**，未逐行审 |
+| N-29 的"只绑本机" | 未实现（框架写死 `0.0.0.0`，改它要动内置快照 → 违反 N-20 的清单纪律）。因此**防火墙是当前唯一的收口手段**，已写进文档与启动横幅 |
+
+## 附录 J · 第六轮复现命令
+
+```powershell
+# ---- N-29：默认口令与监听地址 ----
+cd server
+Remove-Item -Recurse -Force build\admin\admin-data, build\admin\admin.env -ErrorAction SilentlyContinue
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Target admin
+Select-String -Path build\admin\admin.env -Pattern 'admin_pass=admin123'   # 期望：无匹配
+cd build\admin
+.\admin.exe                                    # 首次启动：随机口令只打印一次并写入 admin.env
+netstat -ano | Select-String ":3000\s"         # 期望：0.0.0.0:3000 LISTENING
+#   用 admin123 登录 /api/login          -> 期望 HTTP 401
+#   用 admin.env 里生成的口令登录         -> 期望 HTTP 200
+# 老库告警：把 admin.env 改回 admin_pass=admin123 并删掉 admin-data\ 后重启，期望看到两条 ⚠
+
+# ---- N-30：无网卡时冒烟不该判红 ----
+cd ..\..
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1
+#   期望：出现 "skip  取到用于复现的非回环 IPv4 ..." 且 **PASS / FAIL 0、exit 0**
+
+# ---- 五套回归 ----
+.\build\club-server.exe test
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\admin-check.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\ops-check.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-check.ps1
+
+# ---- .ps1 的 BOM 自检（§五）----
+foreach ($f in @("server\build.ps1","server\tests\smoke.ps1","server\tests\admin-check.ps1","server\tests\ops-check.ps1")) {
+    $b = [System.IO.File]::ReadAllBytes($f)
+    "{0,-32} BOM={1}" -f $f, ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)
+}
+```

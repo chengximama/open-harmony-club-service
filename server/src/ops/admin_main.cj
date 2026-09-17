@@ -50,7 +50,7 @@ class OpsConfig {
     public var adminDataDir: String = "admin-data" /* 备份落这里 */
     public var rbacDb: String = "admin-data/rbac.json"
     /* 专用运维账号（club-server 侧的 `role = ops`，由 club-server init-ops 创建）。
-     * 为什么由后台代持：运维不该由会长执行 —— 运维人员只用后台账号 admin/admin123 登录，
+     * 为什么由后台代持：运维不该由会长执行 —— 运维人员只用后台账号登录（口令见 N-29 的说明），
      * 写操作以这个运维账号的身份发出去，club-server 的审计里 actor 就是"运维"。 */
     public var clubUser: String = ""
     public var clubPass: String = ""
@@ -162,6 +162,26 @@ func opsJoin(a: String, b: String): String {
         return a + b
     }
     return a + "/" + b
+}
+
+/*
+ * 把首次生成的种子口令追加到 admin.env（N-29，2026-09-17）。
+ *
+ * 只在**刚建库、且口令是本次随机生成**时调用。此时 admin.env 里本来就没有
+ * `admin_pass` / `user_pass` 两行（build.ps1 的模板已不再写死它们），
+ * 所以直接追加不会产生重复键。
+ *
+ * 写不进去不致命（口令已经打印在控制台），但必须**显式告警**，绝不静默。
+ */
+func persistSeedCreds(envPath: String, adminPass: String, userPass: String): Unit {
+    try {
+        let block = "\n# ── 首次启动自动生成的后台账号口令（N-29：不再使用写死的默认值）──\n" +
+            "admin_pass=${adminPass}\n" +
+            "user_pass=${userPass}\n"
+        File.appendTo(envPath, block.toArray())
+    } catch (e: Exception) {
+        println("[admin] ⚠ 口令未能写回 ${envPath}（${e.message}）—— 请立即手工记下上面的口令！")
+    }
 }
 
 /* 备份文件后缀：yyyyMMdd-HHmmss（本地时间，够用且不会有非法字符）。
@@ -289,7 +309,8 @@ func requireClubOps(store: RbacStore): Middleware {
 
 main(): Int64 {
     /* ---------- 配置外置（复用 config.cj 的 .env 加载） ---------- */
-    let cfg = loadConfigFile("./admin.env")
+    let envPath = "./admin.env"
+    let cfg = loadConfigFile(envPath)
     let port = parseUInt16Or(cfg.getOr("port", "3000"), 3000)
     let dbPath = cfg.getOr("db", "admin-data/rbac.json")
     let ttl = cfg.getIntOr("ttl", 7200)
@@ -312,8 +333,31 @@ main(): Int64 {
     /* 运维会话（内存缓存）：后台用它以**运维账号**的身份调 club-server */
     let clubSess = ClubSession()
 
-    /* ---------- 后台自己的 RBAC 库（JSON 文件，见 src/fw_rbac_store.cj） ---------- */
-    let store = RbacStore(dbPath)
+    /* ---------- 后台自己的 RBAC 库（JSON 文件，见 src/fw_rbac_store.cj） ----------
+     * N-29（2026-09-17）：种子口令**不再写死 admin123 / user123**。
+     *   · admin.env 给了 admin_pass / user_pass → 用给的；
+     *   · 没给 → 首次建库时随机生成，**写回 admin.env** 并在下面醒目打印一次。
+     * 改动原因与完整复现见 docs/code-review.md 的 N-29：
+     * 写死的默认口令 + 运维台监听 0.0.0.0 = 同网段任何人可拿到 ops 令牌接管会长账号。
+     */
+    let creds = SeedCreds()
+    creds.adminPass = cfg.getOr("admin_pass", "")
+    creds.userPass = cfg.getOr("user_pass", "")
+    let passFromConfig = creds.adminPass
+    let store = RbacStore(dbPath, creds)
+    if (passFromConfig.size == 0 && creds.adminPass.size > 0) {
+        /* 刚建库、且口令是本次随机生成的 —— 落盘 + 只打印这一次 */
+        persistSeedCreds(envPath, creds.adminPass, creds.userPass)
+        println("")
+        println("========================================================")
+        println("  首次启动：已为后台账号生成随机口令（只显示这一次）")
+        println("    admin  口令  ${creds.adminPass}")
+        println("    user   口令  ${creds.userPass}")
+        println("  已写入 ${envPath} 的 admin_pass / user_pass，请妥善保管。")
+        println("========================================================")
+        println("")
+    }
+
     let shutdownFlag = OpsShutdownFlag()
     let bootEpoch = nowEpoch()
 
@@ -452,7 +496,7 @@ main(): Int64 {
      * 登录 club-server，把令牌交给前端。
      *
      * 为什么这样做（而不是让运维人员自己输会长口令，也不是后台逐条代理写）：
-     *   · 运维人员只登录后台一次（admin/admin123），不需要知道任何社团账号的口令；
+     *   · 运维人员只登录后台一次（口令见 N-29 的说明），不需要知道任何社团账号的口令；
      *   · 写操作的**身份**是运维账号 —— club-server 的审计里 actor 就是"运维"，
      *     与会长做的操作分得清清楚楚（职责分离）；
      *   · 前端仍然直连 club-server（CORS 已开），因此 PATCH/DELETE 这些方法都能用，
@@ -634,7 +678,6 @@ main(): Int64 {
     println("  GET  /health              健康检查")
     println("  POST /admin/shutdown      优雅关闭（需 admin 角色）")
     println("  GET  /api/club/overview   社团运维台（读社团库；写走 club-server）")
-    println("  账号 admin/admin123（管理员） user/user123（普通用户）")
     println("  运维页 http://127.0.0.1:${port}/club")
     println("  社团库 ${ops.dataDir}　club-server ${ops.apiBase}")
     if (ops.clubUser.size > 0) {
@@ -643,6 +686,23 @@ main(): Int64 {
         println("  ⚠ 未配置运维账号（admin.env 的 club_user / club_pass）→ 运维页只能看、不能改")
         println("    先在 club-server 跑：club-server init-ops <手机号> <口令> <数据目录>")
     }
+    /*
+     * N-29（2026-09-17）：两处必须显式可见的东西 —— 口令来源、以及**实际监听地址**。
+     *
+     * 原先这里打印的是"账号 admin/admin123"：既把公开默认口令再复述一遍，
+     * 又完全没提框架把端口绑在 **0.0.0.0**（`app.cj` 的 `.addr("0.0.0.0")` 写死、
+     * 无 host 参数），而文档只写 127.0.0.1 —— 读者会以为只有本机能连。
+     */
+    if (creds.adminPass == "admin123" || creds.userPass == "user123") {
+        println("  ⚠ 后台仍在用**公开的默认口令**（admin123 / user123）。请立刻处置（任选其一）：")
+        println("      · 删掉 ${dbPath} 后重启 —— 会重新生成随机口令并写回 admin.env；")
+        println("      · 或把 admin.env 的 admin_pass / user_pass 改成自己的值，再同样删库重建。")
+    } else {
+        println("  后台口令见 admin.env 的 admin_pass / user_pass（首次启动时打印过一次，不再回显）")
+    }
+    println("  ⚠ 监听 0.0.0.0:${port} —— 框架固定绑全网卡，没有「只绑本机」的开关。")
+    println("      运维台能看到整个社团库，请用防火墙只对运维机放行 ${port}，")
+    println("      不要把它暴露到公网或整个校园网。")
 
     /* ---------- 优雅关闭：主线程轮询关闭标志 ---------- */
     let handle = app.serve(port)

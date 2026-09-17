@@ -91,6 +91,26 @@ public class PermRow {
 }
 
 /*
+ * 首次建库时要用的种子口令（N-29，2026-09-17 新增）。
+ *
+ * 为什么要显式传进来：种子账号原先写死 `admin123` / `user123` —— 那是一对
+ * **公开在仓库里、且文档还会照抄给你**的默认口令，而运维台监听 0.0.0.0，
+ * 于是"能连上 3000 端口"就等于"能读整个社团库、并能通过 /api/club/session
+ * 拿到 ops 令牌去接管会长账号"（完整复现见 docs/code-review.md 的 N-29）。
+ *
+ * 约定：
+ *   · 字段**给了值**（来自 admin.env 的 admin_pass / user_pass）→ 用它；
+ *   · 字段**为空** → seed() 随机生成一个并**写回本对象**，调用方据此打印/落盘。
+ * 于是默认值不再是任何固定字符串。
+ */
+public class SeedCreds {
+    public var adminPass: String = ""
+    public var userPass: String = ""
+
+    public init() {}
+}
+
+/*
  * RBAC 数据访问层。公开 API 与轻舟 src/store.cj 的 RbacStore 逐一对齐。
  * path：JSON 文件路径（相对 cwd），与我们的数据目录约定一致。
  */
@@ -102,8 +122,19 @@ public class RbacStore {
     /* roleId -> 该角色拥有的 permission id 列表（替代原版的 role_permissions JOIN 表） */
     private var rolePerms: HashMap<Int64, ArrayList<Int64>> = HashMap<Int64, ArrayList<Int64>>()
 
+    /* 不带初始口令：种子口令一律随机生成（单测与"只想读一个已有库"的场景用它）。 */
     public init(path: String) {
         this.path = path
+        openStore(SeedCreds())
+    }
+
+    /* 带初始口令：运维台入口用它把 admin.env 里的 admin_pass / user_pass 传进来（N-29）。 */
+    public init(path: String, creds: SeedCreds) {
+        this.path = path
+        openStore(creds)
+    }
+
+    private func openStore(creds: SeedCreds): Unit {
         /*
          * 灌种子的判据是「**文件不存在**」，不是「roles 为空」（2026-09-16 修）。
          *
@@ -118,12 +149,12 @@ public class RbacStore {
          * 注意 `load()` 对**解析失败**已经是 fail-fast（抛异常拒绝启动），
          * 这里补的是"解析成功但内容为空"这条缝。
          */
-        let fresh = !exists(path)
+        let fresh = !exists(this.path)
         if (!fresh) {
             load()
         }
         if (fresh) {
-            seed()
+            seed(creds)
             save()
         }
     }
@@ -226,7 +257,7 @@ public class RbacStore {
 
     /* ===================== 种子数据（与上游同一份） ===================== */
 
-    private func seed(): Unit {
+    private func seed(creds: SeedCreds): Unit {
         roles[1] = RoleRow(1, "admin")
         roles[2] = RoleRow(2, "user")
         perms[1] = PermRow(1, "user:list", "查看用户")
@@ -247,9 +278,19 @@ public class RbacStore {
         let userPerms = ArrayList<Int64>()
         userPerms.add(6)
         rolePerms[2] = userPerms
-        /* 两个内置账号，口令哈希与原版同盐同轮数 */
-        users[1] = UserRow(1, "admin", hashPassword("admin123", "qz2026", 1000), 1)
-        users[2] = UserRow(2, "user", hashPassword("user123", "qz2026", 1000), 2)
+        /*
+         * 两个内置账号。口令**不再写死**（N-29）：调用方给了就用给的，没给就随机生成，
+         * 并把生成值写回 creds，由调用方打印一次 / 落盘到 admin.env。
+         * 哈希仍与原版同盐同轮数（`security.cj` 的 hashPassword）。
+         */
+        if (creds.adminPass.size == 0) {
+            creds.adminPass = randomHex(8)      /* 16 个十六进制字符 */
+        }
+        if (creds.userPass.size == 0) {
+            creds.userPass = randomHex(8)
+        }
+        users[1] = UserRow(1, "admin", hashPassword(creds.adminPass, "qz2026", 1000), 1)
+        users[2] = UserRow(2, "user", hashPassword(creds.userPass, "qz2026", 1000), 2)
     }
 
     private func nextUserId(): Int64 {

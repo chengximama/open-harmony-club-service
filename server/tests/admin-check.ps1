@@ -116,8 +116,18 @@ try {
         Check "静态资源可取（$($m.Value)）" ($r2.Status -eq 200) "status=$($r2.Status)"
     } else { Check "静态资源可取" $false "首页里没解析到 /assets/*.js" }
 
-    # ---- 登录（种子账号 admin/admin123）----
-    $r = Hit "POST" "/api/login" '{"username":"admin","password":"admin123"}' $null
+    # ---- 登录（种子账号）----
+    # N-29（2026-09-17）：后台口令不再写死。首次建库时 admin.exe 会随机生成并**追加**到
+    # admin.env 的 admin_pass / user_pass，所以必须在**面板启动之后**重新读一次；
+    # 老库（建库时就用了 admin123 那种公开默认值）则回退到旧值，保证本脚本两种库都能跑。
+    $adminPw = "admin123"
+    $userPw  = "user123"
+    foreach ($line in (Get-Content $envFile -Encoding UTF8)) {
+        $t = $line.Trim()
+        if ($t -match '^admin_pass\s*=\s*(\S+)') { $adminPw = $Matches[1] }
+        if ($t -match '^user_pass\s*=\s*(\S+)')  { $userPw  = $Matches[1] }
+    }
+    $r = Hit "POST" "/api/login" (ConvertTo-Json @{ username = "admin"; password = $adminPw } -Compress) $null
     Check "POST /api/login -> code=0" ((BizCode $r) -eq 0) "code=$(BizCode $r) body=$($r.Body)"
     $token = $null
     if ($r.Body -match '"token"\s*:\s*"([^"]+)"') { $token = $Matches[1] }
