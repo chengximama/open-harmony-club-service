@@ -29,10 +29,13 @@ package qingzhou
  *    本文件会静默过期。升级轻舟后请重跑全部测试（单测 / 冒烟 / TLS / 契约 / 后台端到端，
  *    最后一套 = `build.ps1 -Target admin` + `tests/admin-check.ps1`）。
  *
- * 与轻舟原版的差异（只有一处语义变化，必须知道）
+ * 与轻舟原版的差异（**三处**语义变化，必须知道 —— 2026-09-17 补第三处）
  *   · 原版 role_permissions 是一张 JOIN 表；本实现内部用 HashMap<roleId, Array<permId>>
  *     表达同一事实（对外 API 不暴露该表，行为一致）
  *   · close() 在原版是关库；本实现是"落盘 + 无操作"（文件存储没有连接可关）
+ *   · **createUser() 会拒绝重名**（抛出异常）。原版不校验，我们这里校验 ——
+ *     理由见 createUser() 的长注释（重名会让 findUserByUsername 的结果变成不确定的）。
+ *     取"抛异常"而不是"改签名"是为了不动其它调用方与单测。
  *
  * 自包含（2026-09-16）
  *   本文件**只依赖框架与 std**：JSON 读写用框架自带的 `jsonGetInt64` / `jsonGetStr` /
@@ -170,6 +173,25 @@ public class RbacStore {
         return None
     }
 
+    /*
+     * 用户名是否已被占用（2026-09-17 新增）。
+     *
+     * 为什么要它：`findUserByUsername()` 在 HashMap 上取**首个匹配** —— 一旦库里有两条同名记录，
+     * "登录时用的是哪一个"就取决于 HashMap 的遍历顺序，是**不确定**的：后建的那个可能永远登不进去
+     * （而它明明出现在用户列表里、也能被单独删除）。这不是"多一条脏数据"，而是"账号看着存在、
+     * 行为随机"，排查时极难定位。调用方（运维台的 POST /api/users）用它先给一个明确的 400。
+     *
+     * 规模：用户数在个位到十位量级（运维台自己的账号），线性扫描足够，不必另建索引。
+     */
+    public func usernameTaken(username: String): Bool {
+        for ((_k, u) in users) {
+            if (u.username == username) {
+                return true
+            }
+        }
+        return false
+    }
+
     public func findUserById(id: Int64): ?UserRow {
         return users.get(id)
     }
@@ -182,7 +204,24 @@ public class RbacStore {
         return sortedUsers(out)
     }
 
+    /*
+     * 建用户（**重名直接拒绝**，2026-09-17 修）。
+     *
+     * 原先这里不校验重名，调用方也大多不校验，于是"建第二个 admin"这件事既不会报错、
+     * 也不会立刻显出问题 —— 它只是让**登录变成不确定的**（见 usernameTaken 的注释）。
+     * 上游轻舟的 store.cj 同样不校验，所以这不属于"跟着上游走"的那类差异，而是本适配层
+     * 自己该守的一条不变式：**用户名在库里唯一**。
+     *
+     * 为什么用抛异常而不是返回错误码：公开 API 与上游逐一对齐是本文件的立身之本
+     * （见文件头的"公开 API 与轻舟原版逐一对齐"），改签名会让 admin.cj / 单测 / 调用方全部要动。
+     * 抛异常是"fail loud"：调用方忘了预检查时也不会写出一个重名库，只会在日志里留下一句明确的错。
+     * ⚠ 调用方若要给出友好的 4xx，应先用 usernameTaken() 预检查（运维台的 POST /api/users 就是这么做的），
+     * 别把这条异常当成常规控制流 —— 它兜的是并发与"将来新写的调用方"。
+     */
     public func createUser(username: String, passwordHash: String, roleId: Int64): Int64 {
+        if (usernameTaken(username)) {
+            throw Exception("用户名已存在：${username}（username must be unique）")
+        }
         let id = nextUserId()
         users[id] = UserRow(id, username, passwordHash, roleId)
         save()

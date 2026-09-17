@@ -2179,3 +2179,191 @@ a7e9b1c（重建后）: 399 字节     ← 两次重建、hash 不同，长度�
 - N-33 是「条件请求直接复现 ＋ 常规缓存行为推断」，**没有做**"真实浏览器缓存 + vite 重建"
   的完整复演（复演需要能控制浏览器缓存；当时只能从 `/club` 正常、`/` 白屏这一对照反推）。
 - 运维台的 `role=user` 分支（后台普通用户）这次没人走到，未复验。
+
+---
+
+# 第七轮：P1 缺陷修复（2026-09-17）
+
+> **这一轮不是复验轮，而是修复轮。** 起因是一个提问："仅后端还有没有 bug？高并发会不会很慢？"
+> 于是把 `server/src` 全部 26 个文件重读一遍（导读只覆盖 23 个，`ops/` 三个文件此前从未被审过），
+> **并起真机做并发实测**（`HttpClient` 真并发，不是串行循环）。本轮修 5 条 P1，
+> 另两条**高并发延迟**的根因（分页投影、`save_lock` 嵌套）留待专门一轮 —— 它们是架构改动，
+> 不适合与权限修复混在一次提交里。
+
+## 一、修复的 5 条 P1
+
+| 编号 | 缺陷（原状） | 修法（落点） | 为什么是 P1 |
+| --- | --- | --- | --- |
+| **P1-1** | **课题负责人不校验部门 → 跨部门写权限**：`h_plan.cj` 创建课题只把 `dept_id` 塞进 `Target`，`PATCH` 换负责人也只查"存在/active"；而 `perms.cj` 的 `EditPlan` 有一条"我是负责人就放行"的例外**在部门比较之前** return | ① `perms.cj` 的 `EditPlan` 例外加部门条件；② `h_plan.cj` 新增 `planOwnerDeptOk()`，创建与换负责人两处都要"负责人与课题同部门"（与任务侧 N-18 同口径，会长/副会长/运维豁免） | A 部门的课题只要把负责人写成 B 部门的人，**B 部门那个人就拿到这个课题的写权限**（改标题/截止/换负责人）。任务侧早就堵了，课题侧从未落地 |
+| **P1-2** | **PBKDF2 并发闸门只覆盖登录**：`pbkdf2Enter/Leave` 全项目只在 `handleLogin` 出现，注册 / 本人改密 / 重置密码三条 ~0.6 s CPU 的路径**无闸门** | 三条路径全部纳入同一道闸门（注册、改密按"一次操作 = 一个槽位"） | 注册与改密**都不需要认证**（改密只要求持有令牌，连 pending 账号都能打），并发刷即可打满整机 —— 正是 N-21 的杠杆换了个门 |
+| **P1-3** | **`GET /auth/me` 在锁外读 Store**：`memberSelf` → `deptBriefObj` 读 `s.departments`（HashMap），全程不持锁 | 视图构造搬进 `s.lock`（`sendOk` 仍在锁外，它不再碰 Store） | 锁外读 + 并发写是数据竞争，与 `capacity-baseline.md` §4.4 自定的纪律（"HashMap 非线程安全"，那正是当初不改 26 个 `storeSave` 调用点的理由）直接矛盾；这是客户端启动时第一个调的接口 |
+| **P1-4** | **会长可移交给运维账号 → 治理死锁**：`handleTransferPresidency` 对目标角色无任何约束 | 拒绝 `tgt.role == "ops"` | 会长落到运维账号后，`retire-ops`（要求 `role == "ops"`）与 `init-admin`（要求 `presidentCount == 0`）**同时拒绝**，两条官方恢复路径失效，只能手改 db.json。常规部署里运维账号 id 通常就是 2（先 `init-admin` 再 `init-ops`），一条命令即可触发 |
+| **P1-5** | **同权闸对"漏填 target_role"fail open**：`perms.cj` 的注释写"空串宁拒不放过"，但真正的闸是 `roleRank(t.target_role) >= roleRank(m.role)`，而 `roleRank("") == 0` 比谁都低 → 放行（只有 `outranks()` 那一侧才是 fail closed） | 新增 `Target.role_absent`：`targetOf()` 按目标真实 role 声明"确实没有角色（待分配）"；**空串且未声明 → 一律拒**，`AssignPending` 例外（审批待分配本来就没有角色） | 会长/副会长在 `roleAllows` 里是"直接放行"，只有这一层拦得住他们；漏填即静默失效。当前调用点都填了，所以**没有可达越权**，但这是"新 handler 一忘就漏"的结构性缺口（同 D-3 放开读范围后 H-2 那层复核形同虚设的教训） |
+
+**修 P1-1 时发现原单测固化了旧行为**：`tests.cj` 的 `t.ok("负责人可编辑课题（跨部门）", ...)`
+断言的正是这条跨部门写权限。已按新口径改写为"同部门负责人放行 + 跨部门负责人 403 FORBIDDEN_NOT_IN_DEPT"，
+并在注释里写明**这是修口径，不是改测试迁就实现**。这是本仓库第二次出现"测试把缺陷写成期望值"
+（前一次是 `smoke.ps1` 把 N-19 的 8 位 token 写成断言）。
+
+## 二、凭什么说改好了（三条独立证据）
+
+| 套件 | 结果 |
+| --- | --- |
+| 单测 `club-server.exe test` | **PASS 497 / FAIL 0**（新增 5 条：漏填 target_role 的三条 + 错误码 + 待分配目标不被误拦；改写 1 条旧断言） |
+| 冒烟 `tests/smoke.ps1` | **PASS 427 / FAIL 0**（含 N-15 的"会长改待分配成员姓名 → 仍 400"与 N-18 的"会长当别的部门课题负责人 → 201"，这两条正是本次最容易被误伤的流程） |
+| 针对性端到端验证（临时脚本，真机 `serve`） | ① `plan(deptB, owner=deptB部长)` → 201；`plan(主席团, owner=deptB部长)` → **403 FORBIDDEN_NOT_IN_DEPT**；`PATCH owner_id` 跨部门 → **403**；`plan(dept1, owner=会长)` → 201（豁免未误伤）② `transfer-presidency → 运维账号` → **403 FORBIDDEN_ROLE**；`→ 普通成员` → 200（未过度收紧）③ **12 并发注册 → 8×201 + 4×429**；**12 并发改密（旧口令错）→ 8×401 + 4×429**；**12 并发重置密码 → 8×200 + 4×429** —— 三道闸门与登录同形（8 个槽位、满了直接 429 不排队） |
+
+## 三、本轮**有意未做**的两条（高并发延迟的根因，另开一轮）
+
+实测（真机，0.25 MB / 0.5 MB 两档库，32 逻辑核）：
+
+| 场景 | 单发 | ×8 并发 | ×16 并发 | ×32 并发 |
+| --- | ---: | ---: | ---: | ---: |
+| `GET /tasks`（0.25 MB） | 15 ms | 53 ms | 115 ms | 194 ms |
+| `GET /tasks`（0.50 MB） | 16 ms | 128 ms（**串行因子 1.01**） | 248 ms | 413 ms |
+| `GET /tasks/mine`（0.50 MB） | 48 ms | — | **475 ms** | — |
+| `GET /health`（不碰 Store） | 4 ms | — | 13 ms | — |
+
+`/health` 不动、业务接口线性恶化 ⇒ 瓶颈是 `Store.lock`。两条根因：
+
+1. **列表接口先全量投影再分页**（`h_task.cj` / `h_plan.cj`）：翻第 1 页也要把全部命中项建成 JSON
+   （`paging.cj` 只用到 `all.size`），全在锁内。修法：total 取 `picked.size()`，只投影 `[start, start+size)`。
+2. **`storeSave` 在持全局锁时取 `save_lock`，而 `writeSnapshot` 持 `save_lock` 做整段磁盘 IO**
+   （`store.cj`）：于是"磁盘 IO 已移出锁"在并发写下退化 —— 一个请求写盘时，另一个请求**握着全局锁**等它。
+   修法：`pending` 改由 `s.lock` 保护（写盘侧用原子标志 + 序号守卫循环收敛），任何线程都不在锁内等 IO。
+
+另有一条框架侧限制值得记住：`timeout(15000)` 是**事后软超时**（`third_party/qingzhou/src/timeout.cj`），
+拦不住已经在锁上排队的请求 —— 高并发下没有背压，只能靠上面两条把锁内时间压下去。
+
+## 四、本轮未覆盖
+
+- **`ops/` 三个文件只做了静态审查，没有端到端复验**（发现的问题记录在本轮报告里，未改动：
+  后台账号登录分支无失败节流、`ops`/`clubSess` 共享可变对象无锁、`club_view.cj` 用不存在的
+  `minister`/`vice_minister` 角色码统计、备份非原子且同秒可自覆盖、`overview` 每次解析整个
+  `audit.log` 只为数行数）。这些属于运维台，未纳入本轮 P1 修复范围。
+- **P2 清单未修**（`dept_id <= 0` 可落库、`PATCH /members` 不写审计、`plan_id` 负数跳过 N-18 校验、
+  `title/desc/blocker` 无长度上限、删部门遗留 `dept_hint`/`help_dept_id`/邀请链接、注册口令按字节计长等）。
+- **`Random()` 的熵源仍未验证**（`ids.cj` 每次 `randBytes` 都新建 `Random()`；导读自己标着 `[?]`）——
+  它决定会话令牌是"长度达标"还是"真随机"，需要查 stdlib 源码或实测，未在本轮完成。
+- **并发实测只做到 32 并发、单机单进程**，没有长稳 / 内存增长 / 多机测试。
+
+---
+
+## 五、第七轮（续）：非数据层优化（同日，与"等沧海数据库"的决定配套）
+
+> 决定：**数据层那两条高并发根因（列表全量投影、`save_lock` 嵌套）暂不改**，等 CangDB 接上后
+> 一并解决；其余"与数据层无关"的问题本轮全部处理掉 —— 它们不会因为换数据库而消失。
+
+| # | 改了什么 | 落点 | 为什么 |
+| --- | --- | --- | --- |
+| 1 | **新增请求体前置闸门**（64 KiB + Content-Type 白名单） | 新文件 `server/src/limits.cj`；`main.cj` 装在 `bodyParser` **之前** | 框架的 `bodyParser` 是"先把整个 body 读进内存、再比 maxBytes"（`third_party/qingzhou/src/bodyparser.cj`），且对非 JSON / 表单 / 文本类型直接透传不判 → 未认证请求可用超大 body 打内存。框架是上游快照（MANIFEST 逐字节校验，N-20），所以按"改动一律落 server/src"加一层应用侧闸门。新增错误码 `PAYLOAD_TOO_LARGE`(413) / `UNSUPPORTED_MEDIA_TYPE`(415) |
+| 2 | **文本字段长度上限集中一处**：标题 200 / 描述 4000 / 阻塞原因 1000 / 姓名与部门名 64 / 幂等键 64（**字节**） | `limits.cj` 常量 + `lenCheck()` / `requireLen()`；任务、课题、成员、部门、注册五处写入点 | 这些字段整份进 db.json，而**每次写都要重写整个库**（约 3 倍文件大小的 IO）。不设上限时，一条 1 MiB 的 desc 会被反复重写，且一条就顶上千条正常任务 —— 上限是"库别被单条记录撑爆"的保险丝 |
+| 3 | **负数 id 不再被静默改语义**：`plan_id` / `parent_id` / `dept_id` / `new_parent_id` 为负 → 400 | `h_task.cj`（创建 / 修改）、`h_plan.cj`（创建 / 移动） | 原先 `plan_id = -5` 会**原样落库**并让 N-18 的部门一致性校验整段跳过（那条判 `> 0`）；`parent_id = -1` 被当成"顶层课题"；`new_parent_id = -1` 被当成"提升为顶层"—— 意图被悄悄改写 |
+| 4 | **`PATCH /tasks/{id}` 白名单外字段明确报错** | `h_task.cj` 新增 `rejectUnknownTaskFields()` | 传 `status` / `blocker` / `dept_id` 原先"响应 200 但什么都没变"，调用方以为改成功了；`dept_id` 与时间类字段本就只由服务端维护（v1-scope 规则 20） |
+| 5 | **`PATCH /members` 补审计 + 拒绝 `dept_id <= 0`** | `h_member.cj` | 这条路径能改 role（也就是能提权）却**不写审计**，而同文件的 disable / assign / assign-batch / transfer-presidency 都记账（M-4 的立论正是"成员处置必须可追溯"）；`dept_id = 0 / -5` 原先直接落库，能造出"无部门的在职成员" |
+| 6 | **删部门补齐三处悬空引用** | `h_dept.cj` | 原先只清 `Member.dept_id` / `Task.dept_id`：`dept_hint`、`help_dept_id`、`DeptInviteLink` 仍指向已删部门 —— 表现为同一个 token 在公开 JSON 里 `enabled:true + dept.name:""`，而公开落地页显示"链接已失效"（两个入口结论矛盾） |
+| 7 | **注册口令：trim + 可见 ASCII 字符集** | `h_secret.cj`（存入侧）、`h_auth.cj`（比对侧也 trim） | `String.size` 是**字节数** → 两个中文字（6 字节）就"满足 6 位"；而且存入侧 trim、比对侧不 trim 时，把口令设成"前后带空格"会让**全社团的注册全部失败**，肉眼看不出来 |
+| 8 | **`tasks/lookup`：非法 id 明确报错 + 去重** | `h_task.cj` | 原先非整数 / 0 / 负数都会变成 `missing: [-1]`，客户端拿到一个自己从没送过的 id；重复 id 还会重复进 items / missing |
+| 9 | **`updated_at` 与响应派生量取同一个 `now`** | `h_task.cj` | 原先各取一次 `nowEpoch()`，跨秒时"响应里的时间比库里新 1 秒" |
+| 10 | **邀请链接 DELETE 的 token 加上限**（128 字节） | `h_link.cj` | 超长 token 会被原样拼进审计行（`audit()` 的 note 里带它） |
+
+**验证**（为这些新行为单写了端到端脚本，真机 `serve` + 真并发，全部通过）：
+
+| 项 | 证据 |
+| --- | --- |
+| 单测 / 冒烟 / 契约 | `PASS 505 / FAIL 0`（第七轮两批合计 **+13 条断言**，其中 8 条钉住 `limits.cj` 的上限与边界口径）、`PASS 427 / FAIL 0`、`PASS 33 / FAIL 0`（TLS 那 22 项在本机**跑不了**：`tls-check.ps1` 需要 openssl，环境里没有 —— 与本次改动无关） |
+| 请求体闸门 | 80 KB body → **413 PAYLOAD_TOO_LARGE**；`Content-Type: application/octet-stream` → **415**；正常 JSON → 201（未误伤） |
+| 字段上限 | 300 字节标题 / 5000 字节描述 / 1500 字节阻塞原因 / 200 字节幂等键 → 400，且 `fields` 指到对应字段 |
+| 显式报错 | `PATCH /tasks/{id}` 带 `status`、带 `dept_id` → 400；`plan_id:-5`、`parent_id:-1`、`PATCH /members {dept_id:0}` → 400 |
+| lookup | 非数字 id → 400；`[id, id, 999999]` → `items=1, missing=1`（已去重） |
+| 注册口令 | 存入 `"  CODE  "` → 落库为 trim 后的值；注册侧带空格提交 → 201；`"口令"`（2 字 6 字节）→ 400；合法口令 → 200 |
+| 删部门清理 | 删部门后：`GET /join/{token}` 的 `enabled` 由 true 变 **false**；该成员 `dept_hint` 变 **null** |
+| 成员审计 | `PATCH /members` 之后 `audit.log` 出现 `update-member`，且含字段级 `旧值->新值` |
+
+**顺手把一条"待确认"证伪了（保留证据）**：`ids.cj` 每次 `randBytes` 都新建 `Random()`，
+此前一直担心"同一 tick 里两个实例会产出相同字节流"（那等于可预测的会话令牌）。
+写了探针实测（两个临时 `.cj` 小程序，未入库 —— 也可一分钟复跑：循环里 `let r = Random()` +
+`r.nextBytes(8 字节数组)`，比较输出；20 万次那版再加一个 `HashSet<String>` 去重计数即可。
+`Random()` 属于 std，`cjc` 直接编，不需要 stdx）：
+- 同一进程内连开 20 个实例 → 20 条**互不相同**的 8 字节流；
+- **20 万次**抽样 → **0 重复**（64 位空间下，若种子里只有毫秒级时间的低位，这里必然出现大量碰撞）。
+
+结论：**碰撞风险排除**。"是否密码学不可预测"仍要读 stdlib 源码才能定论，因此保留为**硬化建议**
+（换 `stdx.crypto` 的随机源），但不再列为待确认缺陷。
+
+**仍未做（需要先决策，或等沧海）**：
+
+- **数据层两条**（列表全量投影 / `save_lock` 嵌套）—— 按决定等 CangDB；
+- **`GET /members?status=pending|disabled` 的权限口径**：任何 active 成员都能用它枚举"申请人 / 已退出者"，
+  而专用接口 `GET /members/pending` 是 AssignPending（仅会长 / 副会长）。api-design §3.2 把 `?status=`
+  写成"可查其它状态"但没限定角色 —— 收紧属产品决策，未擅自改；
+- **`handlePlanMove` 换父分支不清 `p.dept_id`**：只影响"子课题不存 dept_id"这条不变式的整洁度，
+  当前无可观测错误；而且清掉之后运维台那处未加守卫的读点显示会变，留给运维台那一轮一起改；
+- **`/tasks/mine` 无分页**：同属"全量投影"那一类，等沧海；
+- **`reset-password` 缺 compare-and-set**：三条三段式口令路径里，登录与本人改密都在第 ③ 段复核了
+  口令材料（`pw_hash` 没被并发改过），只有重置密码没有 —— 两个人同时重置同一成员时，
+  先返回 200 的那次临时密码会被后一次覆盖（**管理员拿到一个登不上的口令，需再重置一次**）。
+  **本轮有意不改**：三种选择都不便宜 —— ① 加 CAS 就要新增一个错误码（现有码表里没有语义合适的），
+  ② 返回 409 会让"忘记密码"这条唯一出路多一个失败态，③ 冲突时自动重算又不解决"两次都成功"的语义。
+  影响面是"极少发生的并发 + 可重试"，故记为已知并接受，等有真实需求时再定口径。
+- **`Task.source` 是死字段**（落盘有、接口不读不写）：删它要动 store.cj 的三处（模型 / 序列化 / 反序列化）
+  且对老库无迁移价值，收益近零 —— 记为清理项，不做。
+
+---
+
+## 六、运维台（`server/src/ops/`）9 条修复（同日）
+
+> `ops/` 三个文件此前**从未被审过**（我们那份《服务端代码导读》开篇写明"正文尚未覆盖这三个文件"）。
+> 本轮把它们过了一遍并修掉 9 条。改动只落在 `ops/club_view.cj`、`ops/admin_main.cj`
+> 与 `fw_rbac_store.cj`（适配层，**不是**内置框架）；前端一行未改。
+
+| # | 缺陷 | 修法 |
+| --- | --- | --- |
+| 1 | 概览的角色直方图判 `"minister"` / `"vice_minister"` —— 这两个角色码**在本项目里从不存在**（权威是 `lead` / `vice_lead`），于是部长/副部长两个数**恒为 0**，而同页名录照常显示"部长"（自相矛盾） | 判定改为 `lead` / `vice_lead`；**JSON 键名故意保留**（`grep -ri minister server/admin-web/src`、`server/tests` 均 0 命中，改键名属契约变更，应连前端一起单独做）—— 注释里写明"键名与语义不一致，别改回去" |
+| 2 | 部门排序键自拼 `sort * 1000 + id`：① 越界值时仓颉 Int64 算术**溢出即抛**（不是回绕），异常被链上 `passOnNotFound` 路由留下的 404 壳吃掉 → `GET /api/club/depts` **持续 404**，只能手改 db.json 恢复；② 低位只给 id 留 3 位，`id ≥ 1000` 后顺序整个错 | 删掉自拼键，直接复用 `store.cj` 的 `sortedDepartments()`（`sortKeyClamp(sort) * 1000000 + id`），顺带消掉两份口径漂移 |
+| 3 | `/api/login` 的**本地 RBAC 账号分支没有失败节流**（只有"转发给 club-server"那条分支有）→ admin/user 口令可无限次猜 | 两条分支共用同一张节流表（抽出 `opsThrottleKey()` / `opsThrottleRejected()`）；回环豁免保持不变。实测（从本机 LAN 地址打，因为回环豁免）：连错 5 次 → 第 6 次 **429**，锁定期内正确口令也 429，同源改用运维账号登录同样 429（证明共用桶），127.0.0.1 仍豁免 |
+| 4 | `ops` / `clubSess` 是 `main()` 创建、被多个请求闭包共享的**可变对象，无任何锁**（框架并发处理请求）→ 并发下可能出现"身份是 A、token 是 B"的撕裂组合 | `OpsConfig` 的凭据私有化 + `credMu`，只暴露"一次取一对 / 一次写一对"；`ClubSession` 6 个字段全私有 + `mu`，只留 `commit()` / `markFailed()` / `view()`（返回不可变快照）。**HTTP 调用不进锁**（否则卡住的 club-server 会拖住只读接口）；代价是并发首登可能重复发一次登录 —— 与改动前完全一致，single-flight 属独立一轮 |
+| 5 | `/api/users/:id` 等路径参数直接 `Int64.parse` 未捕获 | 接住 → **400**（不用 404：这个 handler 里 404 的既有含义是"用户不存在"，而"id 不是数字"是请求本身不合法；混在一起就分不清"已被删"与"前端拼错"） |
+| 6a | `/api/club/audit` 的 `limit` 裸参数无上界，而 `clubAuditLines()` 会把整份日志读进内存再逐行建对象 | 新增 `CLUB_AUDIT_LIMIT_MAX = 2000` 与 `clubAuditLimit()`（默认 200、非法回退 200、超限夹到 2000） |
+| 6b | 概览为拿"审计行数"把整份 audit.log 解析成 JSON（每行两次成员名查表），而且顺带为 `bytes` **又读了一遍** | 新增 `clubAuditStat()`：**一次读盘**同时给出 `(bytes, lines)`，行数按 `\n` 字节数算（与旧的 `split` 语义逐字节等价）。同时更正了 `clubAuditLines()` 上方"limit = 0 表示只要总行数"那句错注释 |
+| 7 | `clubMembers` 每行调一次 `openTasksOf()`，而它**遍历全部任务**还额外排序 → 500 行 × 上万任务压在"打开名录页"这一条请求里 | 新增 `clubOpenTaskCounts()`：一次遍历聚合 `owner_id → 未完成数`；过滤条件与 `openTasksOf` 逐条对齐（`deleted_at > 0` 与 `status == "done"` 都不计） |
+| 8 | 备份非原子（直接写最终文件名）、文件名后缀只到**秒**（同秒第二次备份**覆盖**第一次）、`db.json` 读两遍（`db_bytes` 可能与副本不是同一版本） | 新增 `opsWriteFileAtomic()`（先 `.tmp` 再 rename，与 `store.cj` 同口径）；文件名加**毫秒** + 冲突自动补序号；`db.json` 只读一次。**多加一步**：整段备份放进 `opsBackupMu` 串行 —— 否则"名字判重"自己就是 TOCTOU，并发下可能共用同一个 `.tmp` |
+| 9 | `fw_rbac_store.cj` 不校验用户名唯一，`findUserByUsername()` 取 HashMap **首个匹配** → 有两条同名记录时"登录用哪一个"取决于遍历顺序，后建的那个可能**永远登不进去** | 新增 `usernameTaken()`；`createUser()` 重名直接抛异常（**不改签名** —— 该文件与上游 API 逐一对齐是它的立身之本）；`POST /api/users` 先预检查并返回明确的 `400 username already exists`；文件头"与轻舟原版的差异"从"一处"更正为**三处** |
+
+### 验证（复核方独立重跑，不是看 diff）
+
+| 套件 | 结果 |
+| --- | --- |
+| `build.ps1`（服务端，含它改的 `fw_rbac_store.cj`） | 编译通过（24 个文件） |
+| 主服务单测 | **PASS 505 / FAIL 0** |
+| `build.ps1 -Target admin` | 编译通过 |
+| `tests/admin-check.ps1` | **PASS 29 / FAIL 0**（与基线一致） |
+| `tests/ops-check.ps1` | **PASS 64 / FAIL 0**（与基线一致） |
+| 主服务冒烟 | **PASS 427 / FAIL 0** |
+
+修复方另写的针对性端到端（仓库外，60 条）覆盖了既有套件**没覆盖**的面：
+角色直方图两个桶都活了（`minister=1`、真注册 + `assign role=vice_lead` 后 `vice_minister=1`）；
+越界 sort 的 A/B（旧表达式 404 → 新实现 200 且该部门排最后，数据未被改）；
+节流的 5 次→429 与跨分支共用桶；**12 路真并发** `/api/club/session?force=1` 无 5xx、无撕裂；
+`open_tasks` 的口径（todo=1、done 与软删都不计、改成 done 后立刻变 0）；
+`limit=99999999 → 2000`；**12 路并发备份 → 12 个互不相同的文件名、内容全部完整、无残留 .tmp**；
+重名建号 → 400 且列表里只有一条。
+
+### 两处**前提被实测纠正**（值得记一笔，因为结论会影响排查方向）
+
+1. **不是"异常变成 500"，而是"异常变成 404 路由不存在"**：运维台链上 `publicRouter` / `authRouter` /
+   `mgmtRouter` 都是 `passOnNotFound`，miss 时**已经写了 `404 {"error":"Not Found","path":...}`**，
+   而链尾 `opsErrorHandler` 只在 `status == 200 && body 为空` 时才补我们的错误壳 —— 于是任何 handler
+   抛出的异常都会被那个残留 404 壳吃掉。实测：`DELETE /api/users/abc` → `404 Not Found`（改前），
+   越界 sort 的 `GET /api/club/depts` → **持续 404**。**这是本轮 9 条里两条的真实症状来源**。
+2. **仓颉 Int64 算术默认"溢出即抛"**（`OverflowException: mul`），不是回绕 —— 探针实测，编译期常量甚至
+   直接被编译器拒掉。所以"排序键溢出"这类写法的后果是"接口不可用"，比"顺序错"严重得多。
+
+### 仍未做（都要动既有错误响应行为或契约，属独立一轮）
+
+- **`opsErrorHandler` 的判据**（上面第 1 条）：要改得动 `statusNormalizer` / `opsErrorHandler` 的顺序或
+  判据；本轮 9 条路径已不再依赖"异常兜底"，但**别的 handler 仍然会**。建议下一轮专门修。
+- **`minister` / `vice_minister` 键名**：语义已对，键名仍错；纠正要连前端 `admin-web` 与文档一起做一次
+  契约变更（当前前端未消费这两个键，所以无用户可见影响）。
+- **`clubSessionEnsure()` 的 single-flight**：并发首次登录可能重复发一次（与改动前一致）。
+- 运维台仍**写死监听 `0.0.0.0`**（框架层，`app.cj`），N-29 的"只绑本机"仍未实现 —— 仍靠口令强度 + 防火墙。

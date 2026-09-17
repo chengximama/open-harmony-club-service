@@ -51,26 +51,141 @@ class OpsConfig {
     public var clubPort: Int64 = 8080             /* 前端拼 club-server 地址用 */
     public var adminDataDir: String = "admin-data" /* 备份落这里 */
     public var rbacDb: String = "admin-data/rbac.json"
-    /* 专用运维账号（club-server 侧的 `role = ops`，由 club-server init-ops 创建）。
+    /*
+     * 专用运维账号（club-server 侧的 `role = ops`，由 club-server init-ops 创建）。
      * 为什么由后台代持：运维不该由会长执行 —— 运维人员只用后台账号登录（口令见 N-29 的说明），
-     * 写操作以这个运维账号的身份发出去，club-server 的审计里 actor 就是"运维"。 */
-    public var clubUser: String = ""
-    public var clubPass: String = ""
+     * 写操作以这个运维账号的身份发出去，club-server 的审计里 actor 就是"运维"。
+     *
+     * ⚠ 为什么这两条要私有化 + 加锁（2026-09-17）：
+     *   上面那 5 个字段只在 main() 里写一次、`serve()` 之后只读，所以裸着没有竞争；
+     *   而这两条不同 —— 用**运维账号登录运维台**时（见文件上方的"运维身份"整段）
+     *   opsLoginViaClub() 会在**请求线程里就地改写它们**，同时 /api/club/config、
+     *   /api/club/session、clubSessionEnsure() 都在读。框架是**并发处理请求**的（每个请求一个
+     *   轻量线程），而这是一对**必须一致**的值：读方若恰好插在两次赋值之间，
+     *   就会拿到"新手机号 + 旧口令"这种**不可能存在**的组合，然后拿它去 club-server 登录 ——
+     *   白烧一次 10 万次 PBKDF2，还会在 sess.err 里留下"凭据被拒绝"这种把人带偏的诊断
+     *   （会让人以为是 club-server 或密码的问题）。
+     *   所以：两个字段一起私有化，由一把 Mutex 保护，对外只暴露
+     *   clubCreds()（一次取一对一致快照）与 setClubCreds()（一次写一对）。
+     */
+    private let credMu = Mutex()
+    private var clubUser: String = ""
+    private var clubPass: String = ""
+
     public init() {}
+
+    /* 一致快照：返回的 user / pass 必定来自**同一次**写入（见上方注释）。 */
+    public func clubCreds(): (String, String) {
+        var u = ""
+        var p = ""
+        credMu.lock()
+        try {
+            u = clubUser
+            p = clubPass
+        } finally {
+            credMu.unlock()
+        }
+        return (u, p)
+    }
+
+    /* 整体替换：两条一次写完。读方要么看到旧的一对、要么看到新的一对，没有中间态。 */
+    public func setClubCreds(user: String, pass: String): Unit {
+        credMu.lock()
+        try {
+            clubUser = user
+            clubPass = pass
+        } finally {
+            credMu.unlock()
+        }
+    }
 }
 
 /*
  * 运维会话（内存缓存）：后台用 club_user/club_pass 登录 club-server 换到的令牌。
  * 只在后台进程内存里，不落盘；TTL 内复用，避免每次开页面都烧一次 PBKDF2（~400 ms）。
+ *
+ * ⚠ 为什么不直接公开 6 个 var（2026-09-17 修）：
+ *   它由 main() 创建、被多个请求闭包**共享**，而框架并发处理请求。原先 6 个字段各自裸读写，
+ *   于是读方可能看到"新 token 配旧 err"、"新身份配旧 token"这类**半成品组合** ——
+ *   /api/club/session 是把这些字段逐个塞进 JSON 再交给前端的，前端拿到一次撕裂的组合
+ *   就可能显示"身份是运维账号，但 token 是上一个账号的"。
+ *   方案：字段全部私有，只留两个入口 ——
+ *     · commit(...)    一次**整体替换**全部 6 个字段（登录成功时）；
+ *     · markFailed(msg) 只清 token + 记 err，**身份字段保持上一次的值**（登录失败时，
+ *                       与改动前的行为逐字段一致）；
+ *     · view()         返回**不可变快照** ClubSessionView，读方在快照上取字段，
+ *                       拿到的永远是一次完整写入的结果。
+ *   没有采用"整对象引用替换"（每次 new 一个 ClubSession 换引用）的原因：那需要把
+ *   ops / clubSess 再包一层可变引用并给它加锁，等于多一层间接；而这里字段少、写点只有两处，
+ *   在类内加锁更直白。也没有把网络调用放进锁内（见 clubSessionEnsure 的注释）。
  */
 class ClubSession {
-    public var token: String = ""
-    public var at: Int64 = 0
-    public var name: String = ""
-    public var role: String = ""
-    public var phone: String = ""
-    public var err: String = ""
+    private let mu = Mutex()
+    private var token: String = ""
+    private var at: Int64 = 0
+    private var name: String = ""
+    private var role: String = ""
+    private var phone: String = ""
+    private var err: String = ""
+
     public init() {}
+
+    /* 一次写完 6 个字段（读方要么看到上一次的完整会话，要么看到这一次的完整会话）。 */
+    public func commit(token: String, at: Int64, name: String, role: String, phone: String,
+                       err: String): Unit {
+        mu.lock()
+        try {
+            this.token = token
+            this.at = at
+            this.name = name
+            this.role = role
+            this.phone = phone
+            this.err = err
+        } finally {
+            mu.unlock()
+        }
+    }
+
+    /*
+     * 登录/续期失败：清掉 token、记下原因，**不动 at / name / role / phone**。
+     * 保持"失败时身份字段还在"这一点是有意的 —— 它与改动前的逐字段行为一致，
+     * 而令牌已清空，前端拿到的 error 会盖住身份展示。
+     */
+    public func markFailed(err: String): Unit {
+        mu.lock()
+        try {
+            this.token = ""
+            this.err = err
+        } finally {
+            mu.unlock()
+        }
+    }
+
+    /* 一致快照。构造函数不抛异常，所以这里不需要 try/finally 兜底解锁。 */
+    public func view(): ClubSessionView {
+        mu.lock()
+        let v = ClubSessionView(token, at, name, role, phone, err)
+        mu.unlock()
+        return v
+    }
+}
+
+/* 会话快照：view() 的返回值。字段全是 let，拿到之后怎么传都不会再变。 */
+class ClubSessionView {
+    public let token: String
+    public let at: Int64
+    public let name: String
+    public let role: String
+    public let phone: String
+    public let err: String
+    public init(token: String, at: Int64, name: String, role: String, phone: String, err: String) {
+        this.token = token
+        this.at = at
+        this.name = name
+        this.role = role
+        this.phone = phone
+        this.err = err
+    }
 }
 
 /* 缓存有效期（秒）：club-server 的令牌本身是 30 天，这里只是别把登录做得太频繁。 */
@@ -126,6 +241,19 @@ func opsPhoneOfSubject(subject: String): ?String {
  * 所以这里在**转发之前**按客户端 IP 先拦一道，阈值取 club-server 的一半
  * （那边是 15 分钟 10 次，见 h_auth.cj 的 LOGIN_FAIL_LIMIT=5/两个桶），
  * 保证**单个来源**打不满 club-server 的桶。递增退避与清理策略与 h_auth.cj 同构。
+ *
+ * 线程安全（2026-09-17 复核，因为框架并发处理请求）
+ *   本类**是**线程安全的，但这份保证完全依赖那把 Mutex —— 它是个 `private let`，构造期初始化，
+ *   locked() / note() 两步都整体包在 lock/unlock 里（含 `tbl.get(ip) ?? OpsLoginFail()` 这条
+ *   读改写），所以 HashMap 永远不会被并发改坏，也不会出现"两次失败只记了一次"的丢更新。
+ *   ⚠ 因此**新增任何触碰 tbl 的方法都必须自己加锁**，或者干脆在锁内委托给已有方法；
+ *   尤其是别在锁外直接读 tbl（HashMap 不是线程安全的，project 纪律见 capacity-baseline §4.4）。
+ *
+ * 谁在用这张表（2026-09-17 起）
+ *   **两条登录分支共用一个桶**（这是本次修的缺陷之一，见 /api/login 的注释）：
+ *   原先只有"转发给 club-server"的运维账号分支走节流，而"命中本地 RBAC 账号"的分支失败时
+ *   直接返回 401 —— 于是一个来源可以**无限次**猜后台账号的口令（admin / user 那两个），
+ *   而节流表完全没记过一笔。
  */
 let OPS_LOGIN_WINDOW: Int64 = 900         /* 统计窗口（秒） */
 let OPS_LOGIN_FAIL_LIMIT: Int64 = 5       /* 窗口内失败次数达到它就锁 */
@@ -138,6 +266,10 @@ class OpsLoginFail {
     public init() {}
 }
 
+/*
+ * 按来源 IP 记登录失败的节流表（见上方整段说明）。
+ * 线程安全：全部状态都在 mu 保护之下 —— 新增方法请照抄下面两个方法的形状（lock / try / finally unlock）。
+ */
 class OpsLoginGuard {
     private let mu = Mutex()
     private var tbl: HashMap<String, OpsLoginFail> = HashMap<String, OpsLoginFail>()
@@ -239,6 +371,33 @@ func opsClientIp(ctx: Context): String {
         return String.fromUtf8(a[0..last])
     }
     return raw
+}
+
+/*
+ * 节流键：把回环来源折成空串（= **不参与节流**）。
+ *
+ * 与 club-server 的 loginIpLocked 同口径：本机调用者本来就有更高权限，
+ * 而且本项目的测试脚本都从本机打 —— 否则跑几轮测试就把自己锁 15 分钟。
+ * 回环折成空串后由 OpsLoginGuard 处理：note() 忽略空键，locked() 对空键恒 false。
+ *
+ * 为什么要抽成函数（2026-09-17）：/api/login 的**两条分支现在共用同一张节流表**，
+ * 两条分支必须用同一个键算法 —— 各算各的就会出现"同一台机器在两个分支上各有一个桶"，
+ * 那"统一节流"就名不副实（换一个用户名格式就能换一个桶接着猜）。
+ */
+func opsThrottleKey(ctx: Context): String {
+    let ip0 = opsClientIp(ctx)
+    let isLoopback = (ip0 == "127.0.0.1" || ip0 == "::1" ||
+        ip0 == "0:0:0:0:0:0:0:1" || ip0 == "::ffff:127.0.0.1")
+    if (isLoopback) {
+        return ""
+    }
+    return ip0
+}
+
+/* 被节流时的统一回执：两条分支共用同一句话，避免"同一件事两种说法"漂移。 */
+func opsThrottleRejected(ctx: Context): Unit {
+    opsErr(ctx, 429, 429, "尝试过于频繁：该来源已被临时锁定" +
+        "（约 15 分钟；重启运维台立即清零）")
 }
 
 /*
@@ -374,12 +533,73 @@ func persistSeedCreds(envPath: String, adminPass: String, userPass: String): Uni
     }
 }
 
-/* 备份文件后缀：yyyyMMdd-HHmmss（本地时间，够用且不会有非法字符）。
- * 字段名按 std.time.DateTime 的实际口径：month 是枚举（要 toInteger），日期是 dayOfMonth。 */
+/*
+ * 备份文件后缀：yyyyMMdd-HHmmss-SSS（本地时间，末尾三位是**毫秒**）。
+ * 字段名按 std.time.DateTime 的实际口径：month 是枚举（要 toInteger），日期是 dayOfMonth；
+ * 毫秒取 nanosecond / 1000000（DateTime 没有直接的 millisecond 属性，实测 nanosecond 可用）。
+ * 为什么原来是 yyyyMMdd-HHmmss 而现在是这个（2026-09-17 修，见 opsBackupPath 的注释）。
+ */
 func opsStamp(): String {
     let t = DateTime.now()
-    return "${t.year}${pad2(t.month.toInteger())}${pad2(t.dayOfMonth)}-${pad2(t.hour)}${pad2(t.minute)}${pad2(t.second)}"
+    return "${t.year}${pad2(t.month.toInteger())}${pad2(t.dayOfMonth)}-${pad2(t.hour)}${pad2(t.minute)}${pad2(t.second)}-${opsPad3(t.nanosecond / 1000000)}"
 }
+
+/* 三位补零（7 -> "007"）。框架的 pad2 只补两位，毫秒要三位，所以这里自己写一个。 */
+func opsPad3(n: Int64): String {
+    if (n < 10) { return "00" + n.toString() }
+    if (n < 100) { return "0" + n.toString() }
+    return n.toString()
+}
+
+/*
+ * 备份目标路径：<outDir>/<prefix>-<stamp><ext>；若该名字已被占用（或还留着它的 .tmp），
+ * 就补一个递增序号 -1、-2……
+ *
+ * 为什么需要（2026-09-17 修）：原先文件名只到**秒**，而备份是"人可能连点两次"的操作 ——
+ * 同一秒内的第二次备份会**直接覆盖**第一次的产物（同名 File.writeTo），于是"我备份了两份"
+ * 悄悄变成"只剩一份"，而响应里两次返回的路径还一模一样，靠对比根本发现不了。
+ * 只加毫秒还不够（同一毫秒内两次并发仍可能撞），所以这里让**文件系统判重**：只要目标名已存在
+ * 就换下一个序号，名字唯一不靠时间碰运气。
+ *
+ * ⚠ "判重"本身是"先看后写"，两个并发请求同时看会双双选到同一个名字 —— 所以整段备份
+ *   （取时间戳 → 定路径 → 写 .tmp → rename）都在全局 opsBackupMu 里串行执行。
+ *   不加这道锁的话，两个并发备份可能连**同一个 .tmp 文件**都共用，把刚做完的"原子写"
+ *   重新变回撕裂写（两个写者交错写同一个 tmp，再被 rename 成正式副本）。
+ *   备份是低频的人工操作，串行化没有任何代价。
+ */
+func opsBackupPath(outDir: String, prefix: String, stamp: String, ext: String): String {
+    let base = "${prefix}-${stamp}"
+    var candidate = base + ext
+    var n: Int64 = 1
+    while (exists(opsJoin(outDir, candidate)) || exists(opsJoin(outDir, candidate + ".tmp"))) {
+        candidate = "${base}-${n}${ext}"
+        n += 1
+    }
+    return opsJoin(outDir, candidate)
+}
+
+/*
+ * 原子写文件：先写同目录的 <目标>.tmp，再 rename 覆盖到目标 —— 与 store.cj / fw_rbac_store.cj
+ * 的落盘口径完全一致。
+ *
+ * 为什么（2026-09-17 修）：原先备份是 `File.writeTo(目标, File.readFrom(源))` —— **直接往最终
+ * 文件名里写**。备份的全部价值在于"出事时手上有一份完好的副本"，而直接写最终名意味着这份副本
+ * 自己也可能处在"写了一半"的状态：进程被杀 / 磁盘写满 / 目标盘是移动硬盘被拔掉，
+ * 留下的就是一个**残缺的 db-*.json** —— 它体积非零、文件名正常，看起来完全像一次成功的备份，
+ * 而真出事的时候打开才发现是坏的（这正是"备份没验过等于没有备份"的经典形态）。
+ * .tmp + rename 后：目标文件要么不存在，要么内容是完整的（同一卷上 rename 是原子的）。
+ */
+func opsWriteFileAtomic(dst: String, bytes: Array<UInt8>): Unit {
+    let tmp = dst + ".tmp"
+    File.writeTo(tmp, bytes)
+    rename(tmp, to: dst, overwrite: true)
+}
+
+/*
+ * 备份串行闸：见 opsBackupPath 的注释（"名字判重"是"先看后写"，必须整段串行才成立）。
+ * 只有备份这一条路径用它，不参与任何其它请求，因此不会拖慢运维页的读接口。
+ */
+let opsBackupMu = Mutex()
 
 /* ===================== 社团库读取（只读） ===================== */
 
@@ -388,18 +608,29 @@ func opsStamp(): String {
  *
  * 登录用框架 httpclient.cj 的 httpPostJson —— 它语义上"非 2xx / 网络错误一律返回 None"，
  * 所以我们再探一次 /health 来区分"连不上"和"凭据不对"（两类问题处置完全不同）。
+ *
+ * 锁的边界（2026-09-17）：**HTTP 调用不在锁内**。
+ *   本函数只做两件事：进门前拿一次一致快照判断"要不要登录"、出门前**整体提交**结果。
+ *   中间那段网络 IO（登录一次 ~400 ms，NT 上还可能等到超时）不持锁 —— 否则一个卡住的
+ *   club-server 会把 /api/club/config 这种只读配置的接口一起拖住（而它们只需要 ops.clubCreds()，
+ *   根本不是同一把锁）。代价是**并发首次登录可能重复发一次**，这与改动前完全一样（原先连快照都没有），
+ *   但不是新引入的问题；真要收口应该做成"单飞"（single-flight），那是独立的一轮改动。
+ *   顺带一个行为改善：force 续期期间，读方看到的是**上一次的完整会话**，而不是"token 为空"的中间态。
  */
 func clubSessionEnsure(cfg: OpsConfig, sess: ClubSession, force: Bool): Unit {
     let now = nowEpoch()
-    if (!force && sess.token.size > 0 && now - sess.at < OPS_SESSION_TTL) {
-        return
+    if (!force) {
+        let cur = sess.view()
+        if (cur.token.size > 0 && now - cur.at < OPS_SESSION_TTL) {
+            return
+        }
     }
+    /* 一致快照：手机号与口令必须成对（见 OpsConfig.clubCreds 的注释） */
+    let (clubUser, clubPass) = cfg.clubCreds()
     let url = opsJoin(cfg.apiBase, "api/v1/auth/login")
     let body = JsonObject()
-    jPutStr(body, "phone", cfg.clubUser)
-    jPutStr(body, "password", cfg.clubPass)
-    sess.token = ""
-    sess.err = ""
+    jPutStr(body, "phone", clubUser)
+    jPutStr(body, "password", clubPass)
     match (httpPostJson(url, body.toString())) {
         case Some(text) =>
             var token = ""
@@ -424,19 +655,15 @@ func clubSessionEnsure(cfg: OpsConfig, sess: ClubSession, force: Bool): Unit {
                 token = ""
             }
             if (token.size == 0) {
-                sess.err = "club-server 的登录响应看不懂（版本不匹配？）"
+                sess.markFailed("club-server 的登录响应看不懂（版本不匹配？）")
                 return
             }
-            sess.token = token
-            sess.at = now
-            sess.name = name
-            sess.role = role
             /* 登录响应里的 member 是"简报"（不含手机号），手机号以配置为准 */
-            sess.phone = cfg.clubUser
+            sess.commit(token, now, name, role, clubUser, "")
         case None =>
             /* 区分"连不上"与"凭据不对" —— 两类问题的处置完全不同 */
             match (httpGetText(opsJoin(cfg.apiBase, "health"))) {
-                case Some(_) => sess.err = "运维账号凭据被拒绝：club_user=${cfg.clubUser}（口令错？账号刚 init-ops 但 club-server 没重启？被 retire-ops 停用？）"
+                case Some(_) => sess.markFailed("运维账号凭据被拒绝：club_user=${clubUser}（口令错？账号刚 init-ops 但 club-server 没重启？被 retire-ops 停用？）")
                 case None =>
                     /*
                      * 2026-09-17：https:// 必须单独说清楚，否则会把人带到完全错误的方向。
@@ -448,12 +675,12 @@ func clubSessionEnsure(cfg: OpsConfig, sess: ClubSession, force: Bool): Unit {
                      * 原先那句"没起？"是错的诊断。
                      */
                     if (startsWithAscii(cfg.apiBase.toAsciiLower(), "https://")) {
-                        sess.err = "运维台连不上 HTTPS 的 club-server：${cfg.apiBase}。" +
+                        sess.markFailed("运维台连不上 HTTPS 的 club-server：${cfg.apiBase}。" +
                             "出站客户端没有 TLS 配置，自签证书也过不了校验 —— " +
                             "请让 club-server 另以**明文 HTTP** 起一个本机端口（如 serve 8080），" +
-                            "把 club_api 指向它，并用防火墙限制该端口的来源。"
+                            "把 club_api 指向它，并用防火墙限制该端口的来源。")
                     } else {
-                        sess.err = "连不上 club-server：${cfg.apiBase}（没起？地址/端口在 admin.env 里改）"
+                        sess.markFailed("连不上 club-server：${cfg.apiBase}（没起？地址/端口在 admin.env 里改）")
                     }
             }
     }
@@ -475,15 +702,11 @@ func opsLoginViaClub(ctx: Context, phone: String, password: String,
     /*
      * 回环不参与节流（与 club-server 的 loginIpLocked 同口径）：本机调用者本来就有更高权限，
      * 而且本项目的测试脚本都从本机打 —— 否则跑几轮测试就把自己锁 15 分钟。
-     * 实现上把回环折成空串，再由 OpsLoginGuard.note 忽略空键 / locked 对空键恒 false。
+     * 键算法统一在 opsThrottleKey()（两条登录分支共用，见那里的注释）。
      */
-    let ip0 = opsClientIp(ctx)
-    let isLoopback = (ip0 == "127.0.0.1" || ip0 == "::1" ||
-        ip0 == "0:0:0:0:0:0:0:1" || ip0 == "::ffff:127.0.0.1")
-    let ip = if (isLoopback) { "" } else { ip0 }
+    let ip = opsThrottleKey(ctx)
     if (opsLoginGuard.locked(ip)) {
-        opsErr(ctx, 429, 429, "尝试过于频繁：该来源已被临时锁定" +
-            "（约 15 分钟；重启运维台立即清零）")
+        opsThrottleRejected(ctx)
         return
     }
     let url = opsJoin(ops.apiBase, "api/v1/auth/login")
@@ -529,16 +752,16 @@ func opsLoginViaClub(ctx: Context, phone: String, password: String,
         return
     }
     opsLoginGuard.note(ip, true)
-    /* 这次输入的运维凭据留给运维会话用（仅内存），于是不必再手改 admin.env */
-    ops.clubUser = phone
-    ops.clubPass = password
-    clubSess.token = token
-    clubSess.at = nowEpoch()
-    clubSess.name = name
-    clubSess.role = role
+    /*
+     * 这次输入的运维凭据留给运维会话用（仅内存），于是不必再手改 admin.env。
+     * 两处写入都走"整体替换"入口（2026-09-17）：凭据是一对、会话是一组，读方
+     * （/api/club/config、/api/club/session、clubSessionEnsure）不能看到半成品组合 ——
+     * 理由见 OpsConfig / ClubSession 的注释。
+     */
+    ops.setClubCreds(phone, password)
     /* 登录响应里的 member 是简报、可能不含手机号，以登录时输入的手机号为准 */
-    clubSess.phone = if (mphone.size > 0) { mphone } else { phone }
-    clubSess.err = ""
+    clubSess.commit(token, nowEpoch(), name, role,
+        if (mphone.size > 0) { mphone } else { phone }, "")
     println("[ops] 运维账号 ${phone} 已登录运维台（后续写操作以它的身份发出）")
     let o = JsonObject()
     jPutStr(o, "token", issueTokenTtl(opsSubjectOf(phone), secret, ttl))
@@ -630,8 +853,9 @@ main(): Int64 {
     ops.clubPort = cfg.getIntOr("club_port", 8080)
     ops.rbacDb = dbPath
     ops.adminDataDir = opsDirOf(dbPath)
-    ops.clubUser = cfg.getOr("club_user", "")
-    ops.clubPass = cfg.getOr("club_pass", "")
+    /* 一次写一对（见 OpsConfig.setClubCreds 的注释）：admin.env 里没配就是两个空串，
+     * 此时运维页仍可用"运维账号登录"这条路走通（见文件上方"运维身份"整段）。 */
+    ops.setClubCreds(cfg.getOr("club_user", ""), cfg.getOr("club_pass", ""))
     /* 运维会话（内存缓存）：后台用它以**运维账号**的身份调 club-server */
     let clubSess = ClubSession()
 
@@ -671,19 +895,46 @@ main(): Int64 {
      *   ① 后台自己的账号（轻舟 RBAC）—— 与上游一致；
      *   ② 不是后台账号时，当作 club-server 的**运维账号**（手机号）转发过去校验。
      * ① 与 ② 的失败信息分开写，避免把"用户名打错了"和"club-server 没起"混成一句。
+     *
+     * ⚠ 两条分支**共用同一张节流表**（2026-09-17 修）：
+     *   原先只有分支 ② 走 OpsLoginGuard，分支 ① 失败时直接 `opsErr(401)` 走人 ——
+     *   于是**本地后台账号（admin / user）可以被无限次猜口令**：登录框里打一个后台用户名，
+     *   失败一万次也不会在节流表里留下任何一笔，而这张表存在的全部理由就是拦住猜口令。
+     *   （分支 ② 之所以早就加了，是因为它有"未认证就能让 club-server 烧 10 万次 PBKDF2"
+     *   这个更显眼的问题；分支 ① 的 verifyPassword 只有 1000 轮，看着"便宜"，但**猜口令本身就是
+     *   攻击面**，便宜不等于可以对无限次尝试敞开。）
+     *
+     *   统一口径（逐条与分支 ② 的既有语义保持一致，不新增行为）：
+     *     · 校验**之前**先看 locked()：锁定期内连口令都不验（否则锁只挡住了"通过"，
+     *       没挡住 CPU 消耗与计时侧信道）；
+     *     · 失败 → note(ip, false)（窗口内递增，达阈值锁 15 分钟）；
+     *     · 成功 → note(ip, true)（**立即清零**该来源的失败记录）；
+     *     · 键用 opsThrottleKey()：回环来源折成空串、**不参与节流**（与分支 ② 完全一致，
+     *       否则本机测试脚本跑几轮就把自己锁 15 分钟）；
+     *     · 429 的回执文案也共用 opsThrottleRejected()。
+     *   注意"统一"的连带影响是**有意的**：一个来源在两条分支上共用同一个桶，
+     *   所以拿本地用户名刷失败次数，也会同时把这个来源的运维账号登录一起锁上 ——
+     *   这正是"同一个来源的登录尝试"应有的语义（攻击者不该靠换用户名格式换一个桶）。
      */
     publicRouter.post("/api/login", { ctx: Context, _: () -> Unit =>
         let username = bodyStrOr(ctx, "username", "")
         let password = bodyStrOr(ctx, "password", "")
         match (store.findUserByUsername(username)) {
             case Some(u) =>
+                let ip = opsThrottleKey(ctx)
+                if (opsLoginGuard.locked(ip)) {
+                    opsThrottleRejected(ctx)
+                    return
+                }
                 if (verifyPassword(password, u.passwordHash)) {
+                    opsLoginGuard.note(ip, true)
                     let token = issueTokenTtl(u.id.toString(), secret, ttl)
                     /* 前端 api.js 取的是 data.token（与上游一致） */
                     let o = JsonObject()
                     jPutStr(o, "token", token)
                     opsOk(ctx, o)
                 } else {
+                    opsLoginGuard.note(ip, false)
                     opsErr(ctx, 401, 401, "invalid credentials")
                 }
             case None =>
@@ -765,6 +1016,23 @@ main(): Int64 {
             opsErr(ctx, 400, 400, "username and password required")
             return
         }
+        /*
+         * 重名拒绝（2026-09-17 修）。
+         *
+         * 原先库层 createUser() 不校验重名，而 findUserByUsername() 是在 HashMap 上取**首个匹配** ——
+         * 于是"同名两个用户、登录时用的是哪一个"取决于哈希遍历顺序，是不确定的：
+         * 后建的那个可能**永远登不进去**（而它明明在用户列表里、还能被单独删除），
+         * 这不是"多一条脏数据"，而是"账号看起来存在但行为随机"。
+         *
+         * 两道：这里先拦一道，给出**明确的 400 提示**（这是用户管理页最常见的输入错误之一；
+         * 若只靠库层抛异常，客户端拿到的是路由链里残留的 404 壳，见下面 /api/users/:id 的实测，
+         * 那会把"你重名了"说成"没有这个接口"）；库层 createUser() 里还有一道兜底
+         * （并发下预检查会漏，且将来的新调用方可能忘记预检查，见 fw_rbac_store.cj 的长注释）。
+         */
+        if (store.usernameTaken(username)) {
+            opsErr(ctx, 400, 400, "username already exists: ${username}")
+            return
+        }
         let hash = hashPassword(password, "qz2026", 1000)
         let id = store.createUser(username, hash, roleId)
         let o = JsonObject()
@@ -773,7 +1041,35 @@ main(): Int64 {
         opsOk(ctx, o)
     })
     mgmtRouter.delete("/api/users/:id", { ctx: Context, _: () -> Unit =>
-        let id = Int64.parse(ctx.paramOr("id", "0"))
+        /*
+         * 路径参数必须自己 try 住（2026-09-17 修）：
+         * `Int64.parse("abc")` 抛的是**运行时异常**，它会穿透 handler、一路穿到链尾的 opsErrorHandler。
+         *
+         * ⚠ 而 opsErrorHandler 只在"ctx.status == 200 且 body 为空"时才补我们的 `{code,message,data}` 壳 ——
+         *   本链里排在 mgmtRouter **之前**的 publicRouter / authRouter 都是 passOnNotFound，它们 miss 时
+         *   **已经往 ctx 写了 404 + `{"error":"Not Found","path":"..."}`**，于是那个判断为假、
+         *   异常只被 ctx.trace 记一行，**那个 404 body 会原样发给客户端**。
+         *   实测（修前，真机跑）：
+         *     DELETE /api/users/abc -> HTTP 404  body={"error":"Not Found","path":"/api/users/abc"}
+         *   所以症状不是"500 内部错误"，而是**"这条路由不存在"** —— 响应里连 `code` 字段都没有
+         *   （前端 api.js 只看 json.code，会退化成一句 "request failed"），
+         *   把"前端把 id 拼错了"说成"后台没有这个接口"。修后：**HTTP 400 + `{"code":400,...}`**。
+         *
+         * 选 **400** 而不是按 404 处理：这个 handler 里 404 的既有含义是
+         * 「这个 id 的用户不存在」（deleteUser 返回 false 那一支），而"id 根本不是数字"
+         * 是**请求本身**不合法。两者混成一个码之后，前端就分不清"这个人已经被删了"
+         * 与"前端把 id 拼错了"—— 前者刷新列表即可自愈，后者必须改代码。
+         * （与 /health 之类"宽松取默认值"不同：那些是**读**接口，坏参数不该让页面白屏；
+         *   而这里是**写**接口，宁可明确拒绝。）
+         */
+        let rawId = ctx.paramOr("id", "")
+        var id: Int64 = 0
+        try {
+            id = Int64.parse(rawId)
+        } catch (e: Exception) {
+            opsErr(ctx, 400, 400, "invalid user id: ${rawId}")
+            return
+        }
         if (store.deleteUser(id)) {
             opsOk(ctx, JsonNull())
         } else {
@@ -808,6 +1104,8 @@ main(): Int64 {
 
     /* 前端拿这些去拼 club-server 的地址（浏览器所在的机器可能不是服务端那台）。 */
     clubRouter.get("/api/club/config", { ctx: Context, _: () -> Unit =>
+        /* 一次取一对一致的凭据快照：接口不该暴露"半次写入"的中间态（见 OpsConfig 的注释） */
+        let (clubUser, clubPass) = ops.clubCreds()
         let o = JsonObject()
         jPutStr(o, "api_base", ops.apiBase)
         jPutInt(o, "club_port", ops.clubPort)
@@ -816,8 +1114,8 @@ main(): Int64 {
         jPutStr(o, "admin_data_dir", ops.adminDataDir)
         jPutStr(o, "rbac_db", ops.rbacDb)
         jPutInt(o, "admin_port", Int64(port))
-        jPutBool(o, "ops_account_configured", ops.clubUser.size > 0 && ops.clubPass.size > 0)
-        jPutStr(o, "ops_account", ops.clubUser)
+        jPutBool(o, "ops_account_configured", clubUser.size > 0 && clubPass.size > 0)
+        jPutStr(o, "ops_account", clubUser)
         clubPutTime(o, "boot_at", bootEpoch)
         opsOk(ctx, o)
     })
@@ -836,7 +1134,8 @@ main(): Int64 {
      */
     clubRouter.get("/api/club/session", { ctx: Context, _: () -> Unit =>
         let o = JsonObject()
-        if (ops.clubUser.size == 0 || ops.clubPass.size == 0) {
+        let (clubUser, clubPass) = ops.clubCreds()
+        if (clubUser.size == 0 || clubPass.size == 0) {
             jPutBool(o, "configured", false)
             jPutStr(o, "hint", "未配置运维账号：先在 club-server 跑 " +
                 "`club-server init-ops <手机号> <口令> <数据目录>`，" +
@@ -846,18 +1145,21 @@ main(): Int64 {
         }
         let force = ctx.queryParamOr("force", "") == "1"
         clubSessionEnsure(ops, clubSess, force)
+        /* 一次取一致快照：token 与 identity 必须是**同一次**登录的结果，
+         * 否则前端可能拿到"身份是运维账号、token 却是上一个账号的"这种撕裂组合（见 ClubSession 的注释） */
+        let sess = clubSess.view()
         jPutBool(o, "configured", true)
         jPutStr(o, "api_base", ops.apiBase)
         jPutInt(o, "club_port", ops.clubPort)
-        jPutStr(o, "token", clubSess.token)
-        if (clubSess.err.size > 0) {
-            jPutStr(o, "error", clubSess.err)
+        jPutStr(o, "token", sess.token)
+        if (sess.err.size > 0) {
+            jPutStr(o, "error", sess.err)
         }
         let id = JsonObject()
-        jPutStr(id, "name", clubSess.name)
-        jPutStr(id, "phone", clubSess.phone)
-        jPutStr(id, "role", clubSess.role)
-        jPutStr(id, "role_label", clubRoleLabel(clubSess.role))
+        jPutStr(id, "name", sess.name)
+        jPutStr(id, "phone", sess.phone)
+        jPutStr(id, "role", sess.role)
+        jPutStr(id, "role_label", clubRoleLabel(sess.role))
         o.put("identity", id)
         opsOk(ctx, o)
     })
@@ -881,8 +1183,13 @@ main(): Int64 {
         withClub(ctx, ops.dataDir, { s: Store => clubLinks(s) })
     })
     clubRouter.get("/api/club/audit", { ctx: Context, _: () -> Unit =>
-        let limit = clubIntOr(ctx.queryParamOr("limit", "200"), 200)
-        let cap = if (limit > 0) { limit } else { 200 }
+        /*
+         * limit 的默认值（200）、非法/0/负数的回退值（200）与**上界**（CLUB_AUDIT_LIMIT_MAX = 2000）
+         * 全在 clubAuditLimit() 里，理由见那里的长注释。
+         * 这里原先直接吃裸 limit：`?limit=99999999` 会让整份 audit.log 被切成一堆行、
+         * 再为每行建一个 JsonObject（每行还两次成员名查表）—— 与 clubPaging 的 500 上界是同一类防护。
+         */
+        let cap = clubAuditLimit(ctx)
         withClub(ctx, ops.dataDir, { s: Store =>
             let o = JsonObject()
             let items = clubAuditLines(s, cap)
@@ -919,6 +1226,18 @@ main(): Int64 {
     /*
      * 备份：把社团库（db.json + audit.log）复制到 <admin 数据目录>/club-backups/。
      * 纯文件复制、不动社团库本身，因此不存在双写风险。
+     *
+     * 2026-09-17 三处修正（都是"备份本身可能不可靠"这一类）：
+     *   ① 落盘改原子（opsWriteFileAtomic：先 .tmp 再 rename）—— 原先直接写最终名，
+     *      中途失败会留下一个文件名正常、内容残缺的"假备份"；
+     *   ② 文件名带毫秒 + 冲突自动补序号（opsBackupPath）—— 原先只到秒，同秒第二次备份
+     *      会静默覆盖第一次；
+     *   ③ db.json **只读一次**：原先读完写副本，末尾又 `File.readFrom(dbFile).size` 读了第二遍，
+     *      于是响应里的 db_bytes 与刚写出的副本可能**不是同一个版本**（club-server 恰好在这两次读
+     *      之间做了一次原子落盘就会 —— 而"运维点备份"往往正是社团库刚被写入的时候）。
+     *      现在用同一份字节既写副本、又报大小，二者必然一致。
+     *   另外：整段备份在 opsBackupMu 里**串行**执行 —— 见 opsBackupPath 的注释
+     *   （"文件名判重"与"共用一个 .tmp"这两件事都必须串行才成立）。
      */
     clubRouter.post("/api/club/backup", { ctx: Context, _: () -> Unit =>
         let dbFile = opsJoin(ops.dataDir, "db.json")
@@ -926,29 +1245,36 @@ main(): Int64 {
             opsErr(ctx, 404, 404, "找不到社团库文件：${dbFile}（club_data 配错？）")
             return
         }
-        let stamp = opsStamp()
-        let outDir = opsJoin(ops.adminDataDir, "club-backups")
+        opsBackupMu.lock()
         try {
-            if (!exists(outDir)) {
-                Directory.create(outDir, recursive: true)
+            let stamp = opsStamp()
+            let outDir = opsJoin(ops.adminDataDir, "club-backups")
+            try {
+                if (!exists(outDir)) {
+                    Directory.create(outDir, recursive: true)
+                }
+                /* 只读一次（见上方 ③）：这一份字节既用于写副本，也用于报 db_bytes */
+                let dbBytes = File.readFrom(dbFile)
+                let files = JsonArray()
+                let dbOut = opsBackupPath(outDir, "db", stamp, ".json")
+                opsWriteFileAtomic(dbOut, dbBytes)
+                files.add(JsonString(dbOut))
+                let auditFile = opsJoin(ops.dataDir, "audit.log")
+                if (exists(auditFile)) {
+                    let auditOut = opsBackupPath(outDir, "audit", stamp, ".log")
+                    opsWriteFileAtomic(auditOut, File.readFrom(auditFile))
+                    files.add(JsonString(auditOut))
+                }
+                let o = JsonObject()
+                o.put("files", files)
+                jPutStr(o, "stamp", stamp)
+                jPutInt(o, "db_bytes", dbBytes.size)
+                opsOk(ctx, o)
+            } catch (e: Exception) {
+                opsErr(ctx, 500, 500, "备份失败：${e.message}")
             }
-            let files = JsonArray()
-            let dbOut = opsJoin(outDir, "db-${stamp}.json")
-            File.writeTo(dbOut, File.readFrom(dbFile))
-            files.add(JsonString(dbOut))
-            let auditFile = opsJoin(ops.dataDir, "audit.log")
-            if (exists(auditFile)) {
-                let auditOut = opsJoin(outDir, "audit-${stamp}.log")
-                File.writeTo(auditOut, File.readFrom(auditFile))
-                files.add(JsonString(auditOut))
-            }
-            let o = JsonObject()
-            o.put("files", files)
-            jPutStr(o, "stamp", stamp)
-            jPutInt(o, "db_bytes", File.readFrom(dbFile).size)
-            opsOk(ctx, o)
-        } catch (e: Exception) {
-            opsErr(ctx, 500, 500, "备份失败：${e.message}")
+        } finally {
+            opsBackupMu.unlock()
         }
     })
 
@@ -1024,8 +1350,10 @@ main(): Int64 {
     println("  GET  /api/club/overview   社团运维台（读社团库；写走 club-server）")
     println("  运维页 http://127.0.0.1:${port}/club")
     println("  社团库 ${ops.dataDir}　club-server ${ops.apiBase}")
-    if (ops.clubUser.size > 0) {
-        println("  运维身份 ${ops.clubUser}（club-server 的 role = ops：除移交会长外与会长同权）")
+    /* 一次取一致快照（这两条打印发生在 serve() 之前，但用法与接口侧保持一致，别再直接读字段） */
+    let (bootClubUser, _bootClubPass) = ops.clubCreds()
+    if (bootClubUser.size > 0) {
+        println("  运维身份 ${bootClubUser}（club-server 的 role = ops：除移交会长外与会长同权）")
         println("    （也可以直接用运维账号登录本后台，那样就不必在这里配 club_user / club_pass）")
     } else {
         println("  运维页的写操作需要一个运维账号（club-server 的 role = ops）。")

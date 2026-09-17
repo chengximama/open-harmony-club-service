@@ -47,6 +47,14 @@ func targetOf(actor: Member, tgt: Member): Target {
     t.member_id = tgt.id
     t.dept_id = tgt.dept_id
     t.target_role = tgt.role
+    /*
+     * 2026-09-17（P1 加固）：把"目标确实没有角色"这件事**显式声明**出来。
+     *
+     * 待分配成员（status=pending）的 role 就是空串 —— 这是正常状态，不是漏填。
+     * perms 的同权闸据此区分"待分配（按 0 档处理）"与"调用方忘了填（一律拒）"，
+     * 见 Target.role_absent 的注释。
+     */
+    t.role_absent = (tgt.role.size == 0)
     t.owner_id = tgt.id
     t.is_self = (tgt.id == actor.id)
     return t
@@ -200,6 +208,8 @@ public func handleMemberUpdate(ctx: Context, s: Store): Unit {
                 if (isBlank(nm)) {
                     throw apiErrFields("VALIDATION_FAILED", "参数校验失败", oneField("name", "姓名不能为空"))
                 }
+                /* 2026-09-17：姓名长度上限（见 limits.cj —— 姓名出现在每个任务/课题视图里） */
+                requireLen("name", "姓名", nm, MAX_NAME_BYTES)
                 nextName = Some(nm)
             case None => ()
         }
@@ -238,17 +248,30 @@ public func handleMemberUpdate(ctx: Context, s: Store): Unit {
             }
             match (newDept) {
                 case Some(did) =>
-                    if (did > 0) {
-                        match (s.departments.get(did)) {
-                            case Some(_) => ()
-                            case None => throw apiErr("DEPT_NOT_FOUND")
-                        }
+                    /*
+                     * 2026-09-17：`dept_id <= 0` 明确报错，不再静默落库。
+                     * 原先只在 `did > 0` 时才校验，于是 `{"dept_id":0}` 能把一个在职成员改成
+                     * "没有部门"，`-5` 这类垃圾值也会永久写进 db.json —— 而"未分配"本应只属于
+                     * pending 账号（那一路走 POST /members/{id}/assign 审批，本接口对 pending
+                     * 只接受 name）。口径与 assign 对齐（那边要求 dept_id > 0）。
+                     */
+                    if (did <= 0) {
+                        throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+                            oneField("dept_id", "部门 id 必须是正整数（待分配账号请用 POST /members/{id}/assign）"))
+                    }
+                    match (s.departments.get(did)) {
+                        case Some(_) => ()
+                        case None => throw apiErr("DEPT_NOT_FOUND")
                     }
                 case None => ()
             }
         }
 
         /* ---------- 阶段二：全部通过之后才落值（N-15） ---------- */
+        /* 审计要记"旧值 → 新值"，先把旧值拷下来（下面就要覆盖它们） */
+        let oldName = tgt.name
+        let oldRole = tgt.role
+        let oldDept = tgt.dept_id
         match (nextName) {
             case Some(nm) =>
                 tgt.name = nm
@@ -269,6 +292,15 @@ public func handleMemberUpdate(ctx: Context, s: Store): Unit {
         }
 
         if (touched) {
+            /*
+             * 2026-09-17：本 handler 原先**不写审计** —— 而它能改 role 与 dept_id，
+             * 也就是说它能提权（`{"role":"vice_president"}`）。同一份文件里
+             * disable / assign / assign-batch / transfer-presidency 四条都记账，
+             * M-4 的立论正是"成员处置必须可追溯"，唯独这条主路径漏了。
+             * 这里按**字段级**记旧值 → 新值，事后能查出"谁把谁改成了什么"。
+             */
+            audit(s, actor.id, "update-member", tgt.id,
+                "姓名=${oldName}->${tgt.name} 角色=${oldRole}->${tgt.role} 部门=${oldDept}->${tgt.dept_id}")
             storeSave(s)
         }
         sendOk(ctx, memberBrief(s, tgt))
@@ -492,6 +524,21 @@ public func handleTransferPresidency(ctx: Context, s: Store): Unit {
         }
         if (tgt.status == "disabled") {
             throw apiErr("MEMBER_DISABLED")
+        }
+        /*
+         * 2026-09-17（P1）：**不能把会长移交给运维账号**。
+         *
+         * 运维（role=ops）与会长同档，但它不是社团干部：它由 `init-ops` 创建、
+         * 由 `retire-ops` 停用。一旦会长身份落到运维账号上，两条官方恢复路径会**同时失效**：
+         *   · `retire-ops` 因 `m.role != "ops"` 拒绝（main.cj），
+         *   · `init-admin` 因 `presidentCount(s) > 0` 拒绝（main.cj），
+         * 只能靠手改 db.json 才能恢复治理。
+         * 常规部署里运维账号的 id 通常就是 2（先 init-admin、再 init-ops），
+         * 所以这是一条命令即可触发的治理死锁，不是理论风险。
+         * 移交目标应该是"某位社团成员"，而不是这台机器上的运维身份。
+         */
+        if (tgt.role == "ops") {
+            throw apiErrMsg("FORBIDDEN_ROLE", "不能把会长移交给运维账号（请移交给一位社团成员）")
         }
         if (!isKnownRole(selfRole) || selfRole == "president") {
             throw apiErrFields("VALIDATION_FAILED", "参数校验失败",

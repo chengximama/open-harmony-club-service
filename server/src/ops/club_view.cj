@@ -139,8 +139,12 @@ func clubFileMtime(path: String): Int64 {
 /*
  * 成员一行。**不含任何口令材料**（见文件头"安全"一节）。
  * has_password 只说明"有没有设过口令"，运维排查"登不上"时够用且不泄露材料。
+ *
+ * open_tasks 由调用方传入的**聚合表**取（见 clubOpenTaskCounts 的长注释）：
+ * 原先这一行自己调 openTasksOf(s, m.id)，而那个函数会遍历**全部任务** ——
+ * 一页 500 个成员 × 上万条任务就是千万级迭代，全发生在"打开名录页"这一条请求里。
  */
-func clubMemberRow(s: Store, m: Member, now: Int64): JsonObject {
+func clubMemberRow(s: Store, m: Member, now: Int64, openCounts: HashMap<Int64, Int64>): JsonObject {
     let o = JsonObject()
     jPutInt(o, "id", m.id)
     jPutStr(o, "name", m.name)
@@ -155,7 +159,7 @@ func clubMemberRow(s: Store, m: Member, now: Int64): JsonObject {
     jPutStr(o, "status_label", clubMemberStatusLabel(m.status))
     jPutBool(o, "is_president", m.role == "president")
     jPutBool(o, "has_password", m.pw_hash.size > 0)
-    jPutInt(o, "open_tasks", openTasksOf(s, m.id).size)
+    jPutInt(o, "open_tasks", openCounts.get(m.id) ?? 0)
     clubPutTime(o, "joined_at", m.joined_at)
     /* now 目前只用于"账号是否在册"这类派生展示，保留参数以便后续加派生字段 */
     if (m.status == "active" && m.role != "president" && now > 0) {
@@ -164,6 +168,31 @@ func clubMemberRow(s: Store, m: Member, now: Int64): JsonObject {
         jPutBool(o, "can_disable", false)
     }
     return o
+}
+
+/*
+ * 每个 owner 名下**未完成任务数**的聚合表（一次遍历 tasks）。
+ *
+ * 为什么需要（2026-09-17 修 N+1）：名录页的每行原先各自调 store.cj 的 openTasksOf()，
+ * 而那个函数**遍历全部任务**（它是给"移出社团前必须转交"那种单成员检查用的）。
+ * 于是开销是"本页行数 × 全库任务数"：size=500、库里有 1 万条任务就是 500 万次比较，
+ * 而且排序开销（openTasksOf 内部还 sortByKey）也白花在只取 .size 的调用上。
+ * 现在改成入口处**一次遍历**算出全表，行构造只做一次 HashMap 查表 —— O(任务数 + 本页行数)。
+ *
+ * 口径必须与 openTasksOf 逐条一致，否则 open_tasks 会悄悄变化：
+ *   openTasksOf 的过滤是 `deleted_at > 0 || owner_id != memberId || status == "done"` → 跳过，
+ *   即"未删除、且不是 done"才算未完成。这里按 owner_id 分桶累加同一条件。
+ *   （owner_id = 0 的"无主任务"也会进表，但成员 id 恒 > 0，不会被查到，与旧行为一致。）
+ */
+func clubOpenTaskCounts(s: Store): HashMap<Int64, Int64> {
+    let counts = HashMap<Int64, Int64>()
+    for ((_k, t) in s.tasks) {
+        if (t.deleted_at > 0 || t.status == "done") {
+            continue
+        }
+        counts[t.owner_id] = (counts.get(t.owner_id) ?? 0) + 1
+    }
+    return counts
 }
 
 /* 部门一行：带在用人数与顶层课题数（运维最常问的两个数）。 */
@@ -266,8 +295,8 @@ func clubOverview(s: Store): JsonObject {
     var disabled: Int64 = 0
     var president: Int64 = 0
     var vicePresident: Int64 = 0
-    var minister: Int64 = 0
-    var viceMinister: Int64 = 0
+    var lead: Int64 = 0
+    var viceLead: Int64 = 0
     var plainMember: Int64 = 0
     for ((_k, m) in s.members) {
         if (m.status == "active") { active += 1 }
@@ -275,8 +304,15 @@ func clubOverview(s: Store): JsonObject {
         if (m.status == "disabled") { disabled += 1 }
         if (m.role == "president") { president += 1 }
         if (m.role == "vice_president") { vicePresident += 1 }
-        if (m.role == "minister") { minister += 1 }
-        if (m.role == "vice_minister") { viceMinister += 1 }
+        /* ⚠ 中间两档的**权威角色码是 lead / vice_lead**（见 perms.cj 的 roleRank、
+         *   views.cj 的 roleLabel，以及本文件 clubRoleLabel() 上方那段注释）。
+         *   2026-09-17 之前这里判的是 `"minister"` / `"vice_minister"` —— 那是从来没存在过的
+         *   代号，于是**部长/副部长两个数恒为 0**：库里有几个部长，概览都显示 0，
+         *   而同一页的名录又照常显示「部长」（它走 role_label），自相矛盾且极易被当成"数据没录进去"。
+         *   注意 `member` 这一档：部长**不同时**计入 member（role 是单值，不是位掩码），
+         *   所以 total ≠ active + 各档之和时不必惊讶 —— ops 账号也不计入任何一档。 */
+        if (m.role == "lead") { lead += 1 }
+        if (m.role == "vice_lead") { viceLead += 1 }
         if (m.role == "member") { plainMember += 1 }
     }
     let mj = JsonObject()
@@ -286,8 +322,15 @@ func clubOverview(s: Store): JsonObject {
     jPutInt(mj, "disabled", disabled)
     jPutInt(mj, "president", president)
     jPutInt(mj, "vice_president", vicePresident)
-    jPutInt(mj, "minister", minister)
-    jPutInt(mj, "vice_minister", viceMinister)
+    /*
+     * ⚠ 这两个**键名**（minister / vice_minister）是历史遗留的错名，本次**故意不改**：
+     *   它们承载的是"部长 / 副部长"两个数（即上面的 lead / viceLead），改键名属于契约漂移。
+     *   之所以能确认改键名安全、但选择不改：`grep -ri minister server/admin-web/src` 与
+     *   `grep -ri minister server/tests` 都是 0 命中 —— 前端目前根本没消费这两个键，
+     *   所以本次只修"数错了"这件事本身；键名若要纠正，应该连同前端一起作为一次独立的契约变更做。
+     */
+    jPutInt(mj, "minister", lead)
+    jPutInt(mj, "vice_minister", viceLead)
     jPutInt(mj, "member", plainMember)
     o.put("members", mj)
 
@@ -353,8 +396,12 @@ func clubOverview(s: Store): JsonObject {
     let auditFile = "${s.dir}/audit.log"
     let aj = JsonObject()
     jPutStr(aj, "file", auditFile)
-    jPutInt(aj, "bytes", clubFileSize(auditFile))
-    jPutInt(aj, "lines", clubAuditLines(s, 0).size())
+    /* 字节数与行数**一次读盘**同时取（见 clubAuditStat 的长注释）：
+     * 原先这里是 clubFileSize() + clubAuditLines(s, 0) —— 读两遍，而且后一遍把每一行都建成
+     * JsonObject 再丢掉，只为得到一个行数。 */
+    let (auditBytes, auditLines) = clubAuditStat(s)
+    jPutInt(aj, "bytes", auditBytes)
+    jPutInt(aj, "lines", auditLines)
     o.put("audit", aj)
 
     return o
@@ -370,6 +417,28 @@ func clubPaging(ctx: Context): (Int64, Int64) {
     if (size < 1) { size = 50 }
     if (size > 500) { size = 500 }
     return (page, size)
+}
+
+/*
+ * 审计日志一次最多回多少行。
+ *
+ * 为什么要有上限（2026-09-17 修）：`/api/club/audit` 收的是**裸的 limit**
+ * （`clubIntOr(...)` 对越界/非法值只回退默认值，没有上界），而 clubAuditLines() 会把
+ * 整个 audit.log **读进内存再 split**。审计日志是只追加的，跑几个月就是几万行 ——
+ * 于是 `?limit=99999999` 一条请求就能让运维台把几十 MB 的字符串切成一堆行、
+ * 再为每一行建一个 JsonObject（每行还要两次成员名查表）。这不是"运维台自己慢"，
+ * 它和 clubPaging 的 500 上界是**同一类**防护：运维台不做无限拉取。
+ *
+ * 取 2000 而不是 500：审计页要能"一次看长一点的历史"，而 2000 行 JSON 仍是百 KB 量级；
+ * 默认值与"非法/0/负数"的回退值都保持 200（**既有行为不变**，只是加了一道上界）。
+ */
+let CLUB_AUDIT_LIMIT_MAX: Int64 = 2000
+
+func clubAuditLimit(ctx: Context): Int64 {
+    var limit = clubIntOr(ctx.queryParamOr("limit", "200"), 200)
+    if (limit <= 0) { limit = 200 }
+    if (limit > CLUB_AUDIT_LIMIT_MAX) { limit = CLUB_AUDIT_LIMIT_MAX }
+    return limit
 }
 
 func clubMembers(s: Store, ctx: Context): JsonObject {
@@ -403,10 +472,13 @@ func clubMembers(s: Store, ctx: Context): JsonObject {
     let items = JsonArray()
     let total = hit.size
     let from = (page - 1) * size
+    /* 未完成任务数在**投影前**一次算完（见 clubOpenTaskCounts 的长注释），
+     * 行构造里只做查表 —— 不要再把 openTasksOf() 放回 clubMemberRow 里。 */
+    let openCounts = clubOpenTaskCounts(s)
     var i: Int64 = 0
     for (m in hit.toArray()) {
         if (i >= from && i < from + size) {
-            items.add(clubMemberRow(s, m, now))
+            items.add(clubMemberRow(s, m, now, openCounts))
         }
         i += 1
     }
@@ -419,12 +491,31 @@ func clubMembers(s: Store, ctx: Context): JsonObject {
 }
 
 func clubDepts(s: Store): JsonObject {
-    let all = ArrayList<Department>()
-    for ((_k, d) in s.departments) {
-        all.add(d)
-    }
-    let sorted = all.toArray()
-    sortByKey<Department>(sorted, { d: Department => d.sort * 1000 + d.id })
+    /*
+     * 部门展示顺序：直接复用 store.cj 的 sortedDepartments()（sort → id）。
+     *
+     * 原先这里自己拼了 `d.sort * 1000 + d.id`，有两个坑（2026-09-17 修，两个都实测过）：
+     *   ① **越界值会让这个接口彻底不可用**。sort 没有上界保证 —— 磁盘上可能已经有旧版本写下的
+     *      越界值（store.cj 的 SORT_MAX 注释就是这么写的："因为磁盘上可能已经有旧版本写下的越界值"）。
+     *      仓颉的 Int64 算术**默认"溢出即抛"**（实测：把 `Int64.parse("9223372036854775807")`
+     *      这个**运行时**值乘 1000 → `OverflowException: mul`；写成编译期常量则直接被编译器拒绝），
+     *      所以这里不是"悄悄回绕成负数、排到最前面"，而是**抛出去**。
+     *      抛出去之后更难看：本文件上方的 passOnNotFound 路由（publicRouter / authRouter / mgmtRouter
+     *      都是）在 miss 时**已经往 ctx 里写了 404 + `{"error":"Not Found","path":...}`**，
+     *      而链尾的 opsErrorHandler 只在"status == 200 且 body 为空"时才补 500 壳 ——
+     *      于是客户端拿到的是 **HTTP 404「路由不存在」**，整条响应里没有一个字段像"服务器算错了"。
+     *      实测（把 db.json 里某个部门的 sort 改成 9223372036854775807 后重启运维台，同一份数据）：
+     *        修前 GET /api/club/depts -> HTTP 404 {"error":"Not Found","path":"/api/club/depts"}（连打两次都一样）
+     *        修后 GET /api/club/depts -> HTTP 200，那个部门排在最后
+     *      因为这个值每次请求都要从 db.json 读出来，所以是**持续 404**，只能手工改文件才能恢复
+     *      （store.cj 里描述的正是这个后果："接口从此永久 500，只能手工改文件才能恢复"）。
+     *   ② 就算不溢出，低位也只给 id 留了 3 位十进制：id ≥ 1000 时 `sort=1,id=0` 的键（1000）
+     *      会小于 `sort=0,id=5000` 的键（5000）—— **顺序整个错**，而 id 是自增的，早晚过 1000。
+     * sortedDepartments() 用的正是 sortKeyClamp(sort) * 1000000 + id（clamp 到 [SORT_MIN, SORT_MAX]，
+     * 且给 id 留下 6 位），① ② 一起治掉。这里**不再自己写排序键**，避免两份口径漂移 ——
+     * 那正是这个文件与 store.cj 之间最容易失守的地方。
+     */
+    let sorted = sortedDepartments(s)
     let items = JsonArray()
     for (d in sorted) {
         items.add(clubDeptRow(s, d))
@@ -532,7 +623,51 @@ func clubLinks(s: Store): JsonObject {
 /* ===================== 审计日志 ===================== */
 
 /*
- * 读 <数据目录>/audit.log 的尾部。limit = 0 表示"只要总行数"（概览用）。
+ * 审计日志的 (字节数, 行数) —— **一次读盘同时给出这两个数**。
+ *
+ * 为什么单独写一个函数（2026-09-17）：
+ *   · 概览原先要读**两遍** audit.log 才能显示这两个数：`clubFileSize()` 把整个文件读进内存
+ *     只为取 `.size`，`clubAuditLines(s, 0)` 再把**每一行都建成 JsonObject**（每行两次
+ *     clubMemberName 查表）然后整份丢掉、只取一个行数 —— 概览是运维页每次打开都要打的接口，
+ *     而 audit.log 只会越来越长。
+ *   · 行数口径必须与 clubAuditLines() 的 `split("\n", -1, removeEmpty: true).size` **逐字节等价**，
+ *     否则页面上"审计行数"会莫名变化。等价性：只有 '\n' 是行分隔符，空段（连续换行、结尾换行）
+ *     不计入 —— 于是"见到 '\n' 时若本段已有内容就 +1，收尾时本段还有内容再 +1"就是同一个数。
+ *     （注意 '\r' 也算"有内容"：CRLF 文件里 `"\r"` 是一个**非空**段，切分口径同样会计它。）
+ *   · 读不到（文件不存在 / 无权限）→ (0, 0)，与 clubFileSize() 的既有口径一致（0 而不是报错）。
+ */
+func clubAuditStat(s: Store): (Int64, Int64) {
+    let path = "${s.dir}/audit.log"
+    var bytes: Array<UInt8>
+    try {
+        bytes = File.readFrom(path)
+    } catch (e: Exception) {
+        return (0, 0)
+    }
+    var lines: Int64 = 0
+    var inLine = false
+    let n = bytes.size
+    var i: Int64 = 0
+    while (i < n) {
+        if (bytes[i] == 10) {        /* '\n' */
+            if (inLine) { lines += 1 }
+            inLine = false
+        } else {
+            inLine = true
+        }
+        i += 1
+    }
+    if (inLine) { lines += 1 }
+    return (bytes.size, lines)
+}
+
+/*
+ * 读 <数据目录>/audit.log 的尾部。`limit <= 0` 表示**不截断（返回全部行）**。
+ *
+ * ⚠ 2026-09-17 更正：这里原先写着"limit = 0 表示只要总行数（概览用）"，但实现从来不是那样 ——
+ *   start 保持 0，返回的是**全部行**（只是概览把结果丢掉、只取 size）。现在概览改用
+ *   clubAuditStat()（只数不解析），本函数的调用方一律传正数 limit（上界见 clubAuditLimit）。
+ *   保留 `limit <= 0 → 全部` 这条行为，是为了不动既有语义；但**不要**再用它去数行数。
  *
  * 行格式（audit.cj 写入口，制表符分隔，note 里的制表符已被替换成空格，所以恒为 5 段）：
  *   <iso本地时间>\tactor=<id>\t<动作>\ttarget=<id>\t<备注>

@@ -36,6 +36,8 @@ public func handleDeptCreate(ctx: Context, s: Store): Unit {
     let body = reqObj(ctx)
     let v = V()
     let name = v.need("name", reqStrOr(body, "name", ""), "请输入部门名称")
+    /* 2026-09-17：部门名会出现在每个成员/任务的视图里（整份进 db.json），设个上限（见 limits.cj） */
+    lenCheck(v, "name", "部门名", name, MAX_NAME_BYTES)
     v.done()
 
     s.lock.lock()
@@ -98,6 +100,7 @@ public func handleDeptUpdate(ctx: Context, s: Store): Unit {
                 if (isBlank(nm)) {
                     throw apiErrFields("VALIDATION_FAILED", "参数校验失败", oneField("name", "部门名称不能为空"))
                 }
+                requireLen("name", "部门名", nm, MAX_NAME_BYTES)
                 if (deptNameTaken(s, nm, d.id)) {
                     throw apiErrFields("ALREADY_EXISTS", "部门名已存在", oneField("name", "部门名已存在"))
                 }
@@ -171,20 +174,50 @@ public func handleDeptDelete(ctx: Context, s: Store): Unit {
         if (pn > 0) {
             throw apiErrMsg("DEPT_NOT_EMPTY", "该部门下还有 ${pn} 个顶层课题，必须先移走或删除")
         }
-        /* 已退出成员与历史任务的部门标签置 0，避免留下指向已删部门的 id */
+        /*
+         * 已退出成员与历史任务的部门标签置 0，避免留下指向已删部门的 id。
+         *
+         * 2026-09-17 补齐三处同类引用（原先只清了这两个）：
+         *   · `Member.dept_hint`（招募链接带来的部门预填）→ 一直指向不存在的部门；
+         *   · `Task.help_dept_id`（阻塞任务的求助部门）→ 首页「需要帮助」显示空部门名；
+         *   · `DeptInviteLink`（该部门的招募链接）→ 最明显的一处：同一个 token 在公开 JSON 里
+         *     返回 `enabled:true, dept.name:""`，而公开落地页显示"链接已失效"（两个入口结论矛盾）。
+         * 邀请链接按 h_link.cj 的既定语义**停用而不删除**（记录保留，便于事后追溯）。
+         */
+        var hintsCleared: Int64 = 0
         for ((_k, mm) in s.members) {
             if (mm.dept_id == id) {
                 mm.dept_id = 0
             }
+            if (mm.dept_hint == id) {
+                mm.dept_hint = 0
+                hintsCleared += 1
+            }
         }
+        var helpsCleared: Int64 = 0
         for ((_k, t) in s.tasks) {
             if (t.dept_id == id) {
                 t.dept_id = 0
             }
+            if (t.help_dept_id == id) {
+                /* help_dept_id 与 help_member_id 是**一组**信息（「需要帮助 · 部门 人」）——
+                 * 部门没了就把这一组一起清掉，不留半截状态（与离开 blocked 时的清法一致）。 */
+                t.help_dept_id = 0
+                t.help_member_id = 0
+                helpsCleared += 1
+            }
+        }
+        var linksDisabled: Int64 = 0
+        for ((_k, l) in s.invite_links) {
+            if (l.dept_id == id && l.enabled) {
+                l.enabled = false
+                linksDisabled += 1
+            }
         }
         s.departments.remove(id)
         storeSave(s)
-        audit(s, m.id, "delete-dept", id, "部门已删除，遗留引用已清空")
+        audit(s, m.id, "delete-dept", id,
+            "部门已删除，遗留引用已清空（预填=${hintsCleared} 求助=${helpsCleared} 停用招募链接=${linksDisabled}）")
         sendOk(ctx, JsonObject())
     } finally {
         s.lock.unlock()

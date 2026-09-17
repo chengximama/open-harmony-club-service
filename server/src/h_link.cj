@@ -246,6 +246,11 @@ public func handleInviteLinkDisable(ctx: Context, s: Store): Unit {
     if (token.size == 0) {
         throw apiErrFields("VALIDATION_FAILED", "参数校验失败", oneField("token", "缺少链接标识"))
     }
+    /* 2026-09-17：长度上限。链接 token 是 32 位十六进制（N-19），128 字节足够；
+     * 不设上限时一个超长 token 会被原样拼进审计行（audit 的 note 里带它）。 */
+    if (token.size > 128) {
+        throw apiErrFields("VALIDATION_FAILED", "参数校验失败", oneField("token", "链接标识不合法"))
+    }
     s.lock.lock()
     try {
         match (s.invite_links.get(token)) {

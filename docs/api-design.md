@@ -93,6 +93,8 @@
 | `PLAN_NOT_FOUND` | 404 | |
 | `TASK_NOT_FOUND` | 404 | |
 | `ALREADY_EXISTS` | 409 | 手机号已注册、部门重名等 |
+| `PAYLOAD_TOO_LARGE` | 413 | 请求体超过上限（`limits.cj` 的前置闸门，64 KiB，在进内存之前就拒） |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | 请求体类型不受支持（只接受 JSON / 表单 / 文本三类） |
 | `TOO_MANY_ATTEMPTS` | 429 | 登录失败次数过多 |
 | `INTERNAL` | 500 | 兜底，**不向客户端暴露堆栈** |
 

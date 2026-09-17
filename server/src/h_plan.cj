@@ -33,6 +33,32 @@ func targetOfPlan(s: Store, p: Plan): Target {
     return tgt
 }
 
+/*
+ * 2026-09-17（P1）：**课题负责人必须与课题同部门** —— 与任务侧（h_task.cj 的
+ * "负责人必须与课题同部门"，N-18）同一条口径，只是课题侧原先从未落地。
+ *
+ * 为什么必须有：perms 给课题负责人留了一条"我是负责人就放行 EditPlan"的例外。
+ * 于是"把负责人填成别的部门的人"= **把本部门课题的写权限送给别的部门**
+ * （对方随即能改这个课题的标题 / 截止 / 负责人）。任务侧堵住了这个口子，课题侧没有。
+ *
+ * 部门的"有效值"是根课题的部门（规则 19：子课题不存 dept_id），所以两个调用点都传
+ * `planDeptOf(...)`。
+ *
+ * 例外：会长 / 副会长 / 运维本来就不受部门范围限制（perms.bypassesDeptScope），
+ * 他们当负责人不构成"额外的写权限"，因此不拦 —— 否则会长就没法给别的部门的课题
+ * 当负责人了（冒烟测试 §22.5 的 N-18 段正是这个用法）。
+ * 部门为 0（历史脏数据 / 未分配）同样不拦，避免把旧库卡死。
+ */
+func planOwnerDeptOk(s: Store, owner: Member, deptId: Int64): Bool {
+    if (deptId <= 0) {
+        return true
+    }
+    if (bypassesDeptScope(owner.role)) {
+        return true
+    }
+    return owner.dept_id == deptId
+}
+
 /* 课题目录（GET /plans）：返回森林，不分页。 */
 public func handlePlanTree(ctx: Context, s: Store): Unit {
     let actor = requireActive(ctx, s)
@@ -141,6 +167,12 @@ public func handlePlanCreate(ctx: Context, s: Store): Unit {
     let body = reqObj(ctx)
     let v = V()
     let title = v.need("title", reqStrOr(body, "title", ""), "请输入课题名称")
+    /* 2026-09-17：文本字段长度上限（见 limits.cj —— 一条超长记录会被反复整库重写） */
+    let desc = reqStrOr(body, "desc", "")
+    let clientToken = reqStrOr(body, "client_token", "")
+    lenCheck(v, "title", "课题名称", title, MAX_TITLE_BYTES)
+    lenCheck(v, "desc", "描述", desc, MAX_DESC_BYTES)
+    lenCheck(v, "client_token", "幂等键", clientToken, MAX_CLIENT_TOKEN_BYTES)
     v.done()
     let ownerId = reqIntOr(body, "owner_id", 0)
     if (ownerId <= 0) {
@@ -149,9 +181,20 @@ public func handlePlanCreate(ctx: Context, s: Store): Unit {
     }
     let parentId = reqIntOr(body, "parent_id", 0)
     let bodyDept = reqIntOr(body, "dept_id", 0)
-    let desc = reqStrOr(body, "desc", "")
+    /*
+     * 2026-09-17：负数 id 明确报错，不再被静默当成"0 = 顶层 / 不适用"。
+     * 原先 `parent_id = -1` 会落进"顶层课题"分支（于是"挂到某个父课题下"的意图被悄悄改成
+     * 建了一个顶层课题），`dept_id = -5` 在子课题分支里也因为 `bodyDept > 0` 判断而被无声忽略。
+     */
+    if (parentId < 0) {
+        throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+            oneField("parent_id", "parent_id 必须是 0（顶层课题）或正整数（父课题 id）"))
+    }
+    if (bodyDept < 0) {
+        throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+            oneField("dept_id", "dept_id 必须是正整数（只有顶层课题需要它）"))
+    }
     let dueAt = reqTime(body, "due_at")
-    let clientToken = reqStrOr(body, "client_token", "")
 
     s.lock.lock()
     try {
@@ -217,6 +260,10 @@ public func handlePlanCreate(ctx: Context, s: Store): Unit {
         tgt.dept_id = deptId
         tgt.owner_id = owner.id
         requireAccess(actor, Action.CreatePlan, tgt)
+        /* 2026-09-17（P1）：负责人也必须在这个部门里（见 planOwnerDeptOk 的长注释） */
+        if (!planOwnerDeptOk(s, owner, deptId)) {
+            throw apiErrMsg("FORBIDDEN_NOT_IN_DEPT", "课题负责人必须与课题在同一部门")
+        }
 
         let p = Plan()
         p.id = s.next_plan
@@ -274,12 +321,16 @@ public func handlePlanUpdate(ctx: Context, s: Store): Unit {
                 if (isBlank(x)) {
                     throw apiErrFields("VALIDATION_FAILED", "参数校验失败", oneField("title", "课题名称不能为空"))
                 }
+                /* 2026-09-17：长度上限见 limits.cj */
+                requireLen("title", "课题名称", x, MAX_TITLE_BYTES)
                 nextTitle = Some(x)
             case None => ()
         }
         var nextDesc: ?String = None
         match (jsonGetStr(body, "desc")) {
-            case Some(x) => nextDesc = Some(x)
+            case Some(x) =>
+                requireLen("desc", "描述", x, MAX_DESC_BYTES)
+                nextDesc = Some(x)
             case None => ()
         }
         var nextOwner: ?Int64 = None
@@ -297,6 +348,14 @@ public func handlePlanUpdate(ctx: Context, s: Store): Unit {
                         }
                         if (m.status == "disabled") {
                             throw apiErr("MEMBER_DISABLED")
+                        }
+                        /*
+                         * 2026-09-17（P1）：换负责人后仍要满足"负责人与课题同部门"。
+                         * 只堵创建路径是不够的 —— 这一处同样能把课题"送给别的部门"
+                         * （对方随即获得 EditPlan 的负责人例外）。见 planOwnerDeptOk。
+                         */
+                        if (!planOwnerDeptOk(s, m, planDeptOf(s, p.id))) {
+                            throw apiErrMsg("FORBIDDEN_NOT_IN_DEPT", "课题负责人必须与课题在同一部门")
                         }
                     case None => throw apiErr("MEMBER_NOT_FOUND")
                 }
@@ -369,6 +428,19 @@ public func handlePlanMove(ctx: Context, s: Store): Unit {
         newParent = reqIntOr(body, "new_parent_id", 0)
     }
     let bodyDept = reqIntOr(body, "dept_id", 0)
+    /*
+     * 2026-09-17：负数明确报错。原先把 `new_parent_id = -1` 当成"提升为顶层"
+     * （下面判的是 `newParent > 0`），而调用方以为自己只是填错了一个 id —— 意图被静默改写，
+     * 这正是本接口最不该出现的形态。dept_id 同理（负数在下面几个分支里都会被无声忽略）。
+     */
+    if (newParent < 0) {
+        throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+            oneField("new_parent_id", "new_parent_id 必须是正整数，或显式传 null 表示提升为顶层"))
+    }
+    if (bodyDept < 0) {
+        throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+            oneField("dept_id", "dept_id 必须是正整数"))
+    }
 
     s.lock.lock()
     try {

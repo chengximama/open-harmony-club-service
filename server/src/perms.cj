@@ -61,6 +61,14 @@ public class Target {
     public var member_id: Int64 = 0    /* 目标成员 */
     public var target_role: String = "" /* 目标成员角色（用于"不能改动会长本人"） */
     public var is_self: Bool = false   /* 目标是否就是操作者本人 */
+    /*
+     * 2026-09-17（P1 加固）：`target_role` 为空串有**两种截然不同的含义**——
+     *   · 目标**确实没有角色**：待分配成员（status=pending，role 就是空串），这是正常状态；
+     *   · 调用方**漏填**：新 handler 传了裸 `Target()`，于是"同权保护"被静默绕过。
+     * 光看空串分不清这两者，所以由 handler **显式声明**前一种情况（`targetOf()` 里设置）。
+     * 声明之后，peer 闸对"空串且未声明"的目标一律拒绝（fail closed，与 `outranks` 同口径）。
+     */
+    public var role_absent: Bool = false /* 目标确实没有角色（待分配），见上 */
 
     public init() {}
 }
@@ -198,6 +206,18 @@ func roleAllows(role: String, a: Action, t: Target): Bool {
     return false
 }
 
+/*
+ * 该角色是否**不受部门范围限制**（会长 / 副会长 / 运维）。
+ *
+ * 2026-09-17（P1）从 `scopeAllows` 里那一行抽出来单独成一个函数：
+ * handler 判"某个人能不能管这个部门的东西"这类**数据一致性**问题时
+ * （例如"课题负责人必须与课题同部门"），必须复用同一个口径，
+ * 而不是在 handler 里手写 `role == "president"` —— 权限判定只有一处。
+ */
+public func bypassesDeptScope(role: String): Bool {
+    return role == "president" || role == "vice_president" || role == "ops"
+}
+
 /* 部门范围维度。 */
 func scopeAllows(m: Member, a: Action, t: Target): Bool {
     /*
@@ -219,7 +239,7 @@ func scopeAllows(m: Member, a: Action, t: Target): Bool {
         case ViewTasks => return true
         case _ => ()
     }
-    if (m.role == "president" || m.role == "vice_president" || m.role == "ops") {
+    if (bypassesDeptScope(m.role)) {
         return true
     }
     /* 自己的任务状态：与部门无关（跨部门被指派时也要能更新） */
@@ -245,7 +265,13 @@ func scopeAllows(m: Member, a: Action, t: Target): Bool {
                 return true
             }
         case EditPlan =>
-            if (t.owner_id == m.id) {
+            /* 2026-09-17（P1）：负责人例外**必须同部门**。
+             * 原先只要求"我是负责人"就在部门比较之前 return true，于是 A 部门的课题只要
+             * 把负责人写成 B 部门的人，B 部门那个人就拿到了这个课题的写权限（改标题 / 截止 /
+             * 换负责人）—— 跨部门越权写，与任务侧 N-18 的口径不一致。
+             * 加上部门条件后，跨部门负责人会落到函数末尾那条 `t.dept_id == m.dept_id`
+             * 判定（为假 → 拒）。这不是新增限制：**同部门**负责人本来就会走到那一条。 */
+            if (t.owner_id == m.id && t.dept_id == m.dept_id) {
                 return true
             }
         case _ => ()
@@ -318,6 +344,31 @@ public func checkAccess(m: Member, a: Action, t: Target): ?String {
      */
     let isOps = (m.role == "ops")
     if (peerForbidden && !isSelf && !isOps) {
+        /*
+         * 2026-09-17（P1 加固）：**先挡住"档位未知"**。
+         *
+         * `roleRank("")` 是 0 —— 低于任何在册角色。于是"调用方漏填 target_role"会让这条
+         * 同权保护**静默失效**（fail open），与本文件 `outranks()` 里"空串宁拒不放过"
+         * 的口径正好相反（那边 fail closed、这里 fail open）。影响面不小：
+         * 会长与副会长在 roleAllows 里是"直接放行"，只有这一层拦得住他们，
+         * 一旦 target_role 漏填，"副会长处置同权副会长"就通了。
+         *
+         * 现在只有 handler **显式声明**"这个目标确实没有角色"（`role_absent`，
+         * 由 h_member.cj 的 `targetOf()` 按目标的真实 role 设置）才按 0 档处理；
+         * 空串且未声明 = 调用方漏填 → 一律拒。
+         *
+         * ⚠ 为什么把 AssignPending 排除在外：这一档的"空串"本来就是**正常输入**
+         *   （审批待分配 = 处置一个还没有角色的人），而且 `handleMemberPending`
+         *   与 `assign-batch` 的外层检查传的就是裸 `Target()`（它们只借这次调用挡
+         *   "角色维度"，逐条判定在后面自己再做一次）。对它们收紧会直接打掉审批流程。
+         *   有单测钉着这两条：tests.cj 的"N-10 未误拦 pending"与"目标档位未知 拒"。
+         */
+        if (t.target_role.size == 0 && !t.role_absent) {
+            match (a) {
+                case AssignPending => ()
+                case _ => return Some("FORBIDDEN_ROLE")
+            }
+        }
         if (roleRank(t.target_role) >= roleRank(m.role)) {
             return Some("FORBIDDEN_ROLE")
         }

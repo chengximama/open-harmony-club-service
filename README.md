@@ -44,7 +44,7 @@
 
 ```powershell
 cd server
-.\build\club-server.exe test                                              # 单测 490 项
+.\build\club-server.exe test                                              # 单测 505 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 427 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1 # TLS 22 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-check.ps1  # 前后端契约 30 项

@@ -658,6 +658,28 @@ func testPerms(t: TR): Unit {
     let unknownRole = Target()
     unknownRole.dept_id = 2
     t.ok("目标档位未知 拒（防漏填 target_role）", !can(lead, Action.ResetPassword, unknownRole))
+    /*
+     * 2026-09-17（P1 加固）：空串 target_role 的**两种含义必须分清**。
+     * 上面那条之所以"拒"，靠的其实是角色维度（lead 档对空档位不放行）；
+     * 副会长 / 会长档在 roleAllows 里是直接放行，只有 perms 的同权闸拦得住 ——
+     * 而那里原来是 fail open（roleRank("") == 0，比谁都低），于是"漏填 target_role"
+     * 会让同权保护静默失效。现在：漏填（未声明 role_absent）一律拒。
+     */
+    let forgotFill = Target()
+    forgotFill.member_id = 30
+    forgotFill.dept_id = 2
+    t.ok("漏填 target_role：副会长改名 拒（P1 加固，原 fail open）",
+        !can(vp, Action.EditMemberName, forgotFill))
+    t.ok("漏填 target_role：副会长改角色 拒（P1 加固）", !can(vp, Action.SetRole, forgotFill))
+    t.ok("漏填 target_role：副会长禁用 拒（P1 加固）", !can(vp, Action.DisableMember, forgotFill))
+    t.eqs("漏填 target_role 的错误码", checkAccess(vp, Action.SetRole, forgotFill) ?? "", "FORBIDDEN_ROLE")
+    /* 反向闸门：**待分配目标（显式声明没有角色）不能被误拦** ——
+     * 会长把刚注册的申请人改名是正常流程（冒烟 §22.5 的 N-15 段就走这条）。 */
+    let pendingDeclared = Target()
+    pendingDeclared.member_id = 31
+    pendingDeclared.dept_id = 2
+    pendingDeclared.role_absent = true
+    t.ok("声明 role_absent（待分配）不被误拦：会长改名 允许", can(pres, Action.EditMemberName, pendingDeclared))
 
     /* 成员 */
     t.ok("成员看名录（全社团）", can(mem, Action.ViewMembers, other))
@@ -676,10 +698,25 @@ func testPerms(t: TR): Unit {
     t.ok("成员换口令 拒", !can(mem, Action.ChangeRegisterCode, own))
     t.ok("成员移交 拒", !can(mem, Action.TransferPresidency, other))
 
-    /* 创建人 / 负责人条款：跨部门也成立 */
+    /* 创建人 / 负责人条款 */
     t.ok("创建人可编辑任务（跨部门）", can(lead, Action.EditTask, creatorTask))
     t.ok("创建人可删除任务（跨部门）", can(lead, Action.DeleteTask, creatorTask))
-    t.ok("负责人可编辑课题（跨部门）", can(lead, Action.EditPlan, ownedPlan))
+    /*
+     * 2026-09-17（P1）：课题负责人条款**必须同部门**。
+     *
+     * 这里原先断言的是「负责人可编辑课题（**跨部门**）」—— 而那正是漏洞本身：
+     * A 部门的课题只要把负责人写成 B 部门的人，B 部门那个人就拿到了这个课题的写权限
+     * （创建路径与 PATCH 换负责人都能造出这种状态，任务侧 N-18 早已堵住、课题侧没有）。
+     * 现在：同部门负责人照旧放行，跨部门负责人落到部门兜底判定上（拒）。
+     * 原断言已按新口径改写 —— 它固化的是一条跨部门写权限，不是期望行为。
+     */
+    let ownedPlanSameDept = Target()
+    ownedPlanSameDept.owner_id = 7
+    ownedPlanSameDept.dept_id = lead.dept_id
+    t.ok("负责人可编辑课题（同部门）", can(lead, Action.EditPlan, ownedPlanSameDept))
+    t.ok("跨部门负责人编辑课题 拒（P1 修复）", !can(lead, Action.EditPlan, ownedPlan))
+    t.eqs("跨部门负责人编辑课题的错误码",
+        checkAccess(lead, Action.EditPlan, ownedPlan) ?? "", "FORBIDDEN_NOT_IN_DEPT")
 
     /* 状态维度 */
     t.ok("pending 一律拒绝", !can(pending, Action.ViewMembers, own))
@@ -1962,6 +1999,56 @@ func testLoginIpThrottle(t: TR): Unit {
     t.eqi("多释放不会变负", s.pbkdf2_inflight, 0)
 }
 
+/*
+ * 输入上限（limits.cj，2026-09-17）。
+ *
+ * 这些常量是"库别被单条记录撑爆"的保险丝：每个字段都整份进 db.json，而**每次写都要
+ * 重写整个库**（约 3 倍文件大小的 IO）。所以这里钉住三件事：
+ *   ① 收集器版（lenCheck）确实把超长记成**字段级**错误（表单要能一次报齐）；
+ *   ② 立即版（requireLen）超长时抛的是 ApiError 且 code 是 VALIDATION_FAILED；
+ *   ③ 边界口径是"**大于**上限才拒"（等于上限放行）—— 将来有人把 `>` 写成 `>=`，这条会红。
+ * 另外钉住"中文按字节算"（`String.size` 是字节数，一个中文 3 字节），
+ * 这与 passwordLenError 是同一口径。
+ */
+func testLimits(t: TR): Unit {
+    println("- limits 输入上限（请求体 / 文本字段）")
+    let v = V()
+    lenCheck(v, "title", "标题", "abcd", 4)
+    t.eqi("等于上限：不收错", v.bad, 0)
+    lenCheck(v, "title", "标题", "abcde", 4)
+    t.eqi("超一字节：收一个错", v.bad, 1)
+    var msg = ""
+    match (jsonGetStr(v.fields, "title")) {
+        case Some(x) => msg = x
+        case None => ()
+    }
+    t.ok("字段级提示里带上限数字", containsAscii(msg, "4"))
+
+    var threwCode = ""
+    try {
+        requireLen("desc", "描述", "abcde", 4)
+    } catch (e: ApiError) {
+        threwCode = e.code
+    }
+    t.eqs("requireLen 超长抛 VALIDATION_FAILED", threwCode, "VALIDATION_FAILED")
+    var noThrow = true
+    try {
+        requireLen("desc", "描述", "abcd", 4)
+    } catch (e: ApiError) {
+        noThrow = false
+    }
+    t.ok("requireLen 等于上限不抛", noThrow)
+
+    let v2 = V()
+    lenCheck(v2, "name", "姓名", "张三", 5)
+    t.eqi("两个中文（6 字节）超过 5 字节上限", v2.bad, 1)
+
+    /* 常量本身：被改成 0 / 负数会让所有写请求都 400，那是比"没上限"更糟的故障 */
+    t.ok("请求体上限是正数且不小于 16 KiB", MAX_BODY_BYTES >= 16 * 1024)
+    t.ok("五个文本上限都是正数", MAX_TITLE_BYTES > 0 && MAX_DESC_BYTES > 0 && MAX_BLOCKER_BYTES > 0 &&
+        MAX_NAME_BYTES > 0 && MAX_CLIENT_TOKEN_BYTES > 0)
+}
+
 /* ===================== 入口 ===================== */
 
 public func runTests(): Int64 {
@@ -1971,6 +2058,7 @@ public func runTests(): Int64 {
     testStr(t)
     testIds(t)
     testPassword(t)
+    testLimits(t)
     testStore(t)
     testDeferredSave(t)
     testTokenPrune(t)

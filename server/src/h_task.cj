@@ -270,16 +270,34 @@ public func handleTaskCreate(ctx: Context, s: Store): Unit {
     let body = reqObj(ctx)
     let v = V()
     let title = v.need("title", reqStrOr(body, "title", ""), "请输入任务标题")
+    /*
+     * 2026-09-17：文本字段长度上限。三个都放进同一个 V 里收齐再抛（与"一次把所有字段问题
+     * 收齐、让表单逐字段提示"的既有口径一致）。为什么必须有：这些字段整份进 db.json，
+     * 而**每次写都要重写整个库**（约 3 倍文件大小的 IO）—— 一条 1 MiB 的 desc 会被反复重写，
+     * 且一条就顶上千条正常任务。上限见 limits.cj。
+     */
+    let desc = reqStrOr(body, "desc", "")
+    let clientToken = reqStrOr(body, "client_token", "")
+    lenCheck(v, "title", "标题", title, MAX_TITLE_BYTES)
+    lenCheck(v, "desc", "描述", desc, MAX_DESC_BYTES)
+    lenCheck(v, "client_token", "幂等键", clientToken, MAX_CLIENT_TOKEN_BYTES)
     v.done()
     let ownerId = reqIntOr(body, "owner_id", 0)
     if (ownerId <= 0) {
         throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
             oneField("owner_id", "必须指定唯一的负责人"))
     }
-    let desc = reqStrOr(body, "desc", "")
     let planId = reqIntOr(body, "plan_id", 0)
+    /*
+     * 2026-09-17：负数 plan_id 原先会被**原样落库**，并且让下面那条"负责人必须与课题同部门"
+     * 的校验（N-18）整段跳过 —— 它判的是 `planId > 0`。api-design 的口径是
+     * "0 = 独立任务、> 0 = 挂课题"，负数不是合法输入：明确报错，不静默收下。
+     */
+    if (planId < 0) {
+        throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+            oneField("plan_id", "plan_id 必须是 0（独立任务）或正整数（课题 id）"))
+    }
     let dueAt = reqTime(body, "due_at")
-    let clientToken = reqStrOr(body, "client_token", "")
 
     s.lock.lock()
     try {
@@ -367,6 +385,26 @@ public func handleTaskCreate(ctx: Context, s: Store): Unit {
 }
 
 /*
+ * 2026-09-17：PATCH /tasks/{id} 的字段白名单闸门（调用点见 handleTaskUpdate）。
+ *
+ * 用"显式列名单"而不是遍历请求体的键：stdx 的 JsonObject 不实现 Iterator
+ * （见 docs/API-NOTES.md），而且这份名单本身就是"哪些字段归服务端权威"的清单，
+ * 值得被写下来 —— 与 v1-scope 规则 20（服务端权威）一一对应。
+ */
+func rejectUnknownTaskFields(body: JsonObject): Unit {
+    let immutable: Array<String> = [
+        "status", "blocker", "help_dept_id", "help_member_id", "dept_id",
+        "id", "created_at", "updated_at", "completed_at", "deleted_at", "created_by", "source"
+    ]
+    for (k in immutable) {
+        if (body.containsKey(k)) {
+            throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+                oneField(k, "${k} 不能通过本接口修改：状态与阻塞信息走 PUT /tasks/{id}/status，部门随负责人、时间字段由服务端生成"))
+        }
+    }
+}
+
+/*
  * PATCH /api/v1/tasks/{id}
  * 字段全部可选：title / desc / owner_id / due_at / plan_id
  * 改 owner_id 就是**转交**，会更新 updated_at，并且**部门标签跟随新负责人**。
@@ -383,6 +421,18 @@ public func handleTaskUpdate(ctx: Context, s: Store): Unit {
             case None => throw apiErr("TASK_NOT_FOUND")
         }
         requireAccess(actor, Action.EditTask, targetOfTask(actor, t))
+        /*
+         * 2026-09-17：白名单之外的字段**明确报错**，不再静默忽略。
+         *
+         * 本接口只接受 title / desc / owner_id / plan_id / due_at。客户端若顺手带上
+         * status / blocker / help_*，原先的行为是"响应 200 但什么都没变"——调用方以为改成功了
+         * （首页上那条任务还在 blocked 里），这正是"绝不静默忽略"纪律要避免的形态。
+         * dept_id 与服务端权威字段（id / created_at / updated_at / completed_at /
+         * deleted_at / created_by / source）更不能收：前者跟着负责人走，后者只由服务端生成
+         * （v1-scope 规则 20）。与 h_dept.cj 对 lead_id 的处理同一口径（也是明确报错 +
+         * 告诉调用方该走哪条路）。
+         */
+        rejectUnknownTaskFields(body)
         var touched = false
 
         /* ---------- 阶段一：只收集 + 校验，**绝不碰 t**（N-15） ----------
@@ -393,12 +443,16 @@ public func handleTaskUpdate(ctx: Context, s: Store): Unit {
                 if (isBlank(x)) {
                     throw apiErrFields("VALIDATION_FAILED", "参数校验失败", oneField("title", "标题不能为空"))
                 }
+                /* 2026-09-17：长度上限见 limits.cj（一条超长记录会被反复整库重写） */
+                requireLen("title", "标题", x, MAX_TITLE_BYTES)
                 nextTitle = Some(x)
             case None => ()
         }
         var nextDesc: ?String = None
         match (jsonGetStr(body, "desc")) {
-            case Some(x) => nextDesc = Some(x)
+            case Some(x) =>
+                requireLen("desc", "描述", x, MAX_DESC_BYTES)
+                nextDesc = Some(x)
             case None => ()
         }
         var nextOwner: ?Int64 = None
@@ -434,6 +488,12 @@ public func handleTaskUpdate(ctx: Context, s: Store): Unit {
         var nextPlan: ?Int64 = None
         match (jsonGetInt64(body, "plan_id")) {
             case Some(pid) =>
+                /* 2026-09-17：负数不是合法输入（0 = 独立任务）。原先它会原样落库，
+                 * 并让下面那条 N-18 部门一致性校验整段跳过（它判 `effPlan > 0`）。 */
+                if (pid < 0) {
+                    throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+                        oneField("plan_id", "plan_id 必须是 0（独立任务）或正整数（课题 id）"))
+                }
                 if (pid > 0) {
                     match (s.plans.get(pid)) {
                         case Some(_) => ()
@@ -510,11 +570,16 @@ public func handleTaskUpdate(ctx: Context, s: Store): Unit {
             t.due_at = dueVal
             touched = true
         }
+        /*
+         * 2026-09-17：落库的 updated_at 与响应里给客户端算派生量用的 now 必须是**同一个**
+         * 时间戳。原先各取一次 nowEpoch()，跨秒时会出现"响应里的时间比库里新 1 秒"。
+         */
+        let now = nowEpoch()
         if (touched) {
-            t.updated_at = nowEpoch()
+            t.updated_at = now
             storeSave(s)
         }
-        sendOk(ctx, taskDetail(s, t, nowEpoch()))
+        sendOk(ctx, taskDetail(s, t, now))
     } finally {
         s.lock.unlock()
     }
@@ -539,6 +604,8 @@ public func handleTaskStatus(ctx: Context, s: Store): Unit {
     v.check("status", isTaskStatus(status), "状态只能是 todo / doing / blocked / done")
     v.done()
     let blocker = reqStrOr(body, "blocker", "")
+    /* 2026-09-17：阻塞原因也设上限（它整份进 db.json，而且首页每次都要下发它） */
+    requireLen("blocker", "阻塞原因", blocker, MAX_BLOCKER_BYTES)
     let helpDept = reqIntOr(body, "help_dept_id", 0)
     let helpMember = reqIntOr(body, "help_member_id", 0)
 
@@ -667,6 +734,9 @@ public func handleTaskLookup(ctx: Context, s: Store): Unit {
     try {
         let items = JsonArray()
         let missing = JsonArray()
+        /* 2026-09-17：同一批里重复的 id 只处理一次（原先会原样重复进 items / missing，
+         * 客户端照着它清理本地日历会做重复功）。 */
+        let seen = HashSet<Int64>()
         var i: Int64 = 0
         while (i < ids.size()) {
             let cell = ids.get(i)
@@ -679,24 +749,35 @@ public func handleTaskLookup(ctx: Context, s: Store): Unit {
                     } catch (e: Exception) {
                         id = -1
                     }
-                    var found = false
-                    if (id > 0) {
-                        match (activeTaskById(s, id)) {
-                            case Some(t) =>
-                                if (can(actor, Action.ViewTasks, targetOfTask(actor, t))) {
-                                    let o = JsonObject()
-                                    jPutInt(o, "id", t.id)
-                                    jPutTime(o, "due_at", t.due_at)
-                                    jPutStr(o, "status", t.status)
-                                    jPutTime(o, "updated_at", t.updated_at)
-                                    items.add(o)
-                                    found = true
-                                }
-                            case None => ()
-                        }
+                    /*
+                     * 2026-09-17：非法元素**明确报错**，不再折算成 -1 混进 missing。
+                     * 原先非整数 / 0 / 负数都会变成 `missing: [-1]` —— 客户端拿到一个它
+                     * 从来没送过的 id，既清不掉本地事件、也看不出是自己传错了
+                     * （与"绝不静默忽略参数"的纪律冲突）。
+                     */
+                    if (id <= 0) {
+                        throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+                            oneField("task_ids", "列表里有非法 id：任务 id 必须是正整数"))
                     }
-                    if (!found) {
-                        missing.add(JsonInt(id))
+                    if (seen.contains(id)) {
+                        continue
+                    }
+                    seen.add(id)
+                    match (activeTaskById(s, id)) {
+                        case Some(t) =>
+                            if (can(actor, Action.ViewTasks, targetOfTask(actor, t))) {
+                                let o = JsonObject()
+                                jPutInt(o, "id", t.id)
+                                jPutTime(o, "due_at", t.due_at)
+                                jPutStr(o, "status", t.status)
+                                jPutTime(o, "updated_at", t.updated_at)
+                                items.add(o)
+                            } else {
+                                /* 看不见的（别人的 / 已移出社团的人负责的）与已删除的一律进
+                                 * missing —— 客户端据此清掉本地日历事件，语义与原先一致。 */
+                                missing.add(JsonInt(id))
+                            }
+                        case None => missing.add(JsonInt(id))
                     }
                 case None => ()
             }

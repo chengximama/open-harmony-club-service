@@ -284,9 +284,13 @@ func respondLogin(ctx: Context, s: Store, m: Member, token: String, expiresAt: I
 public func handleRegister(ctx: Context, s: Store): Unit {
     let body = reqObj(ctx)
     let v = V()
-    let rc = v.need("register_code", reqStrOr(body, "register_code", ""), "请输入社团注册口令")
+    /* 2026-09-17：提交的口令先 trim —— 与 PUT /register-config 的存入侧口径一致。
+     * 用户从群里复制口令时带首尾空白是常态，不该因此注册失败。 */
+    let rc = trimAsciiBlank(v.need("register_code", reqStrOr(body, "register_code", ""), "请输入社团注册口令"))
     let phone = v.need("phone", reqStrOr(body, "phone", ""), "请输入手机号")
     let name = v.need("name", reqStrOr(body, "name", ""), "请输入姓名")
+    /* 2026-09-17：姓名长度上限（见 limits.cj） */
+    lenCheck(v, "name", "姓名", name, MAX_NAME_BYTES)
     let pw = v.need("password", reqStrOr(body, "password", ""), "请输入密码")
     if (phone.size > 0) {
         v.check("phone", isPhone(phone), "手机号格式不正确")
@@ -345,7 +349,24 @@ public func handleRegister(ctx: Context, s: Store): Unit {
         }
         throw apiErr("REGISTER_CODE_INVALID")
     }
-    let rec = newPasswordRecord(pw)
+    /*
+     * 2026-09-17（P1）：**注册这条 PBKDF2 也要过并发闸门**。
+     *
+     * N-21 的闸门原先只挂在登录上，而注册同样是**未认证**端点、且更贵：
+     * 成功路径要算一次 10 万轮哈希（本机实测 ~0.6 s CPU）。
+     * 知道注册口令的人（口令是全社团共用、要在群里念出来的）并发刷注册，
+     * 就能把整机 CPU 打满 —— 闸门上限是 8，而 24 核下约 46 并发即饱和
+     * （见 MAX_PBKDF2_INFLIGHT 的注释与 docs/code-review.md 的 N-21 测算）。
+     */
+    if (!pbkdf2Enter(s)) {
+        throw apiErr("TOO_MANY_ATTEMPTS")
+    }
+    var rec: (String, String, Int64) = ("", "", 0)
+    try {
+        rec = newPasswordRecord(pw)
+    } finally {
+        pbkdf2Leave(s)
+    }
 
     /* ---------- ③ 锁内：清限流 + 复核手机号未被抢注 + 建账号 + 发令牌 ---------- */
     s.lock.lock()
@@ -564,8 +585,27 @@ public func handleLogout(ctx: Context, s: Store): Unit {
 public func handleMe(ctx: Context, s: Store): Unit {
     let m = requireMember(ctx, s)
     let data = JsonObject()
-    jPutObj(data, "member", memberSelf(s, m))
-    jPutObj(data, "permissions", permissionsOf(m))
+    /*
+     * 2026-09-17（P1）：视图构造**必须在锁内**。
+     *
+     * `memberSelf` → `memberBrief` → `deptBriefObj` 要读 `s.departments`（HashMap），
+     * 而原先这里不持锁 —— "锁外读 Store"与并发写是数据竞争，与
+     * docs/capacity-baseline.md §4.4 定的纪律（"HashMap 非线程安全，锁外读与写并发
+     * 是数据竞争"，这也正是当初不改那 26 个 storeSave 调用点的理由）自相矛盾。
+     * 本接口是客户端启动时第一个调的（频率最高），所以先把它补上。
+     * `sendOk` 仍留在锁外：它只把已经建好的对象序列化，不再碰 Store。
+     */
+    s.lock.lock()
+    try {
+        let cur = match (s.members.get(m.id)) {
+            case Some(x) => x
+            case None => throw apiErr("AUTH_REQUIRED")
+        }
+        jPutObj(data, "member", memberSelf(s, cur))
+        jPutObj(data, "permissions", permissionsOf(cur))
+    } finally {
+        s.lock.unlock()
+    }
     sendOk(ctx, data)
 }
 
@@ -604,11 +644,30 @@ public func handleChangePassword(ctx: Context, s: Store): Unit {
         s.lock.unlock()
     }
 
-    /* 锁外：**先验旧口令**，验过了才算新口令 —— 失败时只花一次 PBKDF2，不给放大杠杆 */
-    if (!verifyPw(oldPw, curSalt, curHash, curIter)) {
+    /*
+     * 锁外：**先验旧口令**，验过了才算新口令 —— 失败时只花一次 PBKDF2，不给放大杠杆。
+     *
+     * 2026-09-17（P1）：本路径的两次 PBKDF2 也要过并发闸门（N-21 原先只覆盖登录）。
+     * 这里比登录更容易被滥用：requireMember 只要求**持有令牌**，连 pending
+     * （刚注册、还没被分配）的账号都能打，而"旧口令填错"就足以烧掉一次 10 万轮哈希。
+     * 闸门按"一次改密 = 一个槽位"计（验旧 + 算新在同一槽位内完成）。
+     */
+    if (!pbkdf2Enter(s)) {
+        throw apiErr("TOO_MANY_ATTEMPTS")
+    }
+    var oldOk = false
+    var rec: (String, String, Int64) = ("", "", 0)
+    try {
+        oldOk = verifyPw(oldPw, curSalt, curHash, curIter)
+        if (oldOk) {
+            rec = newPasswordRecord(newPw)
+        }
+    } finally {
+        pbkdf2Leave(s)
+    }
+    if (!oldOk) {
         throw apiErr("AUTH_BAD_CREDENTIALS")
     }
-    let rec = newPasswordRecord(newPw)
 
     s.lock.lock()
     try {

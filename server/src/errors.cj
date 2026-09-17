@@ -92,6 +92,14 @@ public func errorSpec(code: String): (Int64, String) {
     if (code == "TOO_MANY_ATTEMPTS") {
         return (429, "尝试过于频繁，请稍后再试")
     }
+    /* 2026-09-17：bodyLimit 中间件（limits.cj）用这两个 —— 请求体在**进内存之前**就被拒。
+     * 权威表是 api-design.md §1.3，两处必须同步（本节开头那句纪律）。 */
+    if (code == "PAYLOAD_TOO_LARGE") {
+        return (413, "请求体过大")
+    }
+    if (code == "UNSUPPORTED_MEDIA_TYPE") {
+        return (415, "请求体格式不受支持")
+    }
     return (500, "服务端错误")
 }
 

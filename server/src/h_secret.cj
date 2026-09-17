@@ -67,8 +67,22 @@ public func handleResetPassword(ctx: Context, s: Store): Unit {
         s.lock.unlock()
     }
 
-    /* 锁外：PBKDF2（不占锁）。权限已经在上面判过，没权限的人走不到这里 */
-    let rec = newPasswordRecord(temp)
+    /*
+     * 锁外：PBKDF2（不占锁）。权限已经在上面判过，没权限的人走不到这里。
+     *
+     * 2026-09-17（P1）：这条同样要过 PBKDF2 并发闸门（N-21 原先只覆盖登录）。
+     * 本接口没有幂等键、也没有节流，而每次调用 = 一次 10 万轮哈希 + 一次整库落盘：
+     * 一个部长对本部门更低档成员反复 / 并发调用即可当杠杆用。
+     */
+    if (!pbkdf2Enter(s)) {
+        throw apiErr("TOO_MANY_ATTEMPTS")
+    }
+    var rec: (String, String, Int64) = ("", "", 0)
+    try {
+        rec = newPasswordRecord(temp)
+    } finally {
+        pbkdf2Leave(s)
+    }
 
     s.lock.lock()
     try {
@@ -114,13 +128,26 @@ public func handleRegisterConfigPut(ctx: Context, s: Store): Unit {
     requireAccess(actor, Action.ChangeRegisterCode, Target())
     let body = reqObj(ctx)
     let v = V()
-    let code = v.need("code", reqStrOr(body, "code", ""), "请输入新的注册口令")
-    if (code.size > 0) {
+    /*
+     * 2026-09-17：**先 trim 再计长**，并补字符集校验。
+     *
+     * 原问题有两个：① 直接用原值计长，而 `String.size` 是**字节数** —— 两个中文字（6 字节）
+     * 就"满足 6 位"，熵远低于设计意图；② 注册侧（handleRegister 的 constantTimeEq 比对）
+     * 过去不 trim，于是把口令设成"前后带空格"会让**全社团的注册都失败**，
+     * 而这是肉眼看不见的差别。trim 的两处口径一致：存入侧 trim、比对侧也 trim
+     * （见 h_auth.cj 的 handleRegister）。字符集沿用密码那条（可见 ASCII）：
+     * 注册口令是要在群里念 / 贴出去的，全角字符和空白只会制造"看着一样、输入却不同"的故障。
+     */
+    let rawCode = v.need("code", reqStrOr(body, "code", ""), "请输入新的注册口令")
+    let code = trimAsciiBlank(rawCode)
+    if (rawCode.size > 0) {
         /* M-2：下限从 4 提到 6。注册口令是**全社团共用**、只需猜中一次就拿到账号的
          * 单一秘密，4 位字符（尤其纯数字）在线爆破是分钟级的事。6 位是成本与
          * 可传播性（要在群里发）之间的折中，同时配合 handleRegister 的失败限流。 */
-        v.check("code", code.size >= 6, "注册口令至少 6 位")
+        v.check("code", code.size >= 6, "注册口令至少 6 位（首尾空格不计）")
         v.check("code", code.size <= 32, "注册口令最多 32 位")
+        v.check("code", passwordCharsetError(code).size == 0,
+            "注册口令只能使用数字、英文和符号（不能有空格、中文或全角字符）")
     }
     v.done()
 

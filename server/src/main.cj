@@ -535,10 +535,18 @@ func buildApp(s: Store, box: HandleBox): QingZhouApp {
      *   写盘因此落在锁外（不再阻塞其他请求），又仍然早于响应 ——
      *   「响应 200 ⇒ 数据已落盘」这条语义没有打折，见 store.cj 的 storeSave/flushPending。
      *   它同时兼顾了"没命中路由/没改数据"的请求：此时 pending 为空，flushPending 是空操作。
+     *
+     * 中间件顺序说明 3（2026-09-17）：bodyLimit 也排在最外层（bodyParser 之前），
+     * 理由见 limits.cj 的文件头 —— 框架的 bodyParser"先读后判"，只有前置才挡得住大 body。
      */
     return QingZhouApp()
         .use(requestId())
         .use(logger())
+        /* 2026-09-17：bodyLimit 必须排在 bodyParser **之前**（外层）——
+         * 框架的 bodyParser 是"先把整个 body 读进内存、再比 maxBytes"，
+         * 只有抢在它前面按 Content-Length 拦，大 body 才根本进不了内存。
+         * 详见 limits.cj 的文件头注释（含能力边界：chunked 编码时看不出来）。 */
+        .use(bodyLimit())
         .use(bodyParser())
         .use(cors())
         .use(timeout(15000))
