@@ -163,11 +163,6 @@ export class MemberApi {
     return this.client.patch<MemberBrief>(`/members/${id}`, data);
   }
 
-  /** POST /api/v1/members/{id}/disable — 移出社团（账号保留，日后可恢复） */
-  async disable(id: number): Promise<ApiResponse<MemberBrief>> {
-    return this.client.post<MemberBrief>(`/members/${id}/disable`);
-  }
-
   /** POST /api/v1/members/{id}/transfer-presidency — 会长移交 */
   async transferPresidency(id: number, data?: TransferPresidencyRequest): Promise<ApiResponse<TransferPresidencyResponse>> {
     return this.client.post<TransferPresidencyResponse>(`/members/${id}/transfer-presidency`, data);
