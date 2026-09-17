@@ -70,7 +70,7 @@ function Resolve-CangjieHome([string]$explicit) {
     # 先把"真实存在"的候选按优先级收集起来
     $found = New-Object System.Collections.ArrayList
     foreach ($c in $cands) {
-        if (-not [string]::IsNullOrEmpty($c) -and (Test-Path (Join-Path $c "bin\cjc.exe"))) {
+        if (-not [string]::IsNullOrEmpty($c) -and (Test-Path ([System.IO.Path]::Combine($c, "bin\cjc.exe")))) {
             $rp = (Resolve-Path $c).Path
             if (-not $found.Contains($rp)) { [void]$found.Add($rp) }
         }
@@ -100,7 +100,7 @@ function Resolve-Stdx([string]$explicit, [string]$sdkHome) {
     foreach ($c in $cands) { if (Test-Path $c) { return (Resolve-Path $c).Path } }
     foreach ($r in $roots) {
         foreach ($sub in @("stdx\windows_x86_64_cjnative\static\stdx", "stdx\static\stdx")) {
-            $p = Join-Path $r $sub
+            $p = [System.IO.Path]::Combine($r, $sub)
             if (Test-Path $p) { return (Resolve-Path $p).Path }
         }
     }
