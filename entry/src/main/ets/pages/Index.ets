@@ -9,6 +9,7 @@ import { Color, FontSize, Radius, Space } from '../core/Theme';
 import { PermissionStore, UpdateData } from '../store/PermissionStore';
 import { TokenStore } from '../store/TokenStore';
 import { replaceTo } from '../utils/RouterUtils';
+import { consumePendingInviteToken, openInviteRegistration } from '../utils/InviteDeepLink';
 
 @Entry
 @Component
@@ -26,6 +27,11 @@ struct Index {
   private hasShown: boolean = false;
 
   aboutToAppear(): void {
+    const inviteToken: string = consumePendingInviteToken();
+    if (inviteToken.length > 0) {
+      openInviteRegistration(inviteToken, true);
+      return;
+    }
     this.checkAuth();
   }
 
