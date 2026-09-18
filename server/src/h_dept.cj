@@ -200,10 +200,14 @@ public func handleDeptDelete(ctx: Context, s: Store): Unit {
                 t.dept_id = 0
             }
             if (t.help_dept_id == id) {
-                /* help_dept_id 与 help_member_id 是**一组**信息（「需要帮助 · 部门 人」）——
-                 * 部门没了就把这一组一起清掉，不留半截状态（与离开 blocked 时的清法一致）。 */
+                /* 2026-09-17 复核后修正：只清**指向部门**的这一半。
+                 *
+                 * help_member_id 指向的是**成员**，而删部门不会删成员，那个引用依然有效 ——
+                 * 原先把两者一起清零，等于把"当时求助的是谁"这条历史信息也一并抹掉了，
+                 * 那与"部门没了"不是一回事（也与离开 blocked 时的清空不同：那是用户主动
+                 * 结束求助）。视图侧（views.cj）的 dept / member 是两个独立字段，
+                 * needs_help 只要任一侧 > 0 就照常下发，所以保留 member 不会留下半截状态。 */
                 t.help_dept_id = 0
-                t.help_member_id = 0
                 helpsCleared += 1
             }
         }

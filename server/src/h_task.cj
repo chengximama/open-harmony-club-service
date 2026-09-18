@@ -387,9 +387,20 @@ public func handleTaskCreate(ctx: Context, s: Store): Unit {
 /*
  * 2026-09-17：PATCH /tasks/{id} 的字段白名单闸门（调用点见 handleTaskUpdate）。
  *
- * 用"显式列名单"而不是遍历请求体的键：stdx 的 JsonObject 不实现 Iterator
- * （见 docs/API-NOTES.md），而且这份名单本身就是"哪些字段归服务端权威"的清单，
- * 值得被写下来 —— 与 v1-scope 规则 20（服务端权威）一一对应。
+ * **两层**，缺一不可：
+ *   ① 具名名单：server 权威字段（状态 / 阻塞 / 部门 / 时间 / 来源）单独列出来，
+ *      命中时给出"该走哪个接口"的处置提示，与 v1-scope 规则 20（服务端权威）一一对应。
+ *   ② 兜底白名单：本接口**只接受** title / desc / owner_id / plan_id / due_at ——
+ *      除这 5 个之外的任何键（含拼错的 `titel`、`foo`）一律拒。
+ *
+ * ⚠ 为什么 ② 不能省（2026-09-17 修）：只有 ① 的时候，"未知字段"仍然会被静默忽略并
+ *   返回 200 —— 那正是本闸门要消灭的形态（调用方以为改成功了，实际什么都没变）。
+ *   而 stdx 的 `JsonObject` **不能枚举键**（不实现 Iterator，也没有 `keys()`，
+ *   见 docs/API-NOTES.md；已用编译探针确认 `keys` 不是成员），所以用
+ *   "**键数 > 白名单命中数**"来判定是否存在不认识的字段：
+ *   JSON 解析进 HashMap，同键只留一个，因此键数比命中数多 ⇒ 一定有多余的键。
+ *   代价是报错无法点出那个键的名字，只能说明本接口接受哪些字段 —— 这比静默忽略好。
+ *   （`JsonObject.size()` 与 `containsKey()` 都可用，同样是编译探针确认的。）
  */
 func rejectUnknownTaskFields(body: JsonObject): Unit {
     let immutable: Array<String> = [
@@ -401,6 +412,17 @@ func rejectUnknownTaskFields(body: JsonObject): Unit {
             throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
                 oneField(k, "${k} 不能通过本接口修改：状态与阻塞信息走 PUT /tasks/{id}/status，部门随负责人、时间字段由服务端生成"))
         }
+    }
+    let allowed: Array<String> = ["title", "desc", "owner_id", "plan_id", "due_at"]
+    var hit: Int64 = 0
+    for (k in allowed) {
+        if (body.containsKey(k)) {
+            hit += 1
+        }
+    }
+    if (body.size() > hit) {
+        throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+            oneField("body", "请求体含有本接口不接受的字段；本接口只接受 title / desc / owner_id / plan_id / due_at（状态走 PUT /tasks/{id}/status）"))
     }
 }
 
@@ -604,8 +626,6 @@ public func handleTaskStatus(ctx: Context, s: Store): Unit {
     v.check("status", isTaskStatus(status), "状态只能是 todo / doing / blocked / done")
     v.done()
     let blocker = reqStrOr(body, "blocker", "")
-    /* 2026-09-17：阻塞原因也设上限（它整份进 db.json，而且首页每次都要下发它） */
-    requireLen("blocker", "阻塞原因", blocker, MAX_BLOCKER_BYTES)
     let helpDept = reqIntOr(body, "help_dept_id", 0)
     let helpMember = reqIntOr(body, "help_member_id", 0)
 
@@ -616,6 +636,13 @@ public func handleTaskStatus(ctx: Context, s: Store): Unit {
             case None => throw apiErr("TASK_NOT_FOUND")
         }
         requireAccess(actor, Action.UpdateTaskStatus, targetOfTask(actor, t))
+        /*
+         * 2026-09-17：阻塞原因的长度校验放在**授权之后**（原先在锁外、requireAccess 之前）。
+         * 顺序纪律：先认证 → 再授权 → 最后校验入参。否则一个无权用户（甚至目标不存在的
+         * 请求）只要带个超长 blocker，拿到的就是 400「表单填错了」而不是 403/404 ——
+         * 客户端会把权限问题显示成输入问题，排查方向被带偏。
+         */
+        requireLen("blocker", "阻塞原因", blocker, MAX_BLOCKER_BYTES)
 
         if (status == "blocked" && isBlank(blocker)) {
             throw apiErrFields("BLOCKER_REQUIRED", "进入阻塞状态必须填写阻塞原因",

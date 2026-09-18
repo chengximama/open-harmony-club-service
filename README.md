@@ -47,7 +47,7 @@ cd server
 .\build\club-server.exe test                                              # 单测 505 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\smoke.ps1     # HTTP 冒烟 427 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\tls-check.ps1 # TLS 22 项
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-check.ps1  # 前后端契约 30 项
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\client-contract-check.ps1  # 前后端契约 33 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\init-name-check.ps1        # init-admin 的会长姓名选项 40 项
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\bench.ps1     # 容量基准（按需，见 docs/capacity-baseline.md）
 ```

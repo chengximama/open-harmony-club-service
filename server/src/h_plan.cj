@@ -428,19 +428,6 @@ public func handlePlanMove(ctx: Context, s: Store): Unit {
         newParent = reqIntOr(body, "new_parent_id", 0)
     }
     let bodyDept = reqIntOr(body, "dept_id", 0)
-    /*
-     * 2026-09-17：负数明确报错。原先把 `new_parent_id = -1` 当成"提升为顶层"
-     * （下面判的是 `newParent > 0`），而调用方以为自己只是填错了一个 id —— 意图被静默改写，
-     * 这正是本接口最不该出现的形态。dept_id 同理（负数在下面几个分支里都会被无声忽略）。
-     */
-    if (newParent < 0) {
-        throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
-            oneField("new_parent_id", "new_parent_id 必须是正整数，或显式传 null 表示提升为顶层"))
-    }
-    if (bodyDept < 0) {
-        throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
-            oneField("dept_id", "dept_id 必须是正整数"))
-    }
 
     s.lock.lock()
     try {
@@ -453,6 +440,23 @@ public func handlePlanMove(ctx: Context, s: Store): Unit {
         tgt.dept_id = curDept
         tgt.owner_id = p.owner_id
         requireAccess(actor, Action.MovePlan, tgt)
+        /*
+         * 2026-09-17：负数明确报错。原先把 `new_parent_id = -1` 当成"提升为顶层"
+         * （下面判的是 `newParent > 0`），而调用方以为自己只是填错了一个 id —— 意图被静默改写，
+         * 这正是本接口最不该出现的形态。dept_id 同理（负数在下面几个分支里都会被无声忽略）。
+         *
+         * ⚠ 位置在 requireAccess **之后**（原先在锁外、授权之前）：顺序纪律是先认证 →
+         * 再授权 → 最后校验入参。否则一个无权用户带个负数 id 拿到的是 400，
+         * 而真实原因是 403/404，客户端会把权限问题当输入问题。
+         */
+        if (newParent < 0) {
+            throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+                oneField("new_parent_id", "new_parent_id 必须是正整数，或显式传 null 表示提升为顶层"))
+        }
+        if (bodyDept < 0) {
+            throw apiErrFields("VALIDATION_FAILED", "参数校验失败",
+                oneField("dept_id", "dept_id 必须是正整数"))
+        }
 
         if (newParent == id) {
             throw apiErr("PLAN_CYCLE_DETECTED")

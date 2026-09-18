@@ -246,11 +246,19 @@ public func handleInviteLinkDisable(ctx: Context, s: Store): Unit {
     if (token.size == 0) {
         throw apiErrFields("VALIDATION_FAILED", "参数校验失败", oneField("token", "缺少链接标识"))
     }
-    /* 2026-09-17：长度上限。链接 token 是 32 位十六进制（N-19），128 字节足够；
-     * 不设上限时一个超长 token 会被原样拼进审计行（audit 的 note 里带它）。 */
-    if (token.size > 128) {
-        throw apiErrFields("VALIDATION_FAILED", "参数校验失败", oneField("token", "链接标识不合法"))
-    }
+    /*
+     * ⚠ 这里**故意不做长度校验**（2026-09-17 复核后撤掉了原先那个 128 字节上限）。
+     *
+     * 原先的理由是"超长 token 会被原样拼进审计行"，但那条路走不到：审计行只在
+     * `s.invite_links.get(token)` **命中**时才写，而库里的 token 只由 freshLinkToken()
+     * 产出（16 字节 = 32 位十六进制，极端回退 32 字节 = 64 位，见本文件上方），
+     * 所以超长 token 永远匹配不到任何记录 —— 它必然走下面的 goneLink 分支，
+     * 既不会被写进审计，也不会碰任何数据。
+     *
+     * 而加那道 400 会**破坏本函数自己的幂等契约**（见上方注释与 L-3：不存在 / 已停用的
+     * token 一律 200 + 完整视图，客户端不必写特例）：同一个"不存在的 token"只因为长度
+     * 超过 128 就变成 400，前端反而要多一个分支。长度上限在这里没有收益、只有契约代价。
+     */
     s.lock.lock()
     try {
         match (s.invite_links.get(token)) {

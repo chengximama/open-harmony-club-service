@@ -2259,19 +2259,19 @@ a7e9b1c（重建后）: 399 字节     ← 两次重建、hash 不同，长度�
 | 1 | **新增请求体前置闸门**（64 KiB + Content-Type 白名单） | 新文件 `server/src/limits.cj`；`main.cj` 装在 `bodyParser` **之前** | 框架的 `bodyParser` 是"先把整个 body 读进内存、再比 maxBytes"（`third_party/qingzhou/src/bodyparser.cj`），且对非 JSON / 表单 / 文本类型直接透传不判 → 未认证请求可用超大 body 打内存。框架是上游快照（MANIFEST 逐字节校验，N-20），所以按"改动一律落 server/src"加一层应用侧闸门。新增错误码 `PAYLOAD_TOO_LARGE`(413) / `UNSUPPORTED_MEDIA_TYPE`(415) |
 | 2 | **文本字段长度上限集中一处**：标题 200 / 描述 4000 / 阻塞原因 1000 / 姓名与部门名 64 / 幂等键 64（**字节**） | `limits.cj` 常量 + `lenCheck()` / `requireLen()`；任务、课题、成员、部门、注册五处写入点 | 这些字段整份进 db.json，而**每次写都要重写整个库**（约 3 倍文件大小的 IO）。不设上限时，一条 1 MiB 的 desc 会被反复重写，且一条就顶上千条正常任务 —— 上限是"库别被单条记录撑爆"的保险丝 |
 | 3 | **负数 id 不再被静默改语义**：`plan_id` / `parent_id` / `dept_id` / `new_parent_id` 为负 → 400 | `h_task.cj`（创建 / 修改）、`h_plan.cj`（创建 / 移动） | 原先 `plan_id = -5` 会**原样落库**并让 N-18 的部门一致性校验整段跳过（那条判 `> 0`）；`parent_id = -1` 被当成"顶层课题"；`new_parent_id = -1` 被当成"提升为顶层"—— 意图被悄悄改写 |
-| 4 | **`PATCH /tasks/{id}` 白名单外字段明确报错** | `h_task.cj` 新增 `rejectUnknownTaskFields()` | 传 `status` / `blocker` / `dept_id` 原先"响应 200 但什么都没变"，调用方以为改成功了；`dept_id` 与时间类字段本就只由服务端维护（v1-scope 规则 20） |
+| 4 | **`PATCH /tasks/{id}` 白名单外字段明确报错** | `h_task.cj` 新增 `rejectUnknownTaskFields()`（两层：具名名单给处置提示 + "键数 > 命中数"的**真白名单**兜底） | 传 `status` / `blocker` / `dept_id` 原先"响应 200 但什么都没变"，调用方以为改成功了；`dept_id` 与时间类字段本就只由服务端维护（v1-scope 规则 20）。⚠ 只有具名名单时，`{"foo":1}`、拼错的 `{"titel":"x"}` 这类**未知字段仍会被静默忽略**（2026-09-18 复核补上兜底，见文末「复核修正」） |
 | 5 | **`PATCH /members` 补审计 + 拒绝 `dept_id <= 0`** | `h_member.cj` | 这条路径能改 role（也就是能提权）却**不写审计**，而同文件的 disable / assign / assign-batch / transfer-presidency 都记账（M-4 的立论正是"成员处置必须可追溯"）；`dept_id = 0 / -5` 原先直接落库，能造出"无部门的在职成员" |
 | 6 | **删部门补齐三处悬空引用** | `h_dept.cj` | 原先只清 `Member.dept_id` / `Task.dept_id`：`dept_hint`、`help_dept_id`、`DeptInviteLink` 仍指向已删部门 —— 表现为同一个 token 在公开 JSON 里 `enabled:true + dept.name:""`，而公开落地页显示"链接已失效"（两个入口结论矛盾） |
 | 7 | **注册口令：trim + 可见 ASCII 字符集** | `h_secret.cj`（存入侧）、`h_auth.cj`（比对侧也 trim） | `String.size` 是**字节数** → 两个中文字（6 字节）就"满足 6 位"；而且存入侧 trim、比对侧不 trim 时，把口令设成"前后带空格"会让**全社团的注册全部失败**，肉眼看不出来 |
 | 8 | **`tasks/lookup`：非法 id 明确报错 + 去重** | `h_task.cj` | 原先非整数 / 0 / 负数都会变成 `missing: [-1]`，客户端拿到一个自己从没送过的 id；重复 id 还会重复进 items / missing |
 | 9 | **`updated_at` 与响应派生量取同一个 `now`** | `h_task.cj` | 原先各取一次 `nowEpoch()`，跨秒时"响应里的时间比库里新 1 秒" |
-| 10 | **邀请链接 DELETE 的 token 加上限**（128 字节） | `h_link.cj` | 超长 token 会被原样拼进审计行（`audit()` 的 note 里带它） |
+| 10 | ~~邀请链接 DELETE 的 token 加上限（128 字节）~~ **复核后已撤掉** | `h_link.cj` | 理由不成立：审计行只在 token **命中**记录时才写，而库内 token 最长 64 字节（32 位十六进制，极端回退），超长 token 必然走 `goneLink` 分支 —— 既不入审计也不碰数据。加那道 400 反而**破坏本函数的幂等契约**（L-3：不存在 / 已停用的 token 一律 200 + 完整视图） |
 
 **验证**（为这些新行为单写了端到端脚本，真机 `serve` + 真并发，全部通过）：
 
 | 项 | 证据 |
 | --- | --- |
-| 单测 / 冒烟 / 契约 | `PASS 505 / FAIL 0`（第七轮两批合计 **+13 条断言**，其中 8 条钉住 `limits.cj` 的上限与边界口径）、`PASS 427 / FAIL 0`、`PASS 33 / FAIL 0`（TLS 那 22 项在本机**跑不了**：`tls-check.ps1` 需要 openssl，环境里没有 —— 与本次改动无关） |
+| 单测 / 冒烟 / 契约 | `PASS 505 / FAIL 0`（第七轮两批合计 **+15 条断言**，其中 8 条钉住 `limits.cj` 的上限与边界口径）、`PASS 427 / FAIL 0`、`PASS 33 / FAIL 0`（TLS 那 22 项在本机**跑不了**：`tls-check.ps1` 需要 openssl，环境里没有 —— 与本次改动无关） |
 | 请求体闸门 | 80 KB body → **413 PAYLOAD_TOO_LARGE**；`Content-Type: application/octet-stream` → **415**；正常 JSON → 201（未误伤） |
 | 字段上限 | 300 字节标题 / 5000 字节描述 / 1500 字节阻塞原因 / 200 字节幂等键 → 400，且 `fields` 指到对应字段 |
 | 显式报错 | `PATCH /tasks/{id}` 带 `status`、带 `dept_id` → 400；`plan_id:-5`、`parent_id:-1`、`PATCH /members {dept_id:0}` → 400 |
@@ -2279,6 +2279,27 @@ a7e9b1c（重建后）: 399 字节     ← 两次重建、hash 不同，长度�
 | 注册口令 | 存入 `"  CODE  "` → 落库为 trim 后的值；注册侧带空格提交 → 201；`"口令"`（2 字 6 字节）→ 400；合法口令 → 200 |
 | 删部门清理 | 删部门后：`GET /join/{token}` 的 `enabled` 由 true 变 **false**；该成员 `dept_hint` 变 **null** |
 | 成员审计 | `PATCH /members` 之后 `audit.log` 出现 `update-member`，且含字段级 `旧值->新值` |
+
+### 复核修正（2026-09-18，本分支第二次提交）
+
+对上面这批改动做了一轮独立复核（逐 hunk 核对 + 通读全部调用点 + 真机复跑四套测试 + 与基线对照），
+修掉下面 8 处。它们的共性是"自述与代码不符"或"新引入的行为与既有契约冲突"：
+
+| # | 位置 | 问题 | 处置 |
+| --- | --- | --- | --- |
+| 1 | `h_task.cj` `rejectUnknownTaskFields()` | 名为"白名单"，实为 12 个键的**拒绝名单** —— `{"foo":1}`、拼错的 `{"titel":"x"}` 仍 200 且静默忽略，正是该修复要消灭的形态。`JsonObject` 不能枚举键（无 `keys()`，编译探针确认），故改用"**键数 > 白名单命中数**"判定（`size()` + `containsKey()`） | 补第二层兜底 |
+| 2 | `h_link.cj` | 128 字节上限的理由不可达，且与同函数的幂等契约（L-3）冲突 | 撤掉该检查 |
+| 3 | `h_auth.cj` | 只 trim 提交值、不 trim**存量**口令：改动前设下的"首尾带空白"口令会让全社团注册**永久失败**，错误码仍是 `REGISTER_CODE_INVALID` | 比对时把存量值也 `trimAsciiBlank()` |
+| 4 | `h_dept.cj` | 删部门时把 `help_member_id` 一并清零 —— 它指向**成员**而删部门不删成员，等于顺带抹掉"当时求助的是谁" | 只清 `help_dept_id` |
+| 5 | `h_task.cj` / `h_plan.cj` | 新增的长度 / 负数校验放在**授权之前**：无权用户带个超长 `blocker` 或负数 id 拿到的是 400，而真实原因是 403 / 404 | 移到 `requireAccess` 之后（先认证 → 再授权 → 后校验） |
+| 6 | `ops/admin_main.cj` `/api/login` 分支 ① | 成功即清零：只要有任意一个合法后台账号（`user` 的口令就写在 `build/admin/admin.env`，登录页还提示了位置）就能"4 次猜 admin + 1 次 user 成功"循环，**无限次**猜 admin | 分支 ① 成功不再清零（分支 ② 保留，它要求先拿出运维口令） |
+| 7 | `ops/admin_main.cj` `POST /api/users` | 预检查与 `createUser()` 之间有并发窗口，库层异常会穿透成链上的 **404 壳**（与同文件 `/api/users/:id` 被痛批的症状相同） | 接住异常转成同款 400 |
+| 8 | `ops/admin_main.cj` `ClubSession.view()` | 全类唯一没写 `try/finally` 的加锁点，将来构造函数一旦会抛就永久死锁（仓颉重复加锁是挂住而非抛错） | 统一成 `try/finally` |
+
+复核证据（可复跑）：编译探针（`JsonObject.size()` / `containsKey()` 可用、`keys` 不是成员）、
+四套测试在同一台机器上的**分支 / 基线对照** —— 单测 505/0、契约 33/0、admin-check 29/0、ops-check 64/0；
+冒烟分支与基线**同为 425 / 2**（那 2 条是 §22.7 的 N-21 复现，需要一块**可达的**非回环网卡，
+本机取到的是虚拟网卡地址；基线同样失败 ⇒ 与本次改动无关）。
 
 **顺手把一条"待确认"证伪了（保留证据）**：`ids.cj` 每次 `randBytes` 都新建 `Random()`，
 此前一直担心"同一 tick 里两个实例会产出相同字节流"（那等于可预测的会话令牌）。

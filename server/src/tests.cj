@@ -2049,6 +2049,98 @@ func testLimits(t: TR): Unit {
         MAX_NAME_BYTES > 0 && MAX_CLIENT_TOKEN_BYTES > 0)
 }
 
+/*
+ * PATCH /tasks/{id} 的字段闸门（h_task.cj 的 rejectUnknownTaskFields）。
+ *
+ * 为什么单独钉这一条（2026-09-18 复核补测）：本闸门原先只有"具名拒绝名单"，
+ * 于是 `{"foo":1}`、拼错的 `{"titel":"x"}` 仍会返回 200 且**静默忽略** ——
+ * 也就是说它自称消灭的那个形态其实还在。而 `JsonObject` 不能枚举键（无 `keys()`），
+ * 兜底只能靠"键数 > 白名单命中数"判定，所以这里把那个判定的两侧都钉住，
+ * 含"同键重复在 HashMap 里只算一个键"这层容易写错的前提。
+ */
+func testTaskPatchWhitelist(t: TR): Unit {
+    println("- 任务 PATCH 字段白名单（未知字段兜底）")
+
+    let okBody = JsonObject()
+    okBody.put("title", JsonString("标题"))
+    okBody.put("owner_id", JsonInt(3))
+    okBody.put("due_at", JsonNull())
+    var okPassed = true
+    try {
+        rejectUnknownTaskFields(okBody)
+    } catch (e: ApiError) {
+        okPassed = false
+    }
+    t.ok("白名单字段全部放行", okPassed)
+
+    var emptyPassed = true
+    try {
+        rejectUnknownTaskFields(JsonObject())
+    } catch (e: ApiError) {
+        emptyPassed = false
+    }
+    t.ok("空请求体放行（不是必须带字段）", emptyPassed)
+
+    let dupBody = JsonObject()
+    dupBody.put("title", JsonString("a"))
+    dupBody.put("title", JsonString("b"))
+    var dupPassed = true
+    try {
+        rejectUnknownTaskFields(dupBody)
+    } catch (e: ApiError) {
+        dupPassed = false
+    }
+    t.ok("同键重复不被当成未知字段", dupPassed)
+
+    /* 拼错的字段名：原先静默忽略的那一类 */
+    let typo = JsonObject()
+    typo.put("titel", JsonString("标题"))
+    var typoCode = ""
+    var typoOnBody = false
+    try {
+        rejectUnknownTaskFields(typo)
+    } catch (e: ApiError) {
+        typoCode = e.code
+        match (e.fields) {
+            case Some(o) => typoOnBody = o.containsKey("body")
+            case None => ()
+        }
+    }
+    t.eqs("拼错字段名 -> VALIDATION_FAILED", typoCode, "VALIDATION_FAILED")
+    t.ok("拼错字段名报在 body 上（点不出键名，只能说明接受哪些）", typoOnBody)
+
+    /* 白名单字段 + 未知字段混用：不能因为"命中数够"就放过 */
+    let mixed = JsonObject()
+    mixed.put("title", JsonString("标题"))
+    mixed.put("desc", JsonString("描述"))
+    mixed.put("foo", JsonInt(1))
+    var mixedRejected = false
+    try {
+        rejectUnknownTaskFields(mixed)
+    } catch (e: ApiError) {
+        mixedRejected = true
+    }
+    t.ok("白名单字段 + 未知字段混用 -> 拒", mixedRejected)
+
+    /* 具名名单仍优先生效，给出"该走哪个接口"的具体提示 */
+    let withStatus = JsonObject()
+    withStatus.put("title", JsonString("标题"))
+    withStatus.put("status", JsonString("done"))
+    var statusOnField = false
+    var statusCode = ""
+    try {
+        rejectUnknownTaskFields(withStatus)
+    } catch (e: ApiError) {
+        statusCode = e.code
+        match (e.fields) {
+            case Some(o) => statusOnField = o.containsKey("status")
+            case None => ()
+        }
+    }
+    t.eqs("status -> VALIDATION_FAILED", statusCode, "VALIDATION_FAILED")
+    t.ok("status 报在 status 字段上（带处置提示）", statusOnField)
+}
+
 /* ===================== 入口 ===================== */
 
 public func runTests(): Int64 {
@@ -2059,6 +2151,7 @@ public func runTests(): Int64 {
     testIds(t)
     testPassword(t)
     testLimits(t)
+    testTaskPatchWhitelist(t)
     testStore(t)
     testDeferredSave(t)
     testTokenPrune(t)

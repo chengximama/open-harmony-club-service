@@ -331,7 +331,16 @@ public func handleRegister(ctx: Context, s: Store): Unit {
         if (regLocked(s, ip, nowEpoch())) {
             throw apiErr("TOO_MANY_ATTEMPTS")
         }
-        expectedCode = s.register_code
+        /*
+         * 2026-09-17：**存入侧也 trim 一次**（不是只 trim 提交值）。
+         *
+         * 本次改动把提交侧与存入侧都改成 trim 口径，但库里可能已经有**改动前**设下的
+         * 首尾带空白的口令（旧代码允许，GET 会原样回显）。如果只 trim 提交值，
+         * 那些社团会陷入"口令明明是对的、注册却永远失败"的死局，而错误码仍是
+         * REGISTER_CODE_INVALID，看不出是空白问题。这里把存量值也按同一口径归一，
+         * 新旧数据都能对上（真正的口令本体不变）。
+         */
+        expectedCode = trimAsciiBlank(s.register_code)
         /* D-16：链接由服务端解析（停用/不存在 → 0，自动退回客户端自报的 dept_id） */
         invitedDept = resolveInviteDept(s, inviteToken)
     } finally {

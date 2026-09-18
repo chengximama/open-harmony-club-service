@@ -161,11 +161,20 @@ class ClubSession {
         }
     }
 
-    /* 一致快照。构造函数不抛异常，所以这里不需要 try/finally 兜底解锁。 */
+    /*
+     * 一致快照。与 clubCreds() / commit() / markFailed() 保持**同一种写法**（try/finally）：
+     * 今天 ClubSessionView 的构造函数只做赋值、不会抛，裸 lock/unlock 也正确；
+     * 但这里是全类唯一一处"往构造函数里加一行校验就会永久死锁"的写法，
+     * 而重复锁定在仓颉里是直接挂住（不是抛异常），排查成本极高 —— 统一成 try/finally。
+     */
     public func view(): ClubSessionView {
         mu.lock()
-        let v = ClubSessionView(token, at, name, role, phone, err)
-        mu.unlock()
+        var v = ClubSessionView("", 0, "", "", "", "")
+        try {
+            v = ClubSessionView(token, at, name, role, phone, err)
+        } finally {
+            mu.unlock()
+        }
         return v
     }
 }
@@ -904,11 +913,13 @@ main(): Int64 {
      *   这个更显眼的问题；分支 ① 的 verifyPassword 只有 1000 轮，看着"便宜"，但**猜口令本身就是
      *   攻击面**，便宜不等于可以对无限次尝试敞开。）
      *
-     *   统一口径（逐条与分支 ② 的既有语义保持一致，不新增行为）：
+     *   统一口径（逐条与分支 ② 的既有语义对齐，**只有一处例外**）：
      *     · 校验**之前**先看 locked()：锁定期内连口令都不验（否则锁只挡住了"通过"，
      *       没挡住 CPU 消耗与计时侧信道）；
      *     · 失败 → note(ip, false)（窗口内递增，达阈值锁 15 分钟）；
-     *     · 成功 → note(ip, true)（**立即清零**该来源的失败记录）；
+     *     · 成功 → 分支 ② note(ip, true)（立即清零，因为它要求先拿出**运维口令**）；
+     *       分支 ① **不清零**（见 /api/login 里的长注释：只要有任意一个合法后台账号
+     *       就能靠"成功一次"把计数器压回阈值以下，从而无限次猜 admin）。
      *     · 键用 opsThrottleKey()：回环来源折成空串、**不参与节流**（与分支 ② 完全一致，
      *       否则本机测试脚本跑几轮就把自己锁 15 分钟）；
      *     · 429 的回执文案也共用 opsThrottleRejected()。
@@ -927,7 +938,17 @@ main(): Int64 {
                     return
                 }
                 if (verifyPassword(password, u.passwordHash)) {
-                    opsLoginGuard.note(ip, true)
+                    /*
+                     * ⚠ 成功**不清零**该来源的失败记录（2026-09-17 复核后改）。
+                     *
+                     * 分支 ② 成功后清零是合理的：那必须先拿出**运维口令**。
+                     * 而本分支只要有一个合法后台账号就行 —— 而 `user` 那种低权账号的口令
+                     * 就写在 build\admin\admin.env 里、登录页还专门提示了它的位置。
+                     * 若成功即清零，任何拿到 `user` 的人都能用"4 次猜 admin + 1 次 user 成功"
+                     * 的循环把计数器永远压在阈值之下，从而**无限次**猜 admin 的口令。
+                     * 不清零的代价只是：管理员自己连续打错 5 次后同样被锁 15 分钟 ——
+                     * 那正是这条闸门应有的语义（锁定期间 locked() 在验口令之前就返回 429）。
+                     */
                     let token = issueTokenTtl(u.id.toString(), secret, ttl)
                     /* 前端 api.js 取的是 data.token（与上游一致） */
                     let o = JsonObject()
@@ -1034,7 +1055,19 @@ main(): Int64 {
             return
         }
         let hash = hashPassword(password, "qz2026", 1000)
-        let id = store.createUser(username, hash, roleId)
+        /*
+         * 兜底：预检查与 createUser 之间仍有并发窗口（两个请求同时建同一个用户名）。
+         * 库层会抛异常，而运行时异常会穿透 handler、被链上 passOnNotFound 留下的
+         * 404 壳吃掉（见下面 /api/users/:id 的实测记录）—— 于是"重名"会显示成
+         * "没有这个接口"，比不兜底更误导。这里接住转成与预检查一致的 400。
+         */
+        var id: Int64 = 0
+        try {
+            id = store.createUser(username, hash, roleId)
+        } catch (e: Exception) {
+            opsErr(ctx, 400, 400, "username already exists: ${username}")
+            return
+        }
         let o = JsonObject()
         jPutInt(o, "id", id)
         jPutStr(o, "username", username)
